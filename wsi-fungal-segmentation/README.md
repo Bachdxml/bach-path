@@ -135,7 +135,7 @@ Export tiles from QuPath using the provided Groovy script:
 
 ```bash
 // ==============================================
-// QuPath 0.6.x – Tile & Mask Export (Patched)
+// QuPath 0.6.x – Tile & Mask Export (OPTIMIZED)
 // ==============================================
 
 import qupath.lib.images.servers.ImageServer
@@ -194,22 +194,110 @@ maskDir.mkdirs()
 println "✅ Export directory created: " + outDir.getAbsolutePath()
 
 // =======================
+// SPATIAL INDEXING
+// =======================
+println "🔍 Building spatial index for ${annotations.size()} annotations..."
+
+// Build spatial index to quickly find relevant annotations per tile
+def GRID_SIZE = TILE_SIZE * 2  // adjust this for performance tuning
+def spatialIndex = [:].withDefault { [] }
+
+// Also track overall bounds to skip empty regions
+def overallBounds = null
+
+annotations.each { ann ->
+    def roi = ann.getROI()
+    double roiX = roi.getBoundsX()
+    double roiY = roi.getBoundsY()
+    double roiW = roi.getBoundsWidth()
+    double roiH = roi.getBoundsHeight()
+    
+    // Update overall bounds
+    if (overallBounds == null) {
+        overallBounds = [minX: roiX, minY: roiY, 
+                        maxX: roiX + roiW, maxY: roiY + roiH]
+    } else {
+        overallBounds.minX = Math.min(overallBounds.minX, roiX)
+        overallBounds.minY = Math.min(overallBounds.minY, roiY)
+        overallBounds.maxX = Math.max(overallBounds.maxX, roiX + roiW)
+        overallBounds.maxY = Math.max(overallBounds.maxY, roiY + roiH)
+    }
+    
+    // Add annotation to all grid cells it overlaps
+    int minGridX = (int)(roiX / GRID_SIZE)
+    int maxGridX = (int)((roiX + roiW) / GRID_SIZE)
+    int minGridY = (int)(roiY / GRID_SIZE)
+    int maxGridY = (int)((roiY + roiH) / GRID_SIZE)
+    
+    for (int gy = minGridY; gy <= maxGridY; gy++) {
+        for (int gx = minGridX; gx <= maxGridX; gx++) {
+            spatialIndex["${gx}_${gy}"] << ann
+        }
+    }
+}
+
+println "✅ Spatial index built. Processing tiles in annotated regions only..."
+
+// =======================
 // IMAGE BOUNDS
 // =======================
 def width = server.getWidth()
 def height = server.getHeight()
 
 // =======================
-// TILE LOOP
+// OPTIMIZED TILE LOOP
 // =======================
 int tileCount = 0
+int skippedOutOfBounds = 0
+int skippedNoAnnotations = 0
 
 for (int y = 0; y < height; y += TILE_SIZE) {
     for (int x = 0; x < width; x += TILE_SIZE) {
 
+        // OPTIMIZATION 1: Skip tiles completely outside annotation bounds
+        if (x + TILE_SIZE < overallBounds.minX || x > overallBounds.maxX ||
+            y + TILE_SIZE < overallBounds.minY || y > overallBounds.maxY) {
+            skippedOutOfBounds++
+            continue
+        }
+
         int w = Math.min(TILE_SIZE, width - x)
         int h = Math.min(TILE_SIZE, height - y)
 
+        // OPTIMIZATION 2: Get only nearby annotations using spatial index
+        int gridX = (int)(x / GRID_SIZE)
+        int gridY = (int)(y / GRID_SIZE)
+        def nearbyAnnotations = spatialIndex["${gridX}_${gridY}"] ?: []
+
+        if (nearbyAnnotations.isEmpty()) {
+            skippedNoAnnotations++
+            continue
+        }
+
+        // Check if any nearby annotations actually intersect this tile
+        boolean hasIntersection = false
+        for (PathAnnotationObject ann : nearbyAnnotations) {
+            def roi = ann.getROI()
+            double roiX = roi.getBoundsX()
+            double roiY = roi.getBoundsY()
+            double roiW = roi.getBoundsWidth()
+            double roiH = roi.getBoundsHeight()
+
+            if (!(roiX + roiW < x || roiX > x + w ||
+                  roiY + roiH < y || roiY > y + h)) {
+                hasIntersection = true
+                break
+            }
+        }
+
+        if (!hasIntersection) {
+            skippedNoAnnotations++
+            continue
+        }
+
+        // =======================
+        // READ TILE IMAGE
+        // =======================
         def region = RegionRequest.createInstance(
                 server.getPath(),
                 DOWNSAMPLE,
@@ -233,10 +321,10 @@ for (int y = 0; y < height; y += TILE_SIZE) {
 
         boolean hasAnnotations = false
 
-        annotations.each { PathAnnotationObject ann ->
+        // Only iterate through nearby annotations (not all annotations!)
+        nearbyAnnotations.each { PathAnnotationObject ann ->
             def roi = ann.getROI()
 
-            // Use QuPath 0.6.x compatible bounds
             double roiX = roi.getBoundsX()
             double roiY = roi.getBoundsY()
             double roiW = roi.getBoundsWidth()
@@ -260,6 +348,7 @@ for (int y = 0; y < height; y += TILE_SIZE) {
 
         if (!hasAnnotations) {
             println "⏩ Skipping tile x=${x} y=${y}: no annotation pixels"
+            skippedNoAnnotations++
             continue
         }
 
@@ -275,11 +364,19 @@ for (int y = 0; y < height; y += TILE_SIZE) {
         ImageIO.write(mask, "PNG", maskFile)
 
         tileCount++
-        println "✅ Exported tile x=${x} y=${y}"
+        if (tileCount % 50 == 0) {
+            println "📊 Progress: ${tileCount} tiles exported..."
+        }
     }
 }
 
-println "✅ Finished exporting tiles with masks: " + tileCount
+println ""
+println "=" * 50
+println "✅ Finished exporting tiles with masks: ${tileCount}"
+println "⏩ Skipped ${skippedOutOfBounds} tiles outside annotation bounds"
+println "⏩ Skipped ${skippedNoAnnotations} tiles with no annotations"
+println "📁 Output: ${outDir.getAbsolutePath()}"
+println "=" * 50
 
 # Place export_tiles.groovy in QuPath scripts folder
 # Run in QuPath: Scripts > export_tiles.groovy
