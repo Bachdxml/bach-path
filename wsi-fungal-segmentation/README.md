@@ -343,7 +343,7 @@ The notebook includes visualization cells for:
 ---
 
 ## Project Structure
-**Note:** Current release (v2.0-notebook) contains only the Jupyter notebook. 
+**Note:** 
 The structure below shows the planned organization for future releases.
 ```
 wsi-fungal-segmentation/
