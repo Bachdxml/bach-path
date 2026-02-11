@@ -13,14 +13,15 @@ print(f"\nTrain dataset: {len(train_dataset)} tiles")
 
 # Create only train loader
 BATCH_SIZE = 2  # Set to match your data size (you have 2 tiles)
-NUM_WORKERS = 0
+NUM_WORKERS = 6 #6-8 best for RTX 5090
 
 train_loader = DataLoader(
     train_dataset,
     batch_size=BATCH_SIZE,
     shuffle=True,
     num_workers=NUM_WORKERS,
-    pin_memory=torch.cuda.is_available()
+    pin_memory=torch.cuda.is_available(),
+    persistent_workers=True
 )
 
 # No validation loader for now
@@ -68,7 +69,7 @@ print(f"Using device: {device}")
 model = ResidualAttentionUNet(in_ch=3, out_ch=1).to(device)
 
 # Loss and optimizer
-criterion = nn.BCEWithLogitsLoss()
+criterion = TverskyLoss(alpha=0.3, beta=0.7)
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
 # Count parameters
@@ -80,7 +81,7 @@ print(f"  Trainable: {trainable_params:,}")
 
 #---------------------------------------#
 
-EPOCHS = 10
+EPOCHS = 100
 
 print("="*60)
 print("Starting Training...")
