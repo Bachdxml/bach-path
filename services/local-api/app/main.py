@@ -7,6 +7,7 @@ from app.api.router import api_router
 from app.api.errors import register_exception_handlers
 from app.logging_config import configure_logging
 from app.db.init import init_database
+from fastapi.middleware.cors import CORSMiddleware
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -26,6 +27,13 @@ def create_app() -> FastAPI:
     )
     register_exception_handlers(app)
     app.include_router(api_router)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],   # dev only
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     return app
 
 app = create_app()
