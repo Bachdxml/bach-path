@@ -102,10 +102,19 @@ def slide_tile(
 
     # Tile settings
     TILE_SIZE = 256  # common default; adjust if your frontend expects something else
+    overlap = 0  # set to e.g. 10 for 10px overlap between tiles (helps with some viewers)
 
     # 7) Cache tile to disk
     cache_dir = Path(settings.tiles_cache_dir) if hasattr(settings, "tiles_cache_dir") else (settings.app_data_dir / "tiles_cache")
-    tile_path = cache_dir / str(slide_id) / str(level) / f"{x}_{y}.jpg"
+    
+    tile_path = (
+        settings.app_data_dir
+        / "tiles_cache"
+        / str(slide_id)
+        / f"{TILE_SIZE}_{overlap}"
+        / str(level)
+        / f"{x}_{y}.jpg"
+    )
     tile_path.parent.mkdir(parents=True, exist_ok=True)
 
     if tile_path.exists():
