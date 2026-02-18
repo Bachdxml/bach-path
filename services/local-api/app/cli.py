@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 import uvicorn
+from app.main import app as fastapi_app
 
 # Argument Parsing
 def parse_args() -> argparse.Namespace:
@@ -89,31 +90,28 @@ def main() -> None:
     data_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    # Expose directories via environment variables
-    # Your app can read these during startup
+    # Validate write access (must be INSIDE main)
+    if not os.access(data_dir, os.W_OK):
+        print("Data directory is not writable.")
+        sys.exit(1)
+
+    if not os.access(log_dir, os.W_OK):
+        print("Log directory is not writable.")
+        sys.exit(1)
+
     os.environ["APP_DATA_DIR"] = str(data_dir)
     os.environ["APP_LOG_DIR"] = str(log_dir)
 
     setup_logging(log_dir, args.log_level)
     install_signal_handlers()
 
-    logging.info("Starting Local Pathology API")
-    logging.info(f"Data directory: {data_dir}")
-    logging.info(f"Log directory: {log_dir}")
-    logging.info(f"Listening on http://{args.host}:{args.port}")
-
-    # Use string import so PyInstaller works correctly
     uvicorn.run(
-        "app.main:app",
+        fastapi_app,
         host=args.host,
         port=args.port,
         log_level=args.log_level,
         reload=False,
     )
-
-if not os.access(data_dir, os.W_OK):
-    logging.error("Data directory is not writable.")
-    sys.exit(1)
 
 if __name__ == "__main__":
     main()

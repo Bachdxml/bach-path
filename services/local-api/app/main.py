@@ -1,15 +1,31 @@
+from __future__ import annotations
 from fastapi import FastAPI
-import uvicorn
+from contextlib import asynccontextmanager
 
-app = FastAPI()
+from app.settings import load_settings, Settings
+from app.api.router import api_router
+from app.api.errors import register_exception_handlers
+from app.logging_config import configure_logging
+from app.db.init import init_database
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    settings: Settings = load_settings()
+    app.state.settings = settings
 
-def run():
-    # You’ll parse --port, --data-dir, --log-dir later
-    uvicorn.run("app.main:app", host="127.0.0.1", port=0)
+    configure_logging(settings.log_dir)
+    init_database(settings)
 
-if __name__ == "__main__":
-    run()
+    yield
+
+def create_app() -> FastAPI:
+    app = FastAPI(
+        title="Pathology Local API",
+        version="0.1.0",
+        lifespan=lifespan,
+    )
+    register_exception_handlers(app)
+    app.include_router(api_router)
+    return app
+
+app = create_app()
