@@ -1,16 +1,27 @@
-class TverskyLoss(nn.Module):
-    def __init__(self, alpha=0.3, beta=0.7, smooth=1e-6):
+class FocalTverskyLoss(nn.Module):
+    def __init__(self, alpha=0.7, beta=0.3, gamma=0.75, smooth=1e-6):
         super().__init__()
-        self.alpha = alpha  # weight for false negatives
-        self.beta = beta    # weight for false positives
+        self.alpha = alpha
+        self.beta = beta
+        self.gamma = gamma
         self.smooth = smooth
 
     def forward(self, logits, targets):
-        probs = torch.sigmoid(logits)  # convert logits to probabilities
+        probs = torch.sigmoid(logits)
 
-        tp = (probs * targets).sum()
-        fp = (probs * (1 - targets)).sum()
-        fn = ((1 - probs) * targets).sum()
+        if targets.dim() == 3:
+            targets = targets.unsqueeze(1)
 
-        tversky = (tp + self.smooth) / (tp + self.alpha * fn + self.beta * fp + self.smooth)
-        return 1 - tversky
+        dims = (1, 2, 3)
+
+        tp = (probs * targets).sum(dims)
+        fp = (probs * (1 - targets)).sum(dims)
+        fn = ((1 - probs) * targets).sum(dims)
+
+        tversky = (tp + self.smooth) / (
+            tp + self.alpha * fn + self.beta * fp + self.smooth
+        )
+
+        loss = (1 - tversky) ** self.gamma
+
+        return loss.mean()
