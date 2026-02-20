@@ -1,0 +1,60 @@
+// ==============================================
+// QuPath 0.6.x – Lightweight Grid Overlay (Visual Only)
+// ==============================================
+import qupath.lib.gui.viewer.overlays.PathOverlay
+import java.awt.*
+
+// =======================
+// USER SETTINGS
+// =======================
+int TILE_SIZE = 512
+Color GRID_COLOR = new Color(0, 255, 0, 250)  // Semi-transparent green
+float LINE_WIDTH = 1.0f
+
+// =======================
+// CREATE OVERLAY
+// =======================
+def viewer = getCurrentViewer()
+
+// Remove any existing custom overlays first
+viewer.getCustomOverlayLayers().clear()
+
+// Create custom overlay
+def gridOverlay = new PathOverlay() {
+    
+    @Override
+    void paintOverlay(Graphics2D g2d, qupath.lib.regions.ImageRegion imageRegion, 
+                      double downsampleFactor, ImageData imgData, boolean paintCompletely) {
+        
+        def server = imgData.getServer()
+        int width = server.getWidth()
+        int height = server.getHeight()
+        
+        // Configure drawing
+        g2d.setColor(GRID_COLOR)
+        float strokeWidth = (float)(LINE_WIDTH / downsampleFactor)
+        g2d.setStroke(new BasicStroke(strokeWidth))
+        
+        // Get visible region to only draw what's needed
+        int minX = (int)(imageRegion.getX() / TILE_SIZE) * TILE_SIZE
+        int minY = (int)(imageRegion.getY() / TILE_SIZE) * TILE_SIZE
+        int maxX = Math.min(width, (int)(imageRegion.getMaxX() + TILE_SIZE))
+        int maxY = Math.min(height, (int)(imageRegion.getMaxY() + TILE_SIZE))
+        
+        // Draw vertical lines
+        for (int x = minX; x <= maxX; x += TILE_SIZE) {
+            g2d.drawLine(x, minY, x, maxY)
+        }
+        
+        // Draw horizontal lines
+        for (int y = minY; y <= maxY; y += TILE_SIZE) {
+            g2d.drawLine(minX, y, maxX, y)
+        }
+    }
+}
+
+viewer.getCustomOverlayLayers().add(gridOverlay)
+viewer.repaint()
+
+println "✅ Grid overlay added (${TILE_SIZE}x${TILE_SIZE})"
+println "💡 To remove: Run the remove script"
