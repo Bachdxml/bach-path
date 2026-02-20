@@ -129,8 +129,8 @@ jupyter>=1.0.0
 **Note:** This is a notebook-based implementation. For production,
 see Roadmap for planned modular package structure.
 
-### 1. Prepare Data
-
+### 1. Prepare Data (Subject to Change)
+Grid overlay illustrating tiles also available in qu-path-scripts
 Export tiles from QuPath using the provided Groovy script:
 
 ```bash
