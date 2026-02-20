@@ -69,8 +69,10 @@ print(f"Using device: {device}")
 model = ResidualAttentionUNet(in_ch=3, out_ch=1).to(device)
 
 # Loss and optimizer
-criterion = TverskyLoss(alpha=0.3, beta=0.7)
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+criterion = FocalTverskyLoss(alpha=0.3, beta=0.7)
+learning_rate = 1e-4
+weight_decay = 1e-4
+optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay) 
 
 # Count parameters
 total_params = sum(p.numel() for p in model.parameters())
