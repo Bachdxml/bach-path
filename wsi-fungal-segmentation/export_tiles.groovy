@@ -1,5 +1,5 @@
 // ==============================================
-// QuPath 0.6.x – Tile & Mask Export (OPTIMIZED)
+// QuPath 0.6.x – Tile & Mask Export with NEGATIVES
 // ==============================================
 
 import qupath.lib.images.servers.ImageServer
@@ -16,13 +16,16 @@ import java.io.File
 // =======================
 // USER SETTINGS
 // =======================
-int TILE_SIZE = 512              // pixels
-double DOWNSAMPLE = 1.0          // safe downsample
-String OUTPUT_DIR = "exports_ml" // folder inside QuPath project
+int TILE_SIZE = 512
+double DOWNSAMPLE = 1.0
+String OUTPUT_DIR = "exports_ml"
 
 // Mask values
 int BACKGROUND = 0
-int FOREGROUND = 255             // white
+int FOREGROUND = 255
+
+// Classification name for negative examples
+String NEGATIVE_CLASS_NAME = "Negative"
 
 // =======================
 // SETUP
@@ -33,6 +36,27 @@ def annotations = getAnnotationObjects()
 
 if (annotations.isEmpty()) {
     print "❌ No annotations found!"
+    return
+}
+
+// Separate positive and negative annotations
+def positiveAnnotations = []
+def negativeAnnotations = []
+
+annotations.each { ann ->
+    def pathClass = ann.getPathClass()
+    if (pathClass != null && pathClass.getName() == NEGATIVE_CLASS_NAME) {
+        negativeAnnotations << ann
+    } else {
+        positiveAnnotations << ann
+    }
+}
+
+println "📊 Found ${positiveAnnotations.size()} positive annotations"
+println "📊 Found ${negativeAnnotations.size()} negative annotations"
+
+if (positiveAnnotations.isEmpty() && negativeAnnotations.isEmpty()) {
+    println "❌ No valid annotations found!"
     return
 }
 
@@ -58,25 +82,24 @@ maskDir.mkdirs()
 println "✅ Export directory created: " + outDir.getAbsolutePath()
 
 // =======================
-// SPATIAL INDEXING
+// SPATIAL INDEXING (BOTH POSITIVE AND NEGATIVE)
 // =======================
-println "🔍 Building spatial index for ${annotations.size()} annotations..."
+println "🔍 Building spatial index..."
 
-// Build spatial index to quickly find relevant annotations per tile
-def GRID_SIZE = TILE_SIZE * 2  // adjust this for performance tuning
-def spatialIndex = [:].withDefault { [] }
+def GRID_SIZE = TILE_SIZE * 2
+def positiveSpatialIndex = [:].withDefault { [] }
+def negativeSpatialIndex = [:].withDefault { [] }
 
-// Also track overall bounds to skip empty regions
 def overallBounds = null
 
-annotations.each { ann ->
+// Index positive annotations
+positiveAnnotations.each { ann ->
     def roi = ann.getROI()
     double roiX = roi.getBoundsX()
     double roiY = roi.getBoundsY()
     double roiW = roi.getBoundsWidth()
     double roiH = roi.getBoundsHeight()
     
-    // Update overall bounds
     if (overallBounds == null) {
         overallBounds = [minX: roiX, minY: roiY, 
                         maxX: roiX + roiW, maxY: roiY + roiH]
@@ -87,7 +110,6 @@ annotations.each { ann ->
         overallBounds.maxY = Math.max(overallBounds.maxY, roiY + roiH)
     }
     
-    // Add annotation to all grid cells it overlaps
     int minGridX = (int)(roiX / GRID_SIZE)
     int maxGridX = (int)((roiX + roiW) / GRID_SIZE)
     int minGridY = (int)(roiY / GRID_SIZE)
@@ -95,12 +117,42 @@ annotations.each { ann ->
     
     for (int gy = minGridY; gy <= maxGridY; gy++) {
         for (int gx = minGridX; gx <= maxGridX; gx++) {
-            spatialIndex["${gx}_${gy}"] << ann
+            positiveSpatialIndex["${gx}_${gy}"] << ann
         }
     }
 }
 
-println "✅ Spatial index built. Processing tiles in annotated regions only..."
+// Index negative annotations
+negativeAnnotations.each { ann ->
+    def roi = ann.getROI()
+    double roiX = roi.getBoundsX()
+    double roiY = roi.getBoundsY()
+    double roiW = roi.getBoundsWidth()
+    double roiH = roi.getBoundsHeight()
+    
+    if (overallBounds == null) {
+        overallBounds = [minX: roiX, minY: roiY, 
+                        maxX: roiX + roiW, maxY: roiY + roiH]
+    } else {
+        overallBounds.minX = Math.min(overallBounds.minX, roiX)
+        overallBounds.minY = Math.min(overallBounds.minY, roiY)
+        overallBounds.maxX = Math.max(overallBounds.maxX, roiX + roiW)
+        overallBounds.maxY = Math.max(overallBounds.maxY, roiY + roiH)
+    }
+    
+    int minGridX = (int)(roiX / GRID_SIZE)
+    int maxGridX = (int)((roiX + roiW) / GRID_SIZE)
+    int minGridY = (int)(roiY / GRID_SIZE)
+    int maxGridY = (int)((roiY + roiH) / GRID_SIZE)
+    
+    for (int gy = minGridY; gy <= maxGridY; gy++) {
+        for (int gx = minGridX; gx <= maxGridX; gx++) {
+            negativeSpatialIndex["${gx}_${gy}"] << ann
+        }
+    }
+}
+
+println "✅ Spatial index built. Processing tiles..."
 
 // =======================
 // IMAGE BOUNDS
@@ -109,16 +161,17 @@ def width = server.getWidth()
 def height = server.getHeight()
 
 // =======================
-// OPTIMIZED TILE LOOP
+// TILE LOOP
 // =======================
-int tileCount = 0
+int positiveTileCount = 0
+int negativeTileCount = 0
 int skippedOutOfBounds = 0
 int skippedNoAnnotations = 0
 
 for (int y = 0; y < height; y += TILE_SIZE) {
     for (int x = 0; x < width; x += TILE_SIZE) {
 
-        // OPTIMIZATION 1: Skip tiles completely outside annotation bounds
+        // Skip tiles completely outside annotation bounds
         if (x + TILE_SIZE < overallBounds.minX || x > overallBounds.maxX ||
             y + TILE_SIZE < overallBounds.minY || y > overallBounds.maxY) {
             skippedOutOfBounds++
@@ -128,19 +181,22 @@ for (int y = 0; y < height; y += TILE_SIZE) {
         int w = Math.min(TILE_SIZE, width - x)
         int h = Math.min(TILE_SIZE, height - y)
 
-        // OPTIMIZATION 2: Get only nearby annotations using spatial index
+        // Get nearby annotations
         int gridX = (int)(x / GRID_SIZE)
         int gridY = (int)(y / GRID_SIZE)
-        def nearbyAnnotations = spatialIndex["${gridX}_${gridY}"] ?: []
+        def nearbyPositive = positiveSpatialIndex["${gridX}_${gridY}"] ?: []
+        def nearbyNegative = negativeSpatialIndex["${gridX}_${gridY}"] ?: []
 
-        if (nearbyAnnotations.isEmpty()) {
+        if (nearbyPositive.isEmpty() && nearbyNegative.isEmpty()) {
             skippedNoAnnotations++
             continue
         }
 
-        // Check if any nearby annotations actually intersect this tile
-        boolean hasIntersection = false
-        for (PathAnnotationObject ann : nearbyAnnotations) {
+        // Check for actual intersections
+        boolean hasPositiveIntersection = false
+        boolean hasNegativeIntersection = false
+        
+        for (PathAnnotationObject ann : nearbyPositive) {
             def roi = ann.getROI()
             double roiX = roi.getBoundsX()
             double roiY = roi.getBoundsY()
@@ -149,15 +205,34 @@ for (int y = 0; y < height; y += TILE_SIZE) {
 
             if (!(roiX + roiW < x || roiX > x + w ||
                   roiY + roiH < y || roiY > y + h)) {
-                hasIntersection = true
+                hasPositiveIntersection = true
                 break
             }
         }
+        
+        if (!hasPositiveIntersection) {
+            for (PathAnnotationObject ann : nearbyNegative) {
+                def roi = ann.getROI()
+                double roiX = roi.getBoundsX()
+                double roiY = roi.getBoundsY()
+                double roiW = roi.getBoundsWidth()
+                double roiH = roi.getBoundsHeight()
 
-        if (!hasIntersection) {
+                if (!(roiX + roiW < x || roiX > x + w ||
+                      roiY + roiH < y || roiY > y + h)) {
+                    hasNegativeIntersection = true
+                    break
+                }
+            }
+        }
+
+        if (!hasPositiveIntersection && !hasNegativeIntersection) {
             skippedNoAnnotations++
             continue
         }
+
+        // Positive tiles take precedence over negative tiles
+        boolean isNegativeTile = !hasPositiveIntersection && hasNegativeIntersection
 
         // =======================
         // READ TILE IMAGE
@@ -181,45 +256,41 @@ for (int y = 0; y < height; y += TILE_SIZE) {
         Graphics2D g = mask.createGraphics()
         g.setColor(new Color(BACKGROUND, BACKGROUND, BACKGROUND))
         g.fillRect(0, 0, w, h)
-        g.setColor(new Color(FOREGROUND, FOREGROUND, FOREGROUND))
 
-        boolean hasAnnotations = false
+        if (isNegativeTile) {
+            // Negative tile: mask is all background (already filled above)
+            g.dispose()
+        } else {
+            // Positive tile: fill in the positive annotations
+            g.setColor(new Color(FOREGROUND, FOREGROUND, FOREGROUND))
+            
+            nearbyPositive.each { PathAnnotationObject ann ->
+                def roi = ann.getROI()
+                double roiX = roi.getBoundsX()
+                double roiY = roi.getBoundsY()
+                double roiW = roi.getBoundsWidth()
+                double roiH = roi.getBoundsHeight()
 
-        // Only iterate through nearby annotations (not all annotations!)
-        nearbyAnnotations.each { PathAnnotationObject ann ->
-            def roi = ann.getROI()
+                if (roiX + roiW < x || roiX > x + w ||
+                    roiY + roiH < y || roiY > y + h) {
+                    return
+                }
 
-            double roiX = roi.getBoundsX()
-            double roiY = roi.getBoundsY()
-            double roiW = roi.getBoundsWidth()
-            double roiH = roi.getBoundsHeight()
-
-            // Check intersection with current tile
-            if (roiX + roiW < x || roiX > x + w ||
-                roiY + roiH < y || roiY > y + h) {
-                return
+                def shape = roi.getShape()
+                AffineTransform transform = new AffineTransform()
+                transform.translate(-x, -y)
+                def tileShape = transform.createTransformedShape(shape)
+                g.fill(tileShape)
             }
-
-            hasAnnotations = true
-            def shape = roi.getShape()
-            AffineTransform transform = new AffineTransform()
-            transform.translate(-x, -y)
-            def tileShape = transform.createTransformedShape(shape)
-            g.fill(tileShape)
-        }
-
-        g.dispose()
-
-        if (!hasAnnotations) {
-            println "⏩ Skipping tile x=${x} y=${y}: no annotation pixels"
-            skippedNoAnnotations++
-            continue
+            
+            g.dispose()
         }
 
         // =======================
         // SAVE FILES
         // =======================
-        String baseName = String.format("tile_x%d_y%d", x, y)
+        String prefix = isNegativeTile ? "neg_tile" : "tile"
+        String baseName = String.format("${prefix}_x%d_y%d", x, y)
 
         File imgFile = new File(imgDir, baseName + ".png")
         ImageIO.write(tileImage, "PNG", imgFile)
@@ -227,16 +298,24 @@ for (int y = 0; y < height; y += TILE_SIZE) {
         File maskFile = new File(maskDir, baseName + "_mask.png")
         ImageIO.write(mask, "PNG", maskFile)
 
-        tileCount++
-        if (tileCount % 50 == 0) {
-            println "📊 Progress: ${tileCount} tiles exported..."
+        if (isNegativeTile) {
+            negativeTileCount++
+        } else {
+            positiveTileCount++
+        }
+        
+        int totalCount = positiveTileCount + negativeTileCount
+        if (totalCount % 50 == 0) {
+            println "📊 Progress: ${positiveTileCount} positive, ${negativeTileCount} negative tiles exported..."
         }
     }
 }
 
 println ""
 println "=" * 50
-println "✅ Finished exporting tiles with masks: ${tileCount}"
+println "✅ Finished exporting tiles:"
+println "   ${positiveTileCount} positive tiles (with foreground masks)"
+println "   ${negativeTileCount} negative tiles (all-background masks)"
 println "⏩ Skipped ${skippedOutOfBounds} tiles outside annotation bounds"
 println "⏩ Skipped ${skippedNoAnnotations} tiles with no annotations"
 println "📁 Output: ${outDir.getAbsolutePath()}"
