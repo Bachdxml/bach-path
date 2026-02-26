@@ -1,4 +1,19 @@
+import torch
+import torch.nn as nn
+
+
 class FocalTverskyLoss(nn.Module):
+    """
+    Focal Tversky Loss for binary segmentation.
+
+    alpha: weight for false negatives (higher = more FN penalty, better recall)
+    beta:  weight for false positives
+    gamma: focal exponent (higher = more focus on hard examples)
+
+    Note: alpha=0.7, beta=0.3 intentionally penalizes FN more than FP,
+    which is appropriate for medical imaging where missing a positive region
+    is worse than a false alarm.
+    """
     def __init__(self, alpha=0.7, beta=0.3, gamma=0.75, smooth=1e-6):
         super().__init__()
         self.alpha = alpha
