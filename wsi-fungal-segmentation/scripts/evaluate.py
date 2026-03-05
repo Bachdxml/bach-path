@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader
 
 from src import (
     AugmentedWSI_Dataset,
-    FocalTverskyLoss,
+    AsymmetricSimilarityLoss,
     ResidualAttentionUNet,
     WSIDatasetIndex,
     compute_all_metrics,
@@ -117,7 +117,7 @@ def main(checkpoint_path: str, config_path: str = "configs/default.yaml",
     model = ResidualAttentionUNet(**cfg["model"]).to(device)
     model.load_state_dict(ckpt["model_state_dict"])
 
-    criterion = FocalTverskyLoss(**cfg["loss"])
+    criterion = AsymmetricSimilarityLoss(**cfg["loss"])
 
     # ---- Build val loader ----
     index = WSIDatasetIndex(cfg["data"]["export_root"], strict_mode=True)
