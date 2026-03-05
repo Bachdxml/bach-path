@@ -1,5 +1,8 @@
 // ==============================================
-// QuPath 0.6.x – Tile & Mask Export with NEGATIVES
+// QuPath 0.6.x – Tile & Mask Export with Coverage CSV
+// Exports tiles to unclassified/ folder with per-tile
+// foreground coverage logged to tile_coverage.csv
+// Run classify_tiles.py afterwards to sort into density folders
 // ==============================================
 
 import qupath.lib.images.servers.ImageServer
@@ -28,6 +31,22 @@ int FOREGROUND = 255
 String NEGATIVE_CLASS_NAME = "Negative"
 
 // =======================
+// COVERAGE FUNCTION
+// =======================
+double computeCoverage(BufferedImage mask) {
+    def raster = mask.getRaster()
+    int w = mask.getWidth()
+    int h = mask.getHeight()
+    int fg = 0
+    for (int py = 0; py < h; py++) {
+        for (int px = 0; px < w; px++) {
+            if (raster.getSample(px, py, 0) > 127) fg++
+        }
+    }
+    return fg / (double)(w * h)
+}
+
+// =======================
 // SETUP
 // =======================
 def imageData = getCurrentImageData()
@@ -35,7 +54,7 @@ def server = imageData.getServer()
 def annotations = getAnnotationObjects()
 
 if (annotations.isEmpty()) {
-    print "❌ No annotations found!"
+    println "❌ No annotations found!"
     return
 }
 
@@ -67,8 +86,6 @@ def imageName = new File(fullPath).getName()
 // Create output directories
 def projectDir = getProject().getBaseDirectory()
 def outDir = new File(projectDir, OUTPUT_DIR + "/" + imageName)
-def imgDir = new File(outDir, "images")
-def maskDir = new File(outDir, "masks")
 
 if (outDir.exists()) {
     println "❌ Export directory already exists for image:"
@@ -77,12 +94,19 @@ if (outDir.exists()) {
     return
 }
 
+def imgDir  = new File(outDir, "unclassified/images")
+def maskDir = new File(outDir, "unclassified/masks")
 imgDir.mkdirs()
 maskDir.mkdirs()
 println "✅ Export directory created: " + outDir.getAbsolutePath()
 
+// CSV writer
+def csvFile = new File(outDir, "tile_coverage.csv")
+def csvWriter = csvFile.newWriter()
+csvWriter.writeLine("filename,x,y,coverage,is_negative")
+
 // =======================
-// SPATIAL INDEXING (BOTH POSITIVE AND NEGATIVE)
+// SPATIAL INDEXING
 // =======================
 println "🔍 Building spatial index..."
 
@@ -99,22 +123,22 @@ positiveAnnotations.each { ann ->
     double roiY = roi.getBoundsY()
     double roiW = roi.getBoundsWidth()
     double roiH = roi.getBoundsHeight()
-    
+
     if (overallBounds == null) {
-        overallBounds = [minX: roiX, minY: roiY, 
-                        maxX: roiX + roiW, maxY: roiY + roiH]
+        overallBounds = [minX: roiX, minY: roiY,
+                         maxX: roiX + roiW, maxY: roiY + roiH]
     } else {
         overallBounds.minX = Math.min(overallBounds.minX, roiX)
         overallBounds.minY = Math.min(overallBounds.minY, roiY)
         overallBounds.maxX = Math.max(overallBounds.maxX, roiX + roiW)
         overallBounds.maxY = Math.max(overallBounds.maxY, roiY + roiH)
     }
-    
+
     int minGridX = (int)(roiX / GRID_SIZE)
     int maxGridX = (int)((roiX + roiW) / GRID_SIZE)
     int minGridY = (int)(roiY / GRID_SIZE)
     int maxGridY = (int)((roiY + roiH) / GRID_SIZE)
-    
+
     for (int gy = minGridY; gy <= maxGridY; gy++) {
         for (int gx = minGridX; gx <= maxGridX; gx++) {
             positiveSpatialIndex["${gx}_${gy}"] << ann
@@ -129,22 +153,22 @@ negativeAnnotations.each { ann ->
     double roiY = roi.getBoundsY()
     double roiW = roi.getBoundsWidth()
     double roiH = roi.getBoundsHeight()
-    
+
     if (overallBounds == null) {
-        overallBounds = [minX: roiX, minY: roiY, 
-                        maxX: roiX + roiW, maxY: roiY + roiH]
+        overallBounds = [minX: roiX, minY: roiY,
+                         maxX: roiX + roiW, maxY: roiY + roiH]
     } else {
         overallBounds.minX = Math.min(overallBounds.minX, roiX)
         overallBounds.minY = Math.min(overallBounds.minY, roiY)
         overallBounds.maxX = Math.max(overallBounds.maxX, roiX + roiW)
         overallBounds.maxY = Math.max(overallBounds.maxY, roiY + roiH)
     }
-    
+
     int minGridX = (int)(roiX / GRID_SIZE)
     int maxGridX = (int)((roiX + roiW) / GRID_SIZE)
     int minGridY = (int)(roiY / GRID_SIZE)
     int maxGridY = (int)((roiY + roiH) / GRID_SIZE)
-    
+
     for (int gy = minGridY; gy <= maxGridY; gy++) {
         for (int gx = minGridX; gx <= maxGridX; gx++) {
             negativeSpatialIndex["${gx}_${gy}"] << ann
@@ -157,15 +181,15 @@ println "✅ Spatial index built. Processing tiles..."
 // =======================
 // IMAGE BOUNDS
 // =======================
-def width = server.getWidth()
+def width  = server.getWidth()
 def height = server.getHeight()
 
 // =======================
 // TILE LOOP
 // =======================
-int positiveTileCount = 0
-int negativeTileCount = 0
-int skippedOutOfBounds = 0
+int positiveTileCount   = 0
+int negativeTileCount   = 0
+int skippedOutOfBounds  = 0
 int skippedNoAnnotations = 0
 
 for (int y = 0; y < height; y += TILE_SIZE) {
@@ -178,10 +202,10 @@ for (int y = 0; y < height; y += TILE_SIZE) {
             continue
         }
 
-        int w = Math.min(TILE_SIZE, width - x)
+        int w = Math.min(TILE_SIZE, width  - x)
         int h = Math.min(TILE_SIZE, height - y)
 
-        // Get nearby annotations
+        // Get nearby annotations via spatial index
         int gridX = (int)(x / GRID_SIZE)
         int gridY = (int)(y / GRID_SIZE)
         def nearbyPositive = positiveSpatialIndex["${gridX}_${gridY}"] ?: []
@@ -192,10 +216,10 @@ for (int y = 0; y < height; y += TILE_SIZE) {
             continue
         }
 
-        // Check for actual intersections
+        // Check for actual bounding box intersections
         boolean hasPositiveIntersection = false
         boolean hasNegativeIntersection = false
-        
+
         for (PathAnnotationObject ann : nearbyPositive) {
             def roi = ann.getROI()
             double roiX = roi.getBoundsX()
@@ -209,7 +233,7 @@ for (int y = 0; y < height; y += TILE_SIZE) {
                 break
             }
         }
-        
+
         if (!hasPositiveIntersection) {
             for (PathAnnotationObject ann : nearbyNegative) {
                 def roi = ann.getROI()
@@ -258,12 +282,11 @@ for (int y = 0; y < height; y += TILE_SIZE) {
         g.fillRect(0, 0, w, h)
 
         if (isNegativeTile) {
-            // Negative tile: mask is all background (already filled above)
+            // Negative tile: mask stays all background
             g.dispose()
         } else {
-            // Positive tile: fill in the positive annotations
             g.setColor(new Color(FOREGROUND, FOREGROUND, FOREGROUND))
-            
+
             nearbyPositive.each { PathAnnotationObject ann ->
                 def roi = ann.getROI()
                 double roiX = roi.getBoundsX()
@@ -282,34 +305,42 @@ for (int y = 0; y < height; y += TILE_SIZE) {
                 def tileShape = transform.createTransformedShape(shape)
                 g.fill(tileShape)
             }
-            
+
             g.dispose()
         }
 
         // =======================
-        // SAVE FILES
+        // COMPUTE COVERAGE & SAVE
         // =======================
-        String prefix = isNegativeTile ? "neg_tile" : "tile"
-        String baseName = String.format("${prefix}_x%d_y%d", x, y)
+        double coverage = isNegativeTile ? 0.0 : computeCoverage(mask)
+        String baseName = String.format("tile_x%d_y%d", x, y)
 
-        File imgFile = new File(imgDir, baseName + ".png")
-        ImageIO.write(tileImage, "PNG", imgFile)
-
+        File imgFile  = new File(imgDir,  baseName + ".png")
         File maskFile = new File(maskDir, baseName + "_mask.png")
-        ImageIO.write(mask, "PNG", maskFile)
+
+        ImageIO.write(tileImage, "PNG", imgFile)
+        ImageIO.write(mask,      "PNG", maskFile)
+
+        csvWriter.writeLine("${baseName},${x},${y},${coverage},${isNegativeTile}")
 
         if (isNegativeTile) {
             negativeTileCount++
         } else {
             positiveTileCount++
         }
-        
+
         int totalCount = positiveTileCount + negativeTileCount
         if (totalCount % 50 == 0) {
             println "📊 Progress: ${positiveTileCount} positive, ${negativeTileCount} negative tiles exported..."
         }
     }
 }
+
+// =======================
+// FINALISE
+// =======================
+csvWriter.flush()
+csvWriter.close()
 
 println ""
 println "=" * 50
@@ -318,5 +349,10 @@ println "   ${positiveTileCount} positive tiles (with foreground masks)"
 println "   ${negativeTileCount} negative tiles (all-background masks)"
 println "⏩ Skipped ${skippedOutOfBounds} tiles outside annotation bounds"
 println "⏩ Skipped ${skippedNoAnnotations} tiles with no annotations"
+println "📄 Coverage CSV: ${csvFile.getAbsolutePath()}"
 println "📁 Output: ${outDir.getAbsolutePath()}"
+println "=" * 50
+println ""
+println "➡️  Next step: run classify_tiles.py on the output directory"
+println "    to sort tiles into high / medium / low / negative folders"
 println "=" * 50
