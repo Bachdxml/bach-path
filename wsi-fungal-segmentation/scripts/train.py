@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 
 from src import (
     AugmentedWSI_Dataset,
-    FocalTverskyLoss,
+    AsymmetricSimilarityLoss,
     ResidualAttentionUNet,
     WSIDatasetIndex,
     compute_all_metrics,
@@ -27,33 +27,33 @@ from src import (
 # Train / eval loops
 # ---------------------------------------------------------------------------
 
-def train_one_epoch(model, loader, criterion, optimizer, device, epoch_num, clip_grad=1.0):
+def train_one_epoch(model, loader, criterion, optimizer, device,
+                    epoch_num, clip_grad=1.0):
     """
     Runs one full pass over the training DataLoader.
+    Expects loader to yield (imgs, masks, density_labels).
     Returns dict with avg loss, dice, iou for the epoch.
     """
     model.train()
 
-    running_loss  = 0.0
-    running_dice  = 0.0
-    running_iou   = 0.0
-    n_batches     = len(loader)
-    log_interval = max(1, n_batches // 10)  # compute once here
+    running_loss = 0.0
+    running_dice = 0.0
+    running_iou  = 0.0
+    n_batches    = len(loader)
+    log_interval = max(1, n_batches // 10)
 
-    for batch_idx, (imgs, masks) in enumerate(loader):
-        imgs  = imgs.to(device, non_blocking=True)
-        masks = masks.to(device, non_blocking=True)
+    for batch_idx, (imgs, masks, density_labels) in enumerate(loader):
+        imgs           = imgs.to(device, non_blocking=True)
+        masks          = masks.to(device, non_blocking=True)
+        density_labels = density_labels.to(device, non_blocking=True)
 
         optimizer.zero_grad()
 
-        logits = model(imgs)                        # [B, 1, H, W]
-        loss   = criterion(logits, masks)
+        logits = model(imgs, density_labels)
+        loss   = criterion(logits, masks, density_labels)  # density-aware loss
 
         loss.backward()
-
-        # Gradient clipping — prevents exploding gradients in large models
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_grad)
-
         optimizer.step()
 
         with torch.no_grad():
@@ -64,22 +64,22 @@ def train_one_epoch(model, loader, criterion, optimizer, device, epoch_num, clip
         running_dice += m['dice']
         running_iou  += m['iou']
 
-        log_interval = max(1, n_batches // 10)
         if batch_idx % log_interval == 0:
-            print(
-                f"  [Epoch {epoch_num} | Batch {batch_idx+1}/{n_batches}] "
-                f"loss={loss.item():.4f}  dice={m['dice']:.4f}  iou={m['iou']:.4f}")
+            print(f"  [Epoch {epoch_num} | Batch {batch_idx+1}/{n_batches}] "
+                  f"loss={loss.item():.4f}  dice={m['dice']:.4f}  "
+                  f"iou={m['iou']:.4f}")
 
     return {
         "loss": running_loss / n_batches,
         "dice": running_dice / n_batches,
         "iou":  running_iou  / n_batches,
     }
+
 def evaluate(model, loader, criterion, device):
     """
     Runs full validation pass.
-    Returns dict with avg loss, dice, iou, precision, recall.
-    If loader is None (no val data), returns None.
+    Expects loader to yield (imgs, masks, density_labels).
+    Returns dict with avg loss, dice, iou, precision, recall — or None.
     """
     if loader is None:
         return None
@@ -94,15 +94,17 @@ def evaluate(model, loader, criterion, device):
     n_batches         = len(loader)
 
     with torch.no_grad():
-        for imgs, masks in loader:
-            imgs  = imgs.to(device,  non_blocking=True)
-            masks = masks.to(device, non_blocking=True)
+        for imgs, masks, density_labels in loader:
+            imgs           = imgs.to(device,  non_blocking=True)
+            masks          = masks.to(device, non_blocking=True)
+            density_labels = density_labels.to(device, non_blocking=True)
 
-            logits = model(imgs)
-            loss   = criterion(logits, masks)
+            logits = model(imgs, density_labels)
+            loss   = criterion(logits, masks, density_labels)
             probs  = torch.sigmoid(logits)
 
             m = compute_all_metrics(probs, masks)
+            running_loss      += loss.item()
             running_dice      += m['dice']
             running_iou       += m['iou']
             running_precision += m['precision']
@@ -115,6 +117,7 @@ def evaluate(model, loader, criterion, device):
         "precision": running_precision / n_batches,
         "recall":    running_recall    / n_batches,
     }
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -163,7 +166,7 @@ def main(cfg_path: str = "configs/default.yaml"):
     print(f"Device: {device}")
 
     model     = ResidualAttentionUNet(**cfg["model"]).to(device)
-    criterion = FocalTverskyLoss(**cfg["loss"])
+    criterion = AsymmetricSimilarityLoss(**cfg["loss"])
     optimizer = optim.AdamW(model.parameters(), **cfg["optimizer"])
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="min", **cfg["scheduler"]
