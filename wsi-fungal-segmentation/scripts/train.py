@@ -1,123 +1,259 @@
-# TEMPORARY FIX: Use all data for training (only 2 samples available)
-print("⚠️ WARNING: Using all data for training (no validation split)")
-print(f"   Total tiles available: {len(index.tile_pairs)}")
+"""
+Training entry point.
 
-# Define image size
-IMG_SIZE = 512  
+Usage:
+    python train.py                          # uses configs/default.yaml
+    python train.py --config configs/my.yaml
+"""
 
-# Use ALL data for training
-train_pairs = index.tile_pairs
-train_dataset = WSI_Dataset(train_pairs, img_size=IMG_SIZE)
+import argparse
+from pathlib import Path
 
-print(f"\nTrain dataset: {len(train_dataset)} tiles")
+import torch
+import torch.optim as optim
+import yaml
+from torch.utils.data import DataLoader
 
-# Create only train loader
-BATCH_SIZE = 2  # Set to match your data size (you have 2 tiles)
-NUM_WORKERS = 6 #6-8 best for RTX 5090
-
-train_loader = DataLoader(
-    train_dataset,
-    batch_size=BATCH_SIZE,
-    shuffle=True,
-    num_workers=NUM_WORKERS,
-    pin_memory=torch.cuda.is_available(),
-    persistent_workers=True
+from src import (
+    AugmentedWSI_Dataset,
+    AsymmetricSimilarityLoss,
+    ResidualAttentionUNet,
+    WSIDatasetIndex,
+    compute_all_metrics,
 )
 
-# No validation loader for now
-val_loader = None
 
-# Quick check
-train_imgs, train_masks = next(iter(train_loader))
-print(f"\nBatch shapes:")
-print(f"  Images: {train_imgs.shape}")
-print(f"  Masks: {train_masks.shape}")
+# ---------------------------------------------------------------------------
+# Train / eval loops
+# ---------------------------------------------------------------------------
 
-#---------------------------------------#
-
-# Visualize first 2 samples from training set
-for i in range(min(2, train_imgs.size(0))):
-    # Denormalize image for visualization
-    img_np = train_imgs[i].permute(1,2,0).numpy()
-    img_np = img_np * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])
-    img_np = np.clip(img_np, 0, 1)
-    
-    mask_np = train_masks[i,0].numpy()
-    
-    plt.figure(figsize=(10, 5))
-    
-    plt.subplot(1, 2, 1)
-    plt.imshow(img_np)
-    plt.title("Image")
-    plt.axis('off')
-    
-    plt.subplot(1, 2, 2)
-    plt.imshow(mask_np, cmap='gray')
-    plt.title("Ground Truth Mask")
-    plt.axis('off')
-    
-    plt.tight_layout()
-    plt.show()
-
-#---------------------------------------#
-
-# Device
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
-
-# Model
-model = ResidualAttentionUNet(in_ch=3, out_ch=1).to(device)
-
-# Loss and optimizer
-criterion = TverskyLoss(alpha=0.3, beta=0.7)
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-
-# Count parameters
-total_params = sum(p.numel() for p in model.parameters())
-trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-print(f"\nModel parameters:")
-print(f"  Total: {total_params:,}")
-print(f"  Trainable: {trainable_params:,}")
-
-#---------------------------------------#
-
-EPOCHS = 100
-
-print("="*60)
-print("Starting Training...")
-print("="*60)
-
-for epoch in range(EPOCHS):
-    # ===== TRAINING =====
+def train_one_epoch(model, loader, criterion, optimizer, device,
+                    epoch_num, clip_grad=1.0):
+    """
+    Runs one full pass over the training DataLoader.
+    Expects loader to yield (imgs, masks, density_labels).
+    Returns dict with avg loss, dice, iou for the epoch.
+    """
     model.train()
-    train_loss = 0.0
-    
-    for batch_idx, (imgs, masks) in enumerate(train_loader):
-        imgs = imgs.to(device)
-        masks = masks.to(device)
-        
-        # Forward pass
+
+    running_loss = 0.0
+    running_dice = 0.0
+    running_iou  = 0.0
+    n_batches    = len(loader)
+    log_interval = max(1, n_batches // 10)
+
+    for batch_idx, (imgs, masks, density_labels) in enumerate(loader):
+        imgs           = imgs.to(device, non_blocking=True)
+        masks          = masks.to(device, non_blocking=True)
+        density_labels = density_labels.to(device, non_blocking=True)
+
         optimizer.zero_grad()
-        outputs = model(imgs)
-        loss = criterion(outputs, masks)
-        
-        # Backward pass
+
+        logits = model(imgs, density_labels)
+        loss   = criterion(logits, masks, density_labels)  # density-aware loss
+
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_grad)
         optimizer.step()
-        
-        train_loss += loss.item() * imgs.size(0)
-        
-        # Print progress
-        print(f"Epoch [{epoch+1}/{EPOCHS}] Batch [{batch_idx+1}/{len(train_loader)}] Loss: {loss.item():.4f}")
-    
-    train_loss /= len(train_dataset)
-    
-    # Print epoch summary (no validation)
-    print(f"\n{'='*60}")
-    print(f"Epoch {epoch+1}/{EPOCHS} Summary")
-    print(f"  Train Loss: {train_loss:.4f}")
-    print(f"{'='*60}\n")
 
-print("Training complete!")
+        with torch.no_grad():
+            probs = torch.sigmoid(logits)
+            m = compute_all_metrics(probs, masks)
 
-#---------------------------------------#
+        running_loss += loss.item()
+        running_dice += m['dice']
+        running_iou  += m['iou']
+
+        if batch_idx % log_interval == 0:
+            print(f"  [Epoch {epoch_num} | Batch {batch_idx+1}/{n_batches}] "
+                  f"loss={loss.item():.4f}  dice={m['dice']:.4f}  "
+                  f"iou={m['iou']:.4f}")
+
+    return {
+        "loss": running_loss / n_batches,
+        "dice": running_dice / n_batches,
+        "iou":  running_iou  / n_batches,
+    }
+
+def evaluate(model, loader, criterion, device):
+    """
+    Runs full validation pass.
+    Expects loader to yield (imgs, masks, density_labels).
+    Returns dict with avg loss, dice, iou, precision, recall — or None.
+    """
+    if loader is None:
+        return None
+
+    model.eval()
+
+    running_loss      = 0.0
+    running_dice      = 0.0
+    running_iou       = 0.0
+    running_precision = 0.0
+    running_recall    = 0.0
+    n_batches         = len(loader)
+
+    with torch.no_grad():
+        for imgs, masks, density_labels in loader:
+            imgs           = imgs.to(device,  non_blocking=True)
+            masks          = masks.to(device, non_blocking=True)
+            density_labels = density_labels.to(device, non_blocking=True)
+
+            logits = model(imgs, density_labels)
+            loss   = criterion(logits, masks, density_labels)
+            probs  = torch.sigmoid(logits)
+
+            m = compute_all_metrics(probs, masks)
+            running_loss      += loss.item()
+            running_dice      += m['dice']
+            running_iou       += m['iou']
+            running_precision += m['precision']
+            running_recall    += m['recall']
+
+    return {
+        "loss":      running_loss      / n_batches,
+        "dice":      running_dice      / n_batches,
+        "iou":       running_iou       / n_batches,
+        "precision": running_precision / n_batches,
+        "recall":    running_recall    / n_batches,
+    }
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+def main(cfg_path: str = "configs/default.yaml"):
+    with open(cfg_path) as f:
+        cfg = yaml.safe_load(f)
+
+    # ---- Data ----
+    index = WSIDatasetIndex(
+        cfg["data"]["export_root"],
+        strict_mode=True,
+        allow_size_mismatch=False,
+    )
+    index.build_index()
+    index.save_index(Path("dataset_index.json"))
+
+    train_pairs, val_pairs = index.get_train_val_split(
+        val_ratio=cfg["data"]["val_ratio"],
+        random_seed=cfg["data"]["random_seed"],
+    )
+
+    # Sanity check — no WSI leakage
+    train_wsis = {p.wsi_id for p in train_pairs}
+    val_wsis   = {p.wsi_id for p in val_pairs}
+    assert not (train_wsis & val_wsis), "WSI leakage detected!"
+    print("✅ No WSI leakage")
+
+    # ---- Loaders ----
+    img_size   = cfg["data"]["img_size"]
+    batch_size = cfg["loader"]["batch_size"]
+    n_workers  = cfg["loader"]["num_workers"]
+    pin        = torch.cuda.is_available()
+
+    train_ds = AugmentedWSI_Dataset(train_pairs, img_size=img_size, augment=True)
+    val_ds   = AugmentedWSI_Dataset(val_pairs,   img_size=img_size, augment=False) \
+               if val_pairs else None
+
+    train_loader = DataLoader(train_ds, batch_size=batch_size, sampler=train_sampler,
+                              num_workers=n_workers, pin_memory=pin)
+    val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False,
+                              num_workers=n_workers, pin_memory=pin) \
+                   if val_ds else None
+
+    print(f"Train: {len(train_ds)} tiles  |  Val: {len(val_ds) if val_ds else 0} tiles")# ---- Model / loss / optimizer ----
+    device    = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Device: {device}")
+
+    model     = ResidualAttentionUNet(**cfg["model"]).to(device)
+    criterion = AsymmetricSimilarityLoss(**cfg["loss"])
+    optimizer = optim.AdamW(model.parameters(), **cfg["optimizer"])
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", **cfg["scheduler"]
+    )
+
+    print(f"Model params: {sum(p.numel() for p in model.parameters()):,}")
+
+    # ---- Training loop ----
+    t_cfg           = cfg["training"]
+    checkpoint_path = t_cfg["checkpoint_path"]
+    Path(checkpoint_path).parent.mkdir(parents=True, exist_ok=True)
+
+    history = {
+        "train_loss": [], "train_dice": [], "train_iou": [],
+        "val_loss":   [], "val_dice":   [], "val_iou":   [],
+        "lr":         [],
+    }
+    best_val_dice    = -1.0
+    no_improve_count = 0
+
+    print("\n" + "=" * 60)
+    print("Starting Training")
+    print("=" * 60)
+
+    for epoch in range(1, t_cfg["epochs"] + 1):
+        current_lr = optimizer.param_groups[0]["lr"]
+        print(f"\n{'='*60}")
+        print(f"Epoch {epoch}/{t_cfg['epochs']}   |   LR = {current_lr:.2e}")
+        print("=" * 60)
+
+        train_m = train_one_epoch(
+            model, train_loader, criterion, optimizer, device,
+            epoch_num=epoch, clip_grad=t_cfg["clip_grad"]
+        )
+        val_m = evaluate(model, val_loader, criterion, device)
+
+        sched_metric = -(val_m["dice"] if val_m else train_m["dice"])
+        scheduler.step(sched_metric)
+
+        history["lr"].append(current_lr)
+        history["train_loss"].append(train_m["loss"])
+        history["train_dice"].append(train_m["dice"])
+        history["train_iou"].append(train_m["iou"])
+        if val_m:
+            history["val_loss"].append(val_m["loss"])
+            history["val_dice"].append(val_m["dice"])
+            history["val_iou"].append(val_m["iou"])
+
+        print(f"\nEpoch {epoch} Summary:")
+        print(f"  Train → loss={train_m['loss']:.4f}  dice={train_m['dice']:.4f}  iou={train_m['iou']:.4f}")
+        if val_m:
+            print(f"  Val   → loss={val_m['loss']:.4f}  dice={val_m['dice']:.4f}  iou={val_m['iou']:.4f}")
+            print(f"           precision={val_m['precision']:.4f}  recall={val_m['recall']:.4f}")
+
+        monitor_dice = val_m["dice"] if val_m else train_m["dice"]
+        if monitor_dice > best_val_dice:
+            best_val_dice    = monitor_dice
+            no_improve_count = 0
+            torch.save({
+                "epoch":                epoch,
+                "model_state_dict":     model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
+                "best_dice":            best_val_dice,
+                "history":              history,
+                "img_size":             img_size,
+                "batch_size":           batch_size,
+            }, checkpoint_path)
+            print(f"  ✅  New best dice={best_val_dice:.4f} — checkpoint saved.")
+        else:
+            no_improve_count += 1
+            print(f"  ⏳  No improvement ({no_improve_count}/{t_cfg['early_stop_patience']}). Best={best_val_dice:.4f}")
+
+        if no_improve_count >= t_cfg["early_stop_patience"]:
+            print(f"\n🛑 Early stopping at epoch {epoch}.")
+            break
+
+    print("\n" + "=" * 60)
+    print(f"Training complete. Best dice: {best_val_dice:.4f}")
+    print(f"Checkpoint: {checkpoint_path}")
+    print("=" * 60)
+
+    return history
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="configs/default.yaml")
+    args = parser.parse_args()
+    main(args.config)

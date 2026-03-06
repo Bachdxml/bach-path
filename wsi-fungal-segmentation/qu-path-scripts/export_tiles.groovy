@@ -1,56 +1,8 @@
-# WSI Fungal Segmentation — Residual Attention UNet
-
-Binary segmentation of fungal elements in whole slide images (WSI) using a Residual Attention UNet. Optimized for PAS/AB stained histopathology with sparse foreground detection. Built around QuPath-exported tile datasets with strict data integrity validation and WSI-level train/val splitting.
-
-![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
-![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg)
-![Architecture](https://img.shields.io/badge/architecture-ResAttUNet-orange.svg)
-
----
-
-## Table of Contents
-
-- [Quick Start](#quick-start)
-- [QuPath Export](#qupath-export)
-- [Data Format](#data-format)
-- [Configuration](#configuration)
-- [Architecture](#architecture)
-- [Troubleshooting](#troubleshooting)
-- [Roadmap](#roadmap)
-
----
-
-## Quick Start
-
-```bash
-pip install -r requirements.txt
-```
-
-Edit the data path in `configs/default.yaml`:
-```yaml
-data:
-  export_root: "/path/to/exports_ml"
-```
-
-```bash
-python train.py
-python evaluate.py --checkpoint checkpoints/best_model.pth --visualize
-```
-
-To run a different config without editing files:
-```bash
-python train.py --config configs/my_experiment.yaml
-```
-
----
-
-## QuPath Export
-
-Export tiles and masks from QuPath using the Groovy script below. Place it in your QuPath scripts folder and run via **Scripts > export_tiles.groovy**.
-
-```groovy
 // ==============================================
-// QuPath 0.6.x – Tile & Mask Export with NEGATIVES
+// QuPath 0.6.x – Tile & Mask Export with Coverage CSV
+// Exports tiles to unclassified/ folder with per-tile
+// foreground coverage logged to tile_coverage.csv
+// Run classify_tiles.py afterwards to sort into density folders
 // ==============================================
 
 import qupath.lib.images.servers.ImageServer
@@ -79,6 +31,22 @@ int FOREGROUND = 255
 String NEGATIVE_CLASS_NAME = "Negative"
 
 // =======================
+// COVERAGE FUNCTION
+// =======================
+double computeCoverage(BufferedImage mask) {
+    def raster = mask.getRaster()
+    int w = mask.getWidth()
+    int h = mask.getHeight()
+    int fg = 0
+    for (int py = 0; py < h; py++) {
+        for (int px = 0; px < w; px++) {
+            if (raster.getSample(px, py, 0) > 127) fg++
+        }
+    }
+    return fg / (double)(w * h)
+}
+
+// =======================
 // SETUP
 // =======================
 def imageData = getCurrentImageData()
@@ -86,7 +54,7 @@ def server = imageData.getServer()
 def annotations = getAnnotationObjects()
 
 if (annotations.isEmpty()) {
-    print "❌ No annotations found!"
+    println "❌ No annotations found!"
     return
 }
 
@@ -118,8 +86,6 @@ def imageName = new File(fullPath).getName()
 // Create output directories
 def projectDir = getProject().getBaseDirectory()
 def outDir = new File(projectDir, OUTPUT_DIR + "/" + imageName)
-def imgDir = new File(outDir, "images")
-def maskDir = new File(outDir, "masks")
 
 if (outDir.exists()) {
     println "❌ Export directory already exists for image:"
@@ -128,12 +94,19 @@ if (outDir.exists()) {
     return
 }
 
+def imgDir  = new File(outDir, "unclassified/images")
+def maskDir = new File(outDir, "unclassified/masks")
 imgDir.mkdirs()
 maskDir.mkdirs()
 println "✅ Export directory created: " + outDir.getAbsolutePath()
 
+// CSV writer
+def csvFile = new File(outDir, "tile_coverage.csv")
+def csvWriter = csvFile.newWriter()
+csvWriter.writeLine("filename,x,y,coverage,is_negative")
+
 // =======================
-// SPATIAL INDEXING (BOTH POSITIVE AND NEGATIVE)
+// SPATIAL INDEXING
 // =======================
 println "🔍 Building spatial index..."
 
@@ -150,22 +123,22 @@ positiveAnnotations.each { ann ->
     double roiY = roi.getBoundsY()
     double roiW = roi.getBoundsWidth()
     double roiH = roi.getBoundsHeight()
-    
+
     if (overallBounds == null) {
-        overallBounds = [minX: roiX, minY: roiY, 
-                        maxX: roiX + roiW, maxY: roiY + roiH]
+        overallBounds = [minX: roiX, minY: roiY,
+                         maxX: roiX + roiW, maxY: roiY + roiH]
     } else {
         overallBounds.minX = Math.min(overallBounds.minX, roiX)
         overallBounds.minY = Math.min(overallBounds.minY, roiY)
         overallBounds.maxX = Math.max(overallBounds.maxX, roiX + roiW)
         overallBounds.maxY = Math.max(overallBounds.maxY, roiY + roiH)
     }
-    
+
     int minGridX = (int)(roiX / GRID_SIZE)
     int maxGridX = (int)((roiX + roiW) / GRID_SIZE)
     int minGridY = (int)(roiY / GRID_SIZE)
     int maxGridY = (int)((roiY + roiH) / GRID_SIZE)
-    
+
     for (int gy = minGridY; gy <= maxGridY; gy++) {
         for (int gx = minGridX; gx <= maxGridX; gx++) {
             positiveSpatialIndex["${gx}_${gy}"] << ann
@@ -180,22 +153,22 @@ negativeAnnotations.each { ann ->
     double roiY = roi.getBoundsY()
     double roiW = roi.getBoundsWidth()
     double roiH = roi.getBoundsHeight()
-    
+
     if (overallBounds == null) {
-        overallBounds = [minX: roiX, minY: roiY, 
-                        maxX: roiX + roiW, maxY: roiY + roiH]
+        overallBounds = [minX: roiX, minY: roiY,
+                         maxX: roiX + roiW, maxY: roiY + roiH]
     } else {
         overallBounds.minX = Math.min(overallBounds.minX, roiX)
         overallBounds.minY = Math.min(overallBounds.minY, roiY)
         overallBounds.maxX = Math.max(overallBounds.maxX, roiX + roiW)
         overallBounds.maxY = Math.max(overallBounds.maxY, roiY + roiH)
     }
-    
+
     int minGridX = (int)(roiX / GRID_SIZE)
     int maxGridX = (int)((roiX + roiW) / GRID_SIZE)
     int minGridY = (int)(roiY / GRID_SIZE)
     int maxGridY = (int)((roiY + roiH) / GRID_SIZE)
-    
+
     for (int gy = minGridY; gy <= maxGridY; gy++) {
         for (int gx = minGridX; gx <= maxGridX; gx++) {
             negativeSpatialIndex["${gx}_${gy}"] << ann
@@ -208,15 +181,15 @@ println "✅ Spatial index built. Processing tiles..."
 // =======================
 // IMAGE BOUNDS
 // =======================
-def width = server.getWidth()
+def width  = server.getWidth()
 def height = server.getHeight()
 
 // =======================
 // TILE LOOP
 // =======================
-int positiveTileCount = 0
-int negativeTileCount = 0
-int skippedOutOfBounds = 0
+int positiveTileCount   = 0
+int negativeTileCount   = 0
+int skippedOutOfBounds  = 0
 int skippedNoAnnotations = 0
 
 for (int y = 0; y < height; y += TILE_SIZE) {
@@ -229,10 +202,10 @@ for (int y = 0; y < height; y += TILE_SIZE) {
             continue
         }
 
-        int w = Math.min(TILE_SIZE, width - x)
+        int w = Math.min(TILE_SIZE, width  - x)
         int h = Math.min(TILE_SIZE, height - y)
 
-        // Get nearby annotations
+        // Get nearby annotations via spatial index
         int gridX = (int)(x / GRID_SIZE)
         int gridY = (int)(y / GRID_SIZE)
         def nearbyPositive = positiveSpatialIndex["${gridX}_${gridY}"] ?: []
@@ -243,10 +216,10 @@ for (int y = 0; y < height; y += TILE_SIZE) {
             continue
         }
 
-        // Check for actual intersections
+        // Check for actual bounding box intersections
         boolean hasPositiveIntersection = false
         boolean hasNegativeIntersection = false
-        
+
         for (PathAnnotationObject ann : nearbyPositive) {
             def roi = ann.getROI()
             double roiX = roi.getBoundsX()
@@ -260,7 +233,7 @@ for (int y = 0; y < height; y += TILE_SIZE) {
                 break
             }
         }
-        
+
         if (!hasPositiveIntersection) {
             for (PathAnnotationObject ann : nearbyNegative) {
                 def roi = ann.getROI()
@@ -309,12 +282,11 @@ for (int y = 0; y < height; y += TILE_SIZE) {
         g.fillRect(0, 0, w, h)
 
         if (isNegativeTile) {
-            // Negative tile: mask is all background (already filled above)
+            // Negative tile: mask stays all background
             g.dispose()
         } else {
-            // Positive tile: fill in the positive annotations
             g.setColor(new Color(FOREGROUND, FOREGROUND, FOREGROUND))
-            
+
             nearbyPositive.each { PathAnnotationObject ann ->
                 def roi = ann.getROI()
                 double roiX = roi.getBoundsX()
@@ -333,34 +305,42 @@ for (int y = 0; y < height; y += TILE_SIZE) {
                 def tileShape = transform.createTransformedShape(shape)
                 g.fill(tileShape)
             }
-            
+
             g.dispose()
         }
 
         // =======================
-        // SAVE FILES
+        // COMPUTE COVERAGE & SAVE
         // =======================
-        String prefix = isNegativeTile ? "neg_tile" : "tile"
-        String baseName = String.format("${prefix}_x%d_y%d", x, y)
+        double coverage = isNegativeTile ? 0.0 : computeCoverage(mask)
+        String baseName = String.format("tile_x%d_y%d", x, y)
 
-        File imgFile = new File(imgDir, baseName + ".png")
-        ImageIO.write(tileImage, "PNG", imgFile)
-
+        File imgFile  = new File(imgDir,  baseName + ".png")
         File maskFile = new File(maskDir, baseName + "_mask.png")
-        ImageIO.write(mask, "PNG", maskFile)
+
+        ImageIO.write(tileImage, "PNG", imgFile)
+        ImageIO.write(mask,      "PNG", maskFile)
+
+        csvWriter.writeLine("${baseName},${x},${y},${coverage},${isNegativeTile}")
 
         if (isNegativeTile) {
             negativeTileCount++
         } else {
             positiveTileCount++
         }
-        
+
         int totalCount = positiveTileCount + negativeTileCount
         if (totalCount % 50 == 0) {
             println "📊 Progress: ${positiveTileCount} positive, ${negativeTileCount} negative tiles exported..."
         }
     }
 }
+
+// =======================
+// FINALISE
+// =======================
+csvWriter.flush()
+csvWriter.close()
 
 println ""
 println "=" * 50
@@ -369,180 +349,10 @@ println "   ${positiveTileCount} positive tiles (with foreground masks)"
 println "   ${negativeTileCount} negative tiles (all-background masks)"
 println "⏩ Skipped ${skippedOutOfBounds} tiles outside annotation bounds"
 println "⏩ Skipped ${skippedNoAnnotations} tiles with no annotations"
+println "📄 Coverage CSV: ${csvFile.getAbsolutePath()}"
 println "📁 Output: ${outDir.getAbsolutePath()}"
 println "=" * 50
-```
-
----
-
-## Data Format
-
-### Directory Layout
-
-```
-exports_ml/
-    <wsi_id>/
-        images/   tile_x0_y0.png
-                  tile_x512_y0.png
-                  ...
-        masks/    tile_x0_y0_mask.png
-                  tile_x512_y0_mask.png
-                  ...
-```
-
-### Naming Contract
-
-Pairing is done by filename stem — the mask name must be exactly `<tile_id>_mask.png`:
-
-```
-tile_x512_y512.png  →  tile_x512_y512_mask.png
-```
-
-The indexer will fail on any missing mask, duplicate tile, or naming mismatch.
-
-### Mask Requirements
-
-- Mode: grayscale (`L`)
-- Values: `0` and `255` only (binarized to 0/1 at load time)
-- Size: must match the corresponding image — size mismatches usually indicate a QuPath export error and should be fixed upstream rather than silenced with `allow_size_mismatch`
-
-### Train/Val Split
-
-Split is **by WSI**, not by tile. No WSI appears in both sets. With `val_ratio=0.2` and `random_seed=42` the split is deterministic. A `dataset_index.json` is written each run for reproducibility.
-
-### Data Integrity Checks
-
-The indexer validates every pair before training starts:
-
-| Issue | Detection | Behavior |
-|-------|-----------|----------|
-| Missing mask | Filename lookup fails | Error (strict) / warning (non-strict) |
-| Duplicate tiles | Stem collision check | Always errors |
-| Image not RGB | Mode check | Always errors |
-| Mask not grayscale | Mode check | Always errors |
-| Wrong mask values | Unique value check | Error (strict) / warning (non-strict) |
-| Size mismatch | Dimension check | Error by default |
-| Case sensitivity | Case-insensitive fallback | Auto-resolved |
-
-### Minimum Data Requirements
-
-- 2+ WSIs for a train/val split
-- 50–100+ tiles per WSI to avoid severe overfitting
-- Multiple fungal morphologies represented (hyphae, yeast, pseudohyphae) for generalization
-
----
-
-## Configuration
-
-All hyperparameters live in `configs/default.yaml`. Copy it to run experiments without touching code:
-
-```yaml
-data:
-  export_root: "/path/to/exports_ml"
-  img_size: 512        # must be divisible by 16
-  val_ratio: 0.2
-  random_seed: 42
-
-loss:
-  alpha: 0.7           # FN penalty — higher = better recall (good for sparse detection)
-  beta: 0.3            # FP penalty
-  gamma: 0.75          # focal exponent
-
-training:
-  epochs: 50
-  early_stop_patience: 15
-  checkpoint_path: "checkpoints/best_model.pth"
-```
-
----
-
-## Architecture
-
-Residual Attention UNet — vanilla UNet with two additions:
-
-**Residual blocks** replace plain double-conv blocks. The skip connection allows better gradient flow and lets the network learn complex fungal morphology (hyphae topology, yeast wall texture) without degradation.
-
-**Attention gates** are applied to each skip connection before concatenation. They learn to suppress irrelevant background tissue and focus on fungal regions — critical when fungi occupy less than 1% of the tile.
-
-```
-Input (3, 512, 512)
-    ↓ enc1–enc4 (residual blocks + maxpool)
-Bottleneck (1024 ch)
-    ↓ upconv + attention-gated skip + residual decode (×4)
-Output (1, 512, 512)
-```
-
-~34M parameters vs ~31M for vanilla UNet.
-
-**Loss — Focal Tversky** (`alpha=0.7, beta=0.3`): penalizes false negatives more than false positives. Appropriate for sparse fungal detection where missing a positive region matters more than a false alarm.
-
----
-
-## Troubleshooting
-
-**Size mismatch error**
-```
-ValueError: Size mismatch: image=(512,512) mask=(256,256)
-```
-The most common cause is `DOWNSAMPLE != 1.0` in the QuPath script. Fix the export. If you need to proceed temporarily: set `allow_size_mismatch: true` in `configs/default.yaml`.
-
----
-
-**Only 1 WSI found, can't split**
-```
-Need at least 2 WSIs for train/val split
-```
-Export more slides. For quick testing only, set `val_ratio: 0.0` to skip validation entirely.
-
----
-
-**Model predicts all zeros**
-```python
-# Diagnose first
-print(preds_sigmoid.min(), preds_sigmoid.max(), preds_sigmoid.mean())
-```
-If max is near 0, the model hasn't learned yet. Try more epochs, a lower threshold (`> 0.3` instead of `> 0.5`), or verify your masks actually contain positive pixels.
-
----
-
-**CUDA out of memory**
-
-Reduce `batch_size` to 2 or 1, or reduce `img_size` to 256.
-
----
-
-**Training restarts from scratch on re-run**
-
-The model reinitializes on every run unless you load a checkpoint first. `evaluate.py` handles this automatically. To resume training manually:
-```python
-ckpt = torch.load("checkpoints/best_model.pth")
-model.load_state_dict(ckpt["model_state_dict"])
-optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-```
-
----
-
-**Unpaired images**
-```
-Warning: 12 images without masks
-```
-Check QuPath export. Every image needs an exact `_mask.png` counterpart. The indexer prints which files are missing pairs.
-
----
-
-## Roadmap
-
-- [ ] Multi-class segmentation for fungal morphology (yeast / narrow hyphae / broad hyphae)
-- [ ] Transfer learning from binary → multi-class using PCR labels
-- [ ] Attention map visualization
-- [ ] Whole-slide inference pipeline (tile → stitch predictions)
-- [ ] Multi-stain support (H&E, GMS)
-- [ ] Cross-validation
-
----
-
-## References
-
-- UNet: [Ronneberger et al., 2015](https://arxiv.org/abs/1505.04597)
-- Attention UNet: [Oktay et al., 2018](https://arxiv.org/abs/1804.03999)
-- Residual blocks: [He et al., 2016](https://arxiv.org/abs/1512.03385)
+println ""
+println "➡️  Next step: run classify_tiles.py on the output directory"
+println "    to sort tiles into high / medium / low / negative folders"
+println "=" * 50
