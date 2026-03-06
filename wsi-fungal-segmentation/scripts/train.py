@@ -155,7 +155,7 @@ def main(cfg_path: str = "configs/default.yaml"):
     val_ds   = AugmentedWSI_Dataset(val_pairs,   img_size=img_size, augment=False) \
                if val_pairs else None
 
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
+    train_loader = DataLoader(train_ds, batch_size=batch_size, sampler=train_sampler,
                               num_workers=n_workers, pin_memory=pin)
     val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False,
                               num_workers=n_workers, pin_memory=pin) \
