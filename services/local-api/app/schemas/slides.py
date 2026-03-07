@@ -9,6 +9,14 @@ class SlideImportResponse(BaseModel):
     slide_id: int
     stored_path: str
 
+class SlideListItem(BaseModel):
+    id: int
+    original_path: str | None
+    created_at: str
+
+class SlideListResponse(BaseModel):
+    slides: list[SlideListItem]
+
 class SlideMetadataResponse(BaseModel):
     slide_id: int
     vendor: str | None = None

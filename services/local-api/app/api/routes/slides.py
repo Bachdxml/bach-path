@@ -5,7 +5,7 @@ from pathlib import Path
 import os
 
 from app.api.deps import get_db
-from app.schemas.slides import SlideImportRequest, SlideImportResponse, SlideMetadataResponse
+from app.schemas.slides import SlideImportRequest, SlideImportResponse, SlideListResponse, SlideListItem, SlideMetadataResponse
 from app.models.slide import Slide
 from app.slides.storage import copy_into_managed_storage
 from app.slides.metadata import read_openslide_metadata
@@ -19,6 +19,24 @@ from PIL import Image
 from app.util.exceptions import AppError, ErrorCode
 
 router = APIRouter(prefix="/slides", tags=["slides"])
+
+WSI_EXTENSIONS = {".svs", ".tif", ".tiff"}
+
+# List all slides in db for gallery
+@router.get("", response_model=SlideListResponse)
+def list_slides(db: Session = Depends(get_db)):
+    slides = db.query(Slide).order_by(Slide.created_at.desc()).all()
+    return SlideListResponse(
+        slides=[
+            SlideListItem(
+                id=s.id,
+                original_path=s.original_path,
+                created_at=s.created_at.isoformat() if s.created_at else "",
+            )
+            for s in slides
+        ]
+    )
+
 
 @router.post("/import", response_model=SlideImportResponse)
 def import_slide(payload: SlideImportRequest, request: Request, db: Session = Depends(get_db)):
@@ -79,6 +97,51 @@ def slide_metadata(slide_id: int, db: Session = Depends(get_db)):
         raise AppError(ErrorCode.SLIDE_UNREADABLE, f"OpenSlide failed: {e}")
 
     return SlideMetadataResponse(slide_id=slide_id, **meta)
+
+# Small preview image for each slide in gallery
+@router.get("/{slide_id}/thumbnail")
+def slide_thumbnail(
+    slide_id: int,
+    size: int = 256,
+    db: Session = Depends(get_db),
+):
+    slide = db.get(Slide, slide_id)
+    if not slide:
+        raise AppError(ErrorCode.NOT_FOUND, f"Slide {slide_id} not found")
+
+    slide_path = Path(slide.stored_path)
+    if not slide_path.exists():
+        raise AppError(ErrorCode.STORAGE_INCONSISTENT, "Slide file missing from managed storage")
+
+    try:
+        osr = openslide.OpenSlide(str(slide_path))
+    except Exception as e:
+        raise AppError(ErrorCode.SLIDE_UNREADABLE, f"OpenSlide failed: {e}")
+
+    try:
+        # Use lowest-resolution level (highest level index)
+        level = osr.level_count - 1
+        level_w, level_h = osr.level_dimensions[level]
+        img = osr.read_region((0, 0), level, (level_w, level_h))
+        img = img.convert("RGB")
+
+        # Scale to fit within size (max dimension)
+        w, h = img.size
+        if w > size or h > size:
+            ratio = min(size / w, size / h)
+            new_w = max(1, int(w * ratio))
+            new_h = max(1, int(h * ratio))
+            img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        return Response(content=buf.getvalue(), media_type="image/jpeg")
+    finally:
+        try:
+            osr.close()
+        except Exception:
+            pass
+
 
 @router.get("/{slide_id}/tiles/{level}/{x}/{y}.jpg")
 def slide_tile(

@@ -1,0 +1,287 @@
+:root {
+  --bg: #121212;
+  --surface: #1e1e1e;
+  --surface-hover: #252525;
+  --border: #333;
+  --text: #e8e8e8;
+  --text-secondary: #9e9e9e;
+  --accent: #5b9bd5;
+  --accent-hover: #6ea8e0;
+  --error: #cf6679;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.tab-bar {
+  display: flex;
+  gap: 0;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 0 8px;
+}
+
+.tab-btn {
+  padding: 12px 20px;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.tab-btn:hover {
+  color: var(--text);
+}
+
+.tab-btn.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.settings-btn {
+  margin-left: auto;
+  font-size: 18px;
+}
+
+.tab-content {
+  flex: 1;
+  overflow: hidden;
+}
+
+.tab-pane {
+  display: none;
+  height: 100%;
+  overflow: auto;
+}
+
+.tab-pane.active {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Import tab */
+#tab-import {
+  padding: 24px;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+}
+
+.drop-zone {
+  border: 2px dashed var(--border);
+  border-radius: 8px;
+  padding: 48px 64px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.drop-zone:hover,
+.drop-zone.drag-over {
+  border-color: var(--accent);
+  background: var(--surface-hover);
+}
+
+.drop-zone-text {
+  font-size: 16px;
+  margin: 0 0 8px;
+}
+
+.drop-zone-hint {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.import-actions {
+  display: flex;
+  gap: 12px;
+}
+
+.btn {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: white;
+}
+
+.btn-primary:hover {
+  background: var(--accent-hover);
+}
+
+.import-status {
+  min-height: 24px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.import-status.error {
+  color: var(--error);
+}
+
+.import-progress {
+  font-size: 13px;
+  color: var(--text-secondary);
+  visibility: hidden;
+  min-height: 20px;
+}
+
+/* Gallery tab */
+#tab-gallery {
+  padding: 24px;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 16px;
+}
+
+.gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 16px;
+  width: 100%;
+}
+
+.gallery-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.gallery-card:hover {
+  border-color: var(--accent);
+  background: var(--surface-hover);
+}
+
+.gallery-card-thumb {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  background: var(--bg);
+}
+
+.gallery-card-info,
+.gallery-card-label {
+  padding: 12px;
+}
+
+.gallery-card-name,
+.gallery-card-label {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gallery-card-date,
+.gallery-card-meta {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+.gallery-empty,
+.viewer-empty {
+  display: none;
+  width: 100%;
+  text-align: center;
+  color: var(--text-secondary);
+  padding: 48px;
+}
+
+.gallery-empty.visible,
+.viewer-empty.visible {
+  display: block;
+}
+
+/* Viewer tab */
+#tab-viewer {
+  padding: 0;
+  flex-direction: column;
+}
+
+.viewer-container {
+  flex: 1;
+  min-height: 0;
+  display: none;
+}
+
+.viewer-container.visible {
+  display: block;
+}
+
+.viewer-empty.visible + .viewer-container {
+  display: none;
+}
+
+#viewer-container .openseadragon-container {
+  height: 100%;
+}
+
+/* Settings tab */
+#tab-settings {
+  padding: 24px;
+  align-items: flex-start;
+}
+
+.settings-form {
+  max-width: 400px;
+}
+
+.settings-form h2 {
+  font-size: 18px;
+  margin: 0 0 20px;
+}
+
+.form-group {
+  margin-bottom: 16px;
+}
+
+.form-group label {
+  display: block;
+  font-size: 13px;
+  margin-bottom: 6px;
+  color: var(--text-secondary);
+}
+
+.form-group input {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.settings-hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 16px;
+}
