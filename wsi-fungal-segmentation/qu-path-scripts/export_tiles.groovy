@@ -21,7 +21,11 @@ import java.io.File
 // =======================
 int TILE_SIZE = 512
 double DOWNSAMPLE = 1.0
-String OUTPUT_DIR = "exports_ml"
+
+// -------------------------------------------------------
+// MASTER OUTPUT DIRECTORY
+// -------------------------------------------------------
+String MASTER_OUTPUT_DIR = "PASTE_YOUR_MASTER_OUTPUT_PATH_HERE"
 
 // Mask values
 int BACKGROUND = 0
@@ -29,6 +33,29 @@ int FOREGROUND = 255
 
 // Classification name for negative examples
 String NEGATIVE_CLASS_NAME = "Negative"
+
+// =======================
+// VALIDATE MASTER DIR
+// =======================
+if (MASTER_OUTPUT_DIR == "PASTE_YOUR_MASTER_OUTPUT_PATH_HERE" || MASTER_OUTPUT_DIR.trim().isEmpty()) {
+    println "❌ ERROR: You must set MASTER_OUTPUT_DIR before running this script."
+    println "   Open the script and replace the placeholder with your actual output path."
+    return
+}
+
+def masterDir = new File(MASTER_OUTPUT_DIR)
+if (!masterDir.exists()) {
+    boolean created = masterDir.mkdirs()
+    if (!created) {
+        println "❌ ERROR: Could not create master output directory:"
+        println "   ${MASTER_OUTPUT_DIR}"
+        println "   Check that the path is valid and you have write permissions."
+        return
+    }
+    println "✅ Master output directory created: ${masterDir.getAbsolutePath()}"
+} else {
+    println "✅ Master output directory found: ${masterDir.getAbsolutePath()}"
+}
 
 // =======================
 // COVERAGE FUNCTION
@@ -83,14 +110,17 @@ if (positiveAnnotations.isEmpty() && negativeAnnotations.isEmpty()) {
 def fullPath = server.getPath()
 def imageName = new File(fullPath).getName()
 
-// Create output directories
-def projectDir = getProject().getBaseDirectory()
-def outDir = new File(projectDir, OUTPUT_DIR + "/" + imageName)
+// =======================
+// PER-WSI OUTPUT DIR
+// Created inside the master output directory
+// =======================
+def outDir = new File(masterDir, imageName)
 
 if (outDir.exists()) {
-    println "❌ Export directory already exists for image:"
-    println outDir.getAbsolutePath()
-    println "❌ Aborting to prevent overwriting."
+    println "⚠️  WARNING: Export directory already exists for image: ${imageName}"
+    println "   Path: ${outDir.getAbsolutePath()}"
+    println "   Skipping this WSI to avoid overwriting existing data."
+    println "   Delete or rename the existing folder if you want to re-export."
     return
 }
 
@@ -344,7 +374,7 @@ csvWriter.close()
 
 println ""
 println "=" * 50
-println "✅ Finished exporting tiles:"
+println "✅ Finished exporting tiles for: ${imageName}"
 println "   ${positiveTileCount} positive tiles (with foreground masks)"
 println "   ${negativeTileCount} negative tiles (all-background masks)"
 println "⏩ Skipped ${skippedOutOfBounds} tiles outside annotation bounds"
@@ -353,6 +383,6 @@ println "📄 Coverage CSV: ${csvFile.getAbsolutePath()}"
 println "📁 Output: ${outDir.getAbsolutePath()}"
 println "=" * 50
 println ""
-println "➡️  Next step: run classify_tiles.py on the output directory"
+println "➡️  Next step: run classify_tiles.py on the master output directory"
 println "    to sort tiles into high / medium / low / negative folders"
 println "=" * 50
