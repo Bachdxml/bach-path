@@ -41,6 +41,34 @@ function getTileUrl(slideId, level, x, y) {
   return `${apiBase}/slides/${slideId}/tiles/${level}/${x}/${y}.jpg`;
 }
 
+async function runInference(slideId) {
+  const res = await fetch(`${apiBase}/inference/slides/${slideId}/run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+async function getInferenceRun(runId) {
+  const res = await fetch(`${apiBase}/inference/runs/${runId}`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+async function getInferenceRegions(runId) {
+  const res = await fetch(`${apiBase}/inference/runs/${runId}/regions`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+async function getSlideInferenceRuns(slideId) {
+  const res = await fetch(`${apiBase}/inference/slides/${slideId}/runs`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 window.slidesApi = {
   setApiBase,
   getApiBase,
@@ -49,4 +77,8 @@ window.slidesApi = {
   getThumbnailUrl,
   getSlideMetadata,
   getTileUrl,
+  runInference,
+  getInferenceRun,
+  getInferenceRegions,
+  getSlideInferenceRuns,
 };
