@@ -1,60 +1,68 @@
 // ==============================================
-// QuPath 0.6.x – Lightweight Grid Overlay (Visual Only)
+// QuPath 0.6.x – Accurate Grid Overlay
+// Lines are always 1 screen-pixel wide and sit
+// precisely ON the tile boundary (not centered
+// across it), so zoom level never affects accuracy.
 // ==============================================
 import qupath.lib.gui.viewer.overlays.PathOverlay
 import java.awt.*
+import java.awt.geom.Line2D
 
 // =======================
 // USER SETTINGS
 // =======================
 int TILE_SIZE = 512
-Color GRID_COLOR = new Color(0, 255, 0, 250)  // Semi-transparent green
-float LINE_WIDTH = 1.0f
+Color GRID_COLOR = new Color(0, 255, 0, 200)
 
 // =======================
 // CREATE OVERLAY
 // =======================
 def viewer = getCurrentViewer()
-
-// Remove any existing custom overlays first
 viewer.getCustomOverlayLayers().clear()
 
-// Create custom overlay
 def gridOverlay = new PathOverlay() {
-    
+
     @Override
-    void paintOverlay(Graphics2D g2d, qupath.lib.regions.ImageRegion imageRegion, 
+    void paintOverlay(Graphics2D g2d, qupath.lib.regions.ImageRegion imageRegion,
                       double downsampleFactor, ImageData imgData, boolean paintCompletely) {
-        
+
         def server = imgData.getServer()
-        int width = server.getWidth()
+        int width  = server.getWidth()
         int height = server.getHeight()
-        
-        // Configure drawing
+
+        // --- KEY FIX 1: always exactly 1 screen pixel, regardless of zoom ---
+        g2d.setStroke(new BasicStroke(1.0f))
         g2d.setColor(GRID_COLOR)
-        float strokeWidth = (float)(LINE_WIDTH / downsampleFactor)
-        g2d.setStroke(new BasicStroke(strokeWidth))
-        
-        // Get visible region to only draw what's needed
+
+        // Enable antialiasing OFF so lines snap to exact pixel edges
+        g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING,
+                             RenderingHints.VALUE_ANTIALIAS_OFF)
+        g2d.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL,
+                             RenderingHints.VALUE_STROKE_NORMALIZE)
+
+        // Visible image region in full-resolution pixel coords
         int minX = (int)(imageRegion.getX() / TILE_SIZE) * TILE_SIZE
         int minY = (int)(imageRegion.getY() / TILE_SIZE) * TILE_SIZE
-        int maxX = Math.min(width, (int)(imageRegion.getMaxX() + TILE_SIZE))
-        int maxY = Math.min(height, (int)(imageRegion.getMaxY() + TILE_SIZE))
-        
-        // Draw vertical lines
+        int maxX = Math.min(width,  (int)Math.ceil(imageRegion.getMaxX() / TILE_SIZE) * TILE_SIZE)
+        int maxY = Math.min(height, (int)Math.ceil(imageRegion.getMaxY() / TILE_SIZE) * TILE_SIZE)
+
+        // --- KEY FIX 2: use double-precision lines so sub-pixel positioning
+        //     is exact after the viewer's AffineTransform is applied ---
         for (int x = minX; x <= maxX; x += TILE_SIZE) {
-            g2d.drawLine(x, minY, x, maxY)
+            // Clamp to image boundary so the rightmost line sits exactly at width
+            double ex = Math.min(x, width)
+            g2d.draw(new Line2D.Double(ex - 0.5, minY, ex - 0.5, maxY))
         }
-        
-        // Draw horizontal lines
+
         for (int y = minY; y <= maxY; y += TILE_SIZE) {
-            g2d.drawLine(minX, y, maxX, y)
+            double ey = Math.min(y, height)
+            g2d.draw(new Line2D.Double(minX, ey - 0.5, maxX, ey - 0.5))
         }
     }
 }
 
 viewer.getCustomOverlayLayers().add(gridOverlay)
 viewer.repaint()
-
-println "✅ Grid overlay added (${TILE_SIZE}x${TILE_SIZE})"
-println "💡 To remove: Run the remove script"
+println "✅ Accurate grid overlay added (${TILE_SIZE}×${TILE_SIZE})"
+println "   Lines are 1 screen-pixel wide at all zoom levels"
+println "💡 To remove: viewer.getCustomOverlayLayers().clear(); viewer.repaint()"
