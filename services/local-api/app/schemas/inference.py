@@ -18,6 +18,7 @@ class InferenceRunResponse(BaseModel):
     finished_at: str | None
     created_at: str
     summary: dict | None = None
+    error_message: str | None = None
 
     class Config:
         from_attributes = True

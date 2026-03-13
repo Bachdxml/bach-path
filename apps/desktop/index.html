@@ -13,6 +13,7 @@
         <button class="tab-btn active" data-tab="import">Import</button>
         <button class="tab-btn" data-tab="gallery">Gallery</button>
         <button class="tab-btn" data-tab="viewer">Viewer</button>
+        <button class="tab-btn" data-tab="training">Training</button>
         <button class="tab-btn settings-btn" data-tab="settings" title="Settings">⚙</button>
       </nav>
 
@@ -23,6 +24,7 @@
             <p class="drop-zone-hint">Supports .svs, .tif, .tiff</p>
           </div>
           <div class="import-actions">
+            <button class="btn btn-primary" id="btn-select-files">Select file(s)</button>
             <button class="btn btn-primary" id="btn-select-folder">Select folder (recursive)</button>
           </div>
           <div class="import-status" id="import-status"></div>
@@ -48,6 +50,28 @@
           </div>
         </section>
 
+        <section id="tab-training" class="tab-pane">
+          <div class="training-form">
+            <h2>Train Model</h2>
+            <p class="training-hint">
+              Import a folder of QuPath-exported tiles. Each slide should have
+              <code>images/</code> and <code>masks/</code> subfolders with
+              matching PNG files (e.g. tile.png and tile_mask.png).
+            </p>
+            <div class="form-group">
+              <label>Marked slides folder</label>
+              <div class="training-folder-row">
+                <input type="text" id="training-folder-path" readonly placeholder="Select a folder..." />
+                <button class="btn btn-primary" id="btn-select-training-folder">Select folder</button>
+              </div>
+            </div>
+            <div class="training-actions">
+              <button class="btn btn-primary" id="btn-start-training">Start training</button>
+            </div>
+            <div class="training-status" id="training-status"></div>
+          </div>
+        </section>
+
         <section id="tab-settings" class="tab-pane">
           <div class="settings-form">
             <h2>Settings</h2>
@@ -66,6 +90,7 @@
     <script src="js/import.js"></script>
     <script src="js/gallery.js"></script>
     <script src="js/viewer.js"></script>
+    <script src="js/training.js"></script>
     <script src="js/app.js"></script>
   </body>
 </html>

@@ -1,0 +1,64 @@
+import torch
+import torch.nn as nn
+
+
+class AsymmetricSimilarityLoss(nn.Module):
+    """
+    Density-aware Asymmetric Similarity Loss.
+
+    alpha : FN penalty weight — higher alpha = more sensitive (don't miss positives)
+    beta  : FP penalty weight — higher beta  = more conservative (avoid false alarms)
+    alpha + beta should sum to 1.0
+
+    Density behaviour:
+        low density     → balanced α/β       (conservative — structures less likely real)
+        medium density  → slightly higher α  (mild recall bias)
+        high density    → higher α, lower β  (sensitive — don't miss structures in dense regions)
+        negative        → balanced α/β       (all-background tiles)
+    """
+
+    DENSITY_PARAMS = {
+        0: (0.5, 0.5),   # low      — balanced
+        1: (0.6, 0.4),   # medium   — mild recall bias
+        2: (0.7, 0.3),   # high     — recall-biased, penalise FN heavily
+        3: (0.5, 0.5),   # negative — balanced
+    }
+
+    def __init__(self, smooth: float = 1e-6, **kwargs):
+        super().__init__()
+        self.smooth = smooth
+
+    def forward(self, logits: torch.Tensor,
+                targets: torch.Tensor,
+                density_labels: torch.Tensor) -> torch.Tensor:
+        """
+        logits         : [B, 1, H, W]  raw model output (pre-sigmoid)
+        targets        : [B, 1, H, W]  binary masks
+        density_labels : [B]           long tensor, density class per tile
+        """
+        probs = torch.sigmoid(logits)
+
+        if targets.dim() == 3:
+            targets = targets.unsqueeze(1)
+
+        dims = (1, 2, 3)
+        tp = (probs * targets).sum(dims)
+        fp = (probs * (1 - targets)).sum(dims)
+        fn = ((1 - probs) * targets).sum(dims)
+
+        # Build per-sample alpha/beta tensors from density labels
+        alpha = torch.zeros(logits.size(0), device=logits.device)
+        beta  = torch.zeros(logits.size(0), device=logits.device)
+
+        for density_idx, (a, b) in self.DENSITY_PARAMS.items():
+            mask      = (density_labels == density_idx)
+            alpha[mask] = a
+            beta[mask]  = b
+
+        # Asymmetric similarity index per sample
+        similarity = (tp + self.smooth) / (
+            tp + alpha * fn + beta * fp + self.smooth
+        )
+
+        loss = (1.0 - similarity)
+        return loss.mean()

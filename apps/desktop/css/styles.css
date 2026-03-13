@@ -285,3 +285,65 @@ body {
   color: var(--text-secondary);
   margin-bottom: 16px;
 }
+
+/* Training tab */
+#tab-training {
+  padding: 24px;
+  align-items: flex-start;
+}
+
+.training-form {
+  max-width: 500px;
+}
+
+.training-form h2 {
+  font-size: 18px;
+  margin: 0 0 20px;
+}
+
+.training-hint {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 20px;
+  line-height: 1.5;
+}
+
+.training-hint code {
+  background: var(--surface);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.training-folder-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.training-folder-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.training-actions {
+  margin-top: 20px;
+}
+
+.training-status {
+  margin-top: 16px;
+  font-size: 13px;
+  min-height: 24px;
+}
+
+.training-running {
+  color: var(--accent);
+}
+
+.training-success {
+  color: #4caf50;
+}
+
+.training-error {
+  color: var(--error);
+}

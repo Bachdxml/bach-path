@@ -231,4 +231,5 @@ def _run_to_response(run: InferenceRun, db: Session | None = None) -> InferenceR
         finished_at=run.finished_at.isoformat() if run.finished_at else None,
         created_at=run.created_at.isoformat() if run.created_at else "",
         summary=summary,
+        error_message=run.error_message,
     )

@@ -20,6 +20,7 @@ from src import (
     ResidualAttentionUNet,
     WSIDatasetIndex,
     compute_all_metrics,
+    make_stratified_sampler,
 )
 
 
@@ -121,15 +122,32 @@ def evaluate(model, loader, criterion, device):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-def main(cfg_path: str = "configs/default.yaml"):
+def main_with_args(cfg_path: str = "configs/default.yaml",
+                   export_root: str | None = None,
+                   flat_format: bool | None = None,
+                   progress_file: str | None = None):
     with open(cfg_path) as f:
         cfg = yaml.safe_load(f)
+    if export_root:
+        cfg["data"]["export_root"] = str(export_root)
+    if flat_format is not None:
+        cfg["data"]["flat_format"] = flat_format
+    return _run_training(cfg, progress_file)
 
+
+def _run_training(cfg: dict, progress_file: str | None = None):
+    """Run training with config dict. Optionally write progress to JSON file."""
     # ---- Data ----
+    export_root = Path(cfg["data"]["export_root"])
+    if not export_root.exists():
+        raise FileNotFoundError(f"Export root not found: {export_root}")
+    flat_format = cfg["data"].get("flat_format", False)
+
     index = WSIDatasetIndex(
-        cfg["data"]["export_root"],
+        export_root,
         strict_mode=True,
         allow_size_mismatch=False,
+        flat_format=flat_format,
     )
     index.build_index()
     index.save_index(Path("dataset_index.json"))
@@ -139,7 +157,6 @@ def main(cfg_path: str = "configs/default.yaml"):
         random_seed=cfg["data"]["random_seed"],
     )
 
-    # Sanity check — no WSI leakage
     train_wsis = {p.wsi_id for p in train_pairs}
     val_wsis   = {p.wsi_id for p in val_pairs}
     assert not (train_wsis & val_wsis), "WSI leakage detected!"
@@ -155,13 +172,14 @@ def main(cfg_path: str = "configs/default.yaml"):
     val_ds   = AugmentedWSI_Dataset(val_pairs,   img_size=img_size, augment=False) \
                if val_pairs else None
 
+    train_sampler = make_stratified_sampler(train_pairs)
     train_loader = DataLoader(train_ds, batch_size=batch_size, sampler=train_sampler,
                               num_workers=n_workers, pin_memory=pin)
     val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False,
                               num_workers=n_workers, pin_memory=pin) \
                    if val_ds else None
 
-    print(f"Train: {len(train_ds)} tiles  |  Val: {len(val_ds) if val_ds else 0} tiles")# ---- Model / loss / optimizer ----
+    print(f"Train: {len(train_ds)} tiles  |  Val: {len(val_ds) if val_ds else 0} tiles")
     device    = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
@@ -174,7 +192,6 @@ def main(cfg_path: str = "configs/default.yaml"):
 
     print(f"Model params: {sum(p.numel() for p in model.parameters()):,}")
 
-    # ---- Training loop ----
     t_cfg           = cfg["training"]
     checkpoint_path = t_cfg["checkpoint_path"]
     Path(checkpoint_path).parent.mkdir(parents=True, exist_ok=True)
@@ -187,9 +204,17 @@ def main(cfg_path: str = "configs/default.yaml"):
     best_val_dice    = -1.0
     no_improve_count = 0
 
+    def write_progress(status: str, epoch: int = 0, **kwargs):
+        if progress_file:
+            import json
+            data = {"status": status, "epoch": epoch, **kwargs}
+            with open(progress_file, "w") as f:
+                json.dump(data, f, indent=2)
+
     print("\n" + "=" * 60)
     print("Starting Training")
     print("=" * 60)
+    write_progress("running", epoch=0)
 
     for epoch in range(1, t_cfg["epochs"] + 1):
         current_lr = optimizer.param_groups[0]["lr"]
@@ -214,6 +239,12 @@ def main(cfg_path: str = "configs/default.yaml"):
             history["val_loss"].append(val_m["loss"])
             history["val_dice"].append(val_m["dice"])
             history["val_iou"].append(val_m["iou"])
+
+        write_progress("running", epoch=epoch,
+                      train_loss=train_m["loss"], train_dice=train_m["dice"],
+                      val_loss=val_m["loss"] if val_m else None,
+                      val_dice=val_m["dice"] if val_m else None,
+                      best_dice=best_val_dice)
 
         print(f"\nEpoch {epoch} Summary:")
         print(f"  Train → loss={train_m['loss']:.4f}  dice={train_m['dice']:.4f}  iou={train_m['iou']:.4f}")
@@ -248,12 +279,28 @@ def main(cfg_path: str = "configs/default.yaml"):
     print(f"Training complete. Best dice: {best_val_dice:.4f}")
     print(f"Checkpoint: {checkpoint_path}")
     print("=" * 60)
-
+    write_progress("succeeded", epoch=epoch, best_dice=best_val_dice,
+                   checkpoint_path=str(checkpoint_path))
     return history
+
+
+def main(cfg_path: str = "configs/default.yaml"):
+    with open(cfg_path) as f:
+        cfg = yaml.safe_load(f)
+    return _run_training(cfg)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/default.yaml")
+    parser.add_argument("--export-root", help="Path to QuPath-exported tiles (slide/images, slide/masks)")
+    parser.add_argument("--progress-file", help="JSON file to write training progress for API polling")
+    parser.add_argument("--flat-format", action="store_true",
+                        help="Use flat format: <slide>/images, <slide>/masks (default in config)")
     args = parser.parse_args()
-    main(args.config)
+    main_with_args(
+        cfg_path=args.config,
+        export_root=args.export_root or None,
+        flat_format=args.flat_format if args.flat_format else None,
+        progress_file=args.progress_file,
+    )

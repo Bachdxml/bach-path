@@ -1,4 +1,5 @@
 const dropZone = document.getElementById("drop-zone");
+const filesBtn = document.getElementById("btn-select-files");
 const folderBtn = document.getElementById("btn-select-folder");
 const importStatus = document.getElementById("import-status");
 const importProgress = document.getElementById("import-progress");
@@ -74,6 +75,22 @@ function initImport() {
       importPaths(paths);
     } else {
       setStatus("No valid WSI files (SVS, TIF, TIFF) dropped.", true);
+    }
+  });
+
+  dropZone.addEventListener("click", async () => {
+    const paths = await window.electronAPI.selectFiles();
+    if (paths.length) {
+      importPaths(paths);
+    }
+  });
+
+  filesBtn.addEventListener("click", async () => {
+    const paths = await window.electronAPI.selectFiles();
+    if (paths.length) {
+      importPaths(paths);
+    } else {
+      setStatus("No valid WSI files (SVS, TIF, TIFF) selected.", true);
     }
   });
 

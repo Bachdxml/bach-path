@@ -7,4 +7,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("api-ready", (_, data) => callback(data));
   },
   selectFolder: () => ipcRenderer.invoke("select-folder"),
+  selectFiles: () => ipcRenderer.invoke("select-files"),
+  selectDirectory: () => ipcRenderer.invoke("select-directory"),
 });

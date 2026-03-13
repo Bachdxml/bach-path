@@ -15,7 +15,7 @@ from app.models import (
 )
 
 
-REQUIRED_DIRS = ("slides", "inference_runs", "tiles_cache", "logs")
+REQUIRED_DIRS = ("slides", "inference_runs", "training_runs", "tiles_cache", "logs")
 
 def ensure_dirs(settings: Settings) -> None:
     settings.app_data_dir.mkdir(parents=True, exist_ok=True)

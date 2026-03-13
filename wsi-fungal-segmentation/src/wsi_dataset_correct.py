@@ -36,17 +36,20 @@ class TilePair:
 class WSIDatasetIndex:
     """
     Builds and validates an index of WSI tile pairs.
-    Expects density-stratified folder structure per WSI:
-        <wsi_folder>/<density>/images/*.png
-        <wsi_folder>/<density>/masks/*_mask.png
-    where <density> is one of: high, medium, low, negative
+
+    Two formats supported:
+    1. Density-stratified: <wsi_folder>/<density>/images/*.png, masks/*_mask.png
+       where <density> is high, medium, low, or negative
+    2. Flat (QuPath export): <wsi_folder>/images/*.png, <wsi_folder>/masks/*_mask.png
+       All tiles assigned density=medium. Set flat_format=True to use this.
     """
 
     def __init__(self, export_root: Path, strict_mode: bool = True,
-                 allow_size_mismatch: bool = False):
+                 allow_size_mismatch: bool = False, flat_format: bool = False):
         self.export_root       = Path(export_root)
         self.strict_mode       = strict_mode
         self.allow_size_mismatch = allow_size_mismatch
+        self.flat_format       = flat_format
         self.tile_pairs: List[TilePair] = []
         self.wsi_groups: Dict[str, List[TilePair]] = {}
         self.validation_report: Dict = {
@@ -169,6 +172,45 @@ class WSIDatasetIndex:
     # ------------------------------------------------------------------
 
     def _process_wsi_folder(self, wsi_folder: Path) -> List[TilePair]:
+        """Process one WSI folder — flat format or density-stratified."""
+        if self.flat_format:
+            return self._process_wsi_folder_flat(wsi_folder)
+        return self._process_wsi_folder_density(wsi_folder)
+
+    def _process_wsi_folder_flat(self, wsi_folder: Path) -> List[TilePair]:
+        """Flat QuPath format: <wsi>/images/*.png, <wsi>/masks/*_mask.png. All density=medium."""
+        wsi_id = wsi_folder.name
+        img_dir = wsi_folder / "images"
+        msk_dir = wsi_folder / "masks"
+        if not img_dir.exists() or not msk_dir.exists():
+            raise FileNotFoundError(
+                f"Flat format requires {wsi_id}/images/ and {wsi_id}/masks/. "
+                f"Found images={img_dir.exists()}, masks={msk_dir.exists()}")
+        all_pairs = []
+        image_files = list(img_dir.glob("*.[pP][nN][gG]"))
+        if not image_files:
+            raise ValueError(f"No PNG images in {wsi_id}/images/")
+        for img_path in natsorted(image_files):
+            mask_path = self._find_corresponding_mask(img_path, msk_dir)
+            if mask_path is None:
+                alt = msk_dir / f"{img_path.stem}.png"
+                if alt.exists():
+                    mask_path = alt
+                else:
+                    continue
+            self._validate_tile_pair(img_path, mask_path, wsi_id)
+            all_pairs.append(TilePair(
+                image_path=img_path,
+                mask_path=mask_path,
+                wsi_id=wsi_id,
+                tile_id=img_path.stem,
+                density="medium"
+            ))
+            self.validation_report["density_counts"]["medium"] += 1
+        print(f"✓ {wsi_id}: {len(all_pairs)} pairs (flat format, density=medium)")
+        return all_pairs
+
+    def _process_wsi_folder_density(self, wsi_folder: Path) -> List[TilePair]:
         """Process one WSI folder — iterates over density subfolders"""
         wsi_id = wsi_folder.name
         all_pairs = []

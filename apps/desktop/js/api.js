@@ -1,5 +1,14 @@
 let apiBase = "http://127.0.0.1:8765";
 
+async function parseErrorResponse(res) {
+  const text = await res.text();
+  try {
+    const data = JSON.parse(text);
+    if (data?.error?.message) return data.error.message;
+  } catch (_) {}
+  return text;
+}
+
 function setApiBase(base) {
   apiBase = base.replace(/\/$/, "");
 }
@@ -10,7 +19,7 @@ function getApiBase() {
 
 async function listSlides() {
   const res = await fetch(`${apiBase}/slides`);
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) throw new Error(await parseErrorResponse(res));
   return res.json();
 }
 
@@ -20,10 +29,7 @@ async function importSlide(filePath) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ file_path: filePath }),
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text);
-  }
+  if (!res.ok) throw new Error(await parseErrorResponse(res));
   return res.json();
 }
 
@@ -33,7 +39,7 @@ function getThumbnailUrl(slideId, size = 200) {
 
 async function getSlideMetadata(slideId) {
   const res = await fetch(`${apiBase}/slides/${slideId}/metadata`);
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) throw new Error(await parseErrorResponse(res));
   return res.json();
 }
 
@@ -47,25 +53,41 @@ async function runInference(slideId) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({}),
   });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) throw new Error(await parseErrorResponse(res));
   return res.json();
 }
 
 async function getInferenceRun(runId) {
   const res = await fetch(`${apiBase}/inference/runs/${runId}`);
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) throw new Error(await parseErrorResponse(res));
   return res.json();
 }
 
 async function getInferenceRegions(runId) {
   const res = await fetch(`${apiBase}/inference/runs/${runId}/regions`);
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) throw new Error(await parseErrorResponse(res));
   return res.json();
 }
 
 async function getSlideInferenceRuns(slideId) {
   const res = await fetch(`${apiBase}/inference/slides/${slideId}/runs`);
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) throw new Error(await parseErrorResponse(res));
+  return res.json();
+}
+
+async function startTraining(exportRoot) {
+  const res = await fetch(`${apiBase}/training/start`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ export_root: exportRoot }),
+  });
+  if (!res.ok) throw new Error(await parseErrorResponse(res));
+  return res.json();
+}
+
+async function getTrainingStatus() {
+  const res = await fetch(`${apiBase}/training/status`);
+  if (!res.ok) throw new Error(await parseErrorResponse(res));
   return res.json();
 }
 
@@ -81,4 +103,6 @@ window.slidesApi = {
   getInferenceRun,
   getInferenceRegions,
   getSlideInferenceRuns,
+  startTraining,
+  getTrainingStatus,
 };

@@ -215,3 +215,25 @@ ipcMain.handle("select-folder", async () => {
   if (result.canceled || !result.filePaths.length) return [];
   return recursivelyFindWsiFiles(result.filePaths[0]);
 });
+
+ipcMain.handle("select-directory", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ["openDirectory"],
+  });
+  if (result.canceled || !result.filePaths.length) return null;
+  return result.filePaths[0];
+});
+
+ipcMain.handle("select-files", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ["openFile", "multiSelections"],
+    filters: [
+      { name: "Whole Slide Images", extensions: ["svs", "tif", "tiff"] },
+      { name: "All Files", extensions: ["*"] },
+    ],
+  });
+  if (result.canceled || !result.filePaths.length) return [];
+  return result.filePaths.filter((p) =>
+    WSI_EXTENSIONS.has(path.extname(p).toLowerCase())
+  );
+});

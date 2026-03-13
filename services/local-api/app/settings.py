@@ -8,6 +8,7 @@ class Settings(BaseModel):
     log_dir: Path
     slides_dir: Path
     inference_runs_dir: Path
+    training_runs_dir: Path
     tiles_cache_dir: Path
     sqlite_path: Path
 
@@ -22,6 +23,7 @@ def load_settings() -> Settings:
     log_dir = app_data_dir / "logs"
     slides_dir = app_data_dir / "slides"
     inference_runs_dir = app_data_dir / "inference_runs"
+    training_runs_dir = app_data_dir / "training_runs"
     tiles_cache_dir = app_data_dir / "tiles_cache"
     sqlite_path = app_data_dir / "app.db"
 
@@ -30,6 +32,7 @@ def load_settings() -> Settings:
         log_dir=log_dir,
         slides_dir=slides_dir,
         inference_runs_dir=inference_runs_dir,
+        training_runs_dir=training_runs_dir,
         tiles_cache_dir=tiles_cache_dir,
         sqlite_path=sqlite_path,
     )
