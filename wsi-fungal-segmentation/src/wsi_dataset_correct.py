@@ -82,6 +82,8 @@ class WSIDatasetIndex:
                     self.tile_pairs.extend(pairs)
                     self.wsi_groups[wsi_folder.name] = pairs
                     self.validation_report["valid_wsis"] += 1
+                    for p in pairs:
+                        self.validation_report['density_counts'][p.density] += 1
             except Exception as e:
                 if self.strict_mode:
                     raise
@@ -100,26 +102,6 @@ class WSIDatasetIndex:
 
         return self
 
-    def get_train_val_split(
-        self, val_ratio: float = 0.2, random_seed: int = 42
-    ) -> Tuple[List[TilePair], List[TilePair]]:
-        """Split by WSI to prevent data leakage."""
-        wsi_ids = sorted(self.wsi_groups.keys())
-        rng = np.random.default_rng(random_seed)
-        wsi_ids = rng.permutation(wsi_ids).tolist()
-
-        n_val = max(1, int(len(wsi_ids) * val_ratio))
-        val_wsi_ids   = set(wsi_ids[:n_val])
-        train_wsi_ids = set(wsi_ids[n_val:])
-
-        train_pairs = [p for p in self.tile_pairs if p.wsi_id in train_wsi_ids]
-        val_pairs   = [p for p in self.tile_pairs if p.wsi_id in val_wsi_ids]
-
-        print(f"\nTrain/Val Split (by WSI):")
-        print(f"  Train: {len(train_wsi_ids)} WSIs  ({len(train_pairs)} tiles)")
-        print(f"  Val:   {len(val_wsi_ids)} WSIs  ({len(val_pairs)} tiles)")
-
-        return train_pairs, val_pairs
 
     def get_train_val_split(self, val_ratio: float = 0.2,
                             random_seed: int = 42) -> Tuple[List[TilePair], List[TilePair]]:
@@ -194,8 +176,8 @@ class WSIDatasetIndex:
             # Duplicate check within this density folder
             stems = [f.stem for f in image_files]
             if len(stems) != len(set(stems)):
-                seen = set()
-                duplicates = [s for s in stems if s in seen or seen.add(s)]
+                from collections import Counter
+                duplicates = [s for s, n in Counter(stems).items() if n > 1]
                 raise ValueError(
                     f"Duplicate files in {wsi_id}/{density}: {duplicates[:5]}")
 
@@ -350,8 +332,11 @@ class WSI_Dataset(Dataset):
         mask_tensor = self.mask_transform(mask)
         mask_tensor = (mask_tensor > 0.5).float()
 
+        if pair.density not in DENSITY_LABELS:
+            raise ValueError(
+                f"Unknown density '{pair.density}' for tile {pair.tile_id}")
         density_label = torch.tensor(
-            DENSITY_LABELS.get(pair.density, 0), dtype=torch.long)
+            DENSITY_LABELS[pair.density], dtype=torch.long)
 
         return img_tensor, mask_tensor, density_label
 
@@ -398,8 +383,11 @@ class AugmentedWSI_Dataset(WSI_Dataset):
         mask_tensor = TF.to_tensor(mask)
         mask_tensor = (mask_tensor > 0.5).float()
 
+        if pair.density not in DENSITY_LABELS:
+            raise ValueError(
+                f"Unknown density '{pair.density}' for tile {pair.tile_id}")
         density_label = torch.tensor(
-            DENSITY_LABELS.get(pair.density, 0), dtype=torch.long)
+            DENSITY_LABELS[pair.density], dtype=torch.long)
 
         return img_tensor, mask_tensor, density_label
 
@@ -412,8 +400,9 @@ def make_stratified_sampler(tile_pairs: list) -> WeightedRandomSampler:
     """
     labels = [DENSITY_LABELS.get(p.density, 0) for p in tile_pairs]
     class_counts = [0] * len(DENSITY_LABELS)
-    for l in labels:
-        class_counts[l] += 1
+    for lbl in labels:
+        class_counts[lbl] += 1
+    sample_weights = [class_weights[lbl] for lbl in labels]
 
     # Weight per class = 1 / count (zero-safe)
     class_weights = [1.0 / max(c, 1) for c in class_counts]
