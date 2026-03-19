@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader
 
 from src import (
     AugmentedWSI_Dataset,
-    AsymmetricSimilarityLoss,
+    CombinedLoss,
     ResidualAttentionUNet,
     WSIDatasetIndex,
     compute_all_metrics,
@@ -112,12 +112,12 @@ def main(checkpoint_path: str, config_path: str = "configs/default.yaml",
     ckpt = torch.load(checkpoint_path, map_location=device)
     print(f"  Epoch {ckpt['epoch']}  |  best dice = {ckpt['best_dice']:.4f}")
 
-    img_size = ckpt.get("img_size", cfg["data"]["img_size"])
+    img_size = ckpt.get("cfg", cfg)["data"]["img_size"]
 
     model = ResidualAttentionUNet(**cfg["model"]).to(device)
     model.load_state_dict(ckpt["model_state_dict"])
 
-    criterion = AsymmetricSimilarityLoss(**cfg["loss"])
+    criterion = CombinedLoss(loss_cfg=cfg["loss"])
 
     # ---- Build val loader ----
     index = WSIDatasetIndex(cfg["data"]["export_root"], strict_mode=True)
@@ -141,11 +141,14 @@ def main(checkpoint_path: str, config_path: str = "configs/default.yaml",
     n = len(val_loader)
 
     with torch.no_grad():
-        for imgs, masks in val_loader:
-            imgs, masks = imgs.to(device), masks.to(device)
-            logits = model(imgs)
-            m = compute_all_metrics(torch.sigmoid(logits), masks)
-            running["loss"]      += criterion(logits, masks).item()
+        for imgs, masks, density_labels in val_loader:
+            imgs           = imgs.to(device)
+            masks          = masks.to(device)
+            density_labels = density_labels.to(device)
+            seg_logits, density_logits, aux3, aux2 = model(imgs, density_labels)
+            m = compute_all_metrics(torch.sigmoid(seg_logits), masks)
+            total, l_seg, l_density = criterion(seg_logits, density_logits, masks, density_labels, aux3, aux2)
+            running["loss"] += total.item()
             running["dice"]      += m["dice"]
             running["iou"]       += m["iou"]
             running["precision"] += m["precision"]
@@ -161,10 +164,13 @@ def main(checkpoint_path: str, config_path: str = "configs/default.yaml",
 
     # ---- Visualize predictions ----
     if visualize:
-        imgs, masks = next(iter(val_loader))
-        imgs, masks = imgs.to(device), masks.to(device)
+        imgs, masks, density_labels = next(iter(val_loader))
+        imgs           = imgs.to(device)
+        masks          = masks.to(device)
+        density_labels = density_labels.to(device)
         with torch.no_grad():
-            preds_bin = (torch.sigmoid(model(imgs)) > 0.5).float()
+            seg_logits, _, _, _ = model(imgs)  # density_label=None triggers self-prediction
+            preds_bin = (torch.sigmoid(seg_logits) > 0.5).float()
 
         for i in range(min(n_vis, imgs.size(0))):
             gt   = overlay_mask(imgs[i], masks[i, 0],     color=(0, 1, 0), alpha=0.4)
