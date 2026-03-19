@@ -20,14 +20,26 @@ loader:
 model:
   in_ch: 3
   out_ch: 1
+  num_density_classes: 4
+  dropout_p: 0.3
 
 # -----------------------------------------------------------------------
 # Loss
 # -----------------------------------------------------------------------
 loss:
-  alpha: 0.7   # FN penalty weight (higher = better recall)
-  beta: 0.3    # FP penalty weight
-  gamma: 0.75  # focal exponent
+  # AsymmetricSimilarityLoss — per-density α/β pairs
+  # α weights FN (higher = more sensitive / fewer missed positives)
+  # β weights FP (higher = more conservative / fewer false alarms)
+  density_params:
+    low:      [0.5, 0.5]   # balanced
+    medium:   [0.6, 0.4]   # mild recall bias
+    high:     [0.7, 0.3]   # recall-biased, penalise FN heavily
+    negative: [0.5, 0.5]   # balanced (all-background tiles)
+
+  # CombinedLoss
+  density_weight: 0.3      # weight on density classification head loss
+  aux3_weight: 0.3         # weight on decoder-3 auxiliary seg loss
+  aux2_weight: 0.1         # weight on decoder-2 auxiliary seg loss
 
 # -----------------------------------------------------------------------
 # Optimizer
@@ -43,6 +55,7 @@ scheduler:
   factor: 0.5
   patience: 5
   min_lr: 0.0000001
+  mode: "max"              # monitoring val_dice (higher = better)
 
 # -----------------------------------------------------------------------
 # Training
