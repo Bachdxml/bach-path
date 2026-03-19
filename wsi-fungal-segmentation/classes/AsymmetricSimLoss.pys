@@ -14,6 +14,7 @@ class AsymmetricSimilarityLoss(nn.Module):
     """
  
     # Map density name → integer label (must match DENSITY_LABELS)
+    # Must match DENSITY_LABELS in dataset.py — update both if density classes change
     _DENSITY_IDX = {"low": 0, "medium": 1, "high": 2, "negative": 3}
  
     def __init__(self, density_params: dict, smooth: float = 1e-6):
