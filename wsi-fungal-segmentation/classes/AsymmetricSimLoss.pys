@@ -37,6 +37,10 @@ class AsymmetricSimilarityLoss(nn.Module):
 
         if targets.dim() == 3:
             targets = targets.unsqueeze(1)
+        assert logits.shape[1] == 1, \
+            f"Expected single-channel logits, got {logits.shape}"
+
+
 
         dims = (1, 2, 3)
         tp = (probs * targets).sum(dims)
