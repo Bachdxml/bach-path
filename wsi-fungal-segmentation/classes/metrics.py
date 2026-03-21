@@ -14,8 +14,7 @@ def compute_all_metrics(preds_sigmoid, targets, threshold=0.5, smooth=1e-6):
     fp = (preds_flat * (1 - target_flat)).sum(dim=1)
     fn = ((1 - preds_flat) * target_flat).sum(dim=1)
 
-    intersection = tp
-    union = preds_flat.sum(dim=1) + target_flat.sum(dim=1) - intersection
+    union = preds_flat.sum(dim=1) + target_flat.sum(dim=1) - tp
 
     dice      = (2.0 * intersection + smooth) / (preds_flat.sum(dim=1) + target_flat.sum(dim=1) + smooth)
     iou       = (intersection + smooth) / (union + smooth)

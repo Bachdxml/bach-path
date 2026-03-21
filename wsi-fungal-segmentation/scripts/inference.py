@@ -18,7 +18,7 @@ def overlay_mask(image_tensor, mask_tensor, color=[1,0,0], alpha=0.4, bg_tint=No
     # Upsample mask if needed
     if mask_tensor.shape != image_tensor.shape[1:]:
         mask_tensor = F.interpolate(
-            mask_tensor.unsqueeze(0).unsqueeze(0),
+            mask_tensor.unsqueeze(0).unsqueeze(0).float(),
             size=image_tensor.shape[1:],
             mode='bilinear',
             align_corners=False

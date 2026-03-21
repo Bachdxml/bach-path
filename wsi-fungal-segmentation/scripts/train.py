@@ -29,7 +29,7 @@ torch.set_num_threads(2)
 
 from src import (
     AugmentedWSI_Dataset,
-    AsymmetricSimilarityLoss,
+    CombinedLoss,
     ResidualAttentionUNet,
     WSIDatasetIndex,
     compute_all_metrics,
@@ -63,24 +63,24 @@ def train_one_epoch(model, loader, criterion, optimizer, device,
 
         optimizer.zero_grad()
 
-        logits = model(imgs, density_labels)
-        loss   = criterion(logits, masks, density_labels)  # density-aware loss
+        seg_logits, density_logits, aux3, aux2 = model(imgs, density_labels)
+        total, l_seg, l_density = criterion(seg_logits, density_logits, masks, density_labels, aux3, aux2)
 
-        loss.backward()
+        total.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_grad)
         optimizer.step()
 
         with torch.no_grad():
-            probs = torch.sigmoid(logits)
+            probs = torch.sigmoid(seg_logits)
             m = compute_all_metrics(probs, masks)
 
-        running_loss += loss.item()
+        running_loss += total.item()
         running_dice += m['dice']
         running_iou  += m['iou']
 
         if batch_idx % log_interval == 0:
             print(f"  [Epoch {epoch_num} | Batch {batch_idx+1}/{n_batches}] "
-                  f"loss={loss.item():.4f}  dice={m['dice']:.4f}  "
+                  f"loss={total.item():.4f}  dice={m['dice']:.4f}  "
                   f"iou={m['iou']:.4f}")
 
     return {
@@ -113,12 +113,12 @@ def evaluate(model, loader, criterion, device):
             masks          = masks.to(device, non_blocking=True)
             density_labels = density_labels.to(device, non_blocking=True)
 
-            logits = model(imgs, density_labels)
-            loss   = criterion(logits, masks, density_labels)
-            probs  = torch.sigmoid(logits)
+            seg_logits, density_logits, aux3, aux2 = model(imgs, density_labels)
+            total, l_seg, l_density = criterion(seg_logits, density_logits, masks, density_labels, aux3, aux2)
+            probs = torch.sigmoid(seg_logits)
+            running_loss += total.item()
 
             m = compute_all_metrics(probs, masks)
-            running_loss      += loss.item()
             running_dice      += m['dice']
             running_iou       += m['iou']
             running_precision += m['precision']
@@ -198,12 +198,11 @@ def _run_training(cfg: dict, progress_file: str | None = None):
     print(f"Device: {device}")
 
     model     = ResidualAttentionUNet(**cfg["model"]).to(device)
-    criterion = AsymmetricSimilarityLoss(**cfg["loss"])
+    criterion = CombinedLoss(loss_cfg=cfg["loss"])
     optimizer = optim.AdamW(model.parameters(), **cfg["optimizer"])
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", **cfg["scheduler"]
+    optimizer, **cfg["scheduler"]
     )
-
     print(f"Model params: {sum(p.numel() for p in model.parameters()):,}")
 
     t_cfg           = cfg["training"]
@@ -244,17 +243,18 @@ def _run_training(cfg: dict, progress_file: str | None = None):
         val_m = evaluate(model, val_loader, criterion, device)
         gc.collect()
 
-        sched_metric = -(val_m["dice"] if val_m else train_m["dice"])
+        sched_metric = val_m["dice"] if val_m else train_m["dice"]
         scheduler.step(sched_metric)
 
         history["lr"].append(current_lr)
         history["train_loss"].append(train_m["loss"])
         history["train_dice"].append(train_m["dice"])
         history["train_iou"].append(train_m["iou"])
-        if val_m:
-            history["val_loss"].append(val_m["loss"])
-            history["val_dice"].append(val_m["dice"])
-            history["val_iou"].append(val_m["iou"])
+
+        
+        history["val_loss"].append(val_m["loss"] if val_m else None)
+        history["val_dice"].append(val_m["dice"] if val_m else None)
+        history["val_iou"].append(val_m["iou"]  if val_m else None)
 
         write_progress("running", epoch=epoch,
                       train_loss=train_m["loss"], train_dice=train_m["dice"],
@@ -279,8 +279,7 @@ def _run_training(cfg: dict, progress_file: str | None = None):
                 "scheduler_state_dict": scheduler.state_dict(),
                 "best_dice":            best_val_dice,
                 "history":              history,
-                "img_size":             img_size,
-                "batch_size":           batch_size,
+                "cfg": cfg,
             }, checkpoint_path)
             print(f"  ✅  New best dice={best_val_dice:.4f} — checkpoint saved.")
         else:
