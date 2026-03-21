@@ -16,7 +16,8 @@ _training_progress_path: Path | None = None
 
 
 def _get_train_script_path() -> Path:
-    base = Path(__file__).resolve().parent.parent.parent.parent.parent
+    # training.py -> routes -> api -> app -> local-api -> services -> project_root
+    base = Path(__file__).resolve().parent.parent.parent.parent.parent.parent
     return base / "wsi-fungal-segmentation" / "scripts" / "train.py"
 
 
@@ -25,7 +26,7 @@ def _get_training_python() -> str:
     env_py = os.environ.get("INFERENCE_PYTHON") or os.environ.get("TRAINING_PYTHON")
     if env_py:
         return env_py
-    base = Path(__file__).resolve().parent.parent.parent.parent.parent
+    base = Path(__file__).resolve().parent.parent.parent.parent.parent.parent
     for venv in [
         base / "wsi-fungal-segmentation" / ".venv" / "bin" / "python",
         base / "wsi-fungal-segmentation" / ".venv" / "Scripts" / "python.exe",
@@ -69,7 +70,6 @@ def _run_training_task(export_root: str, progress_path: Path):
         str(script_path),
         "--config", str(cfg_path),
         "--export-root", export_root,
-        "--flat-format",
         "--progress-file", str(progress_path),
     ]
     cwd = str(script_path.parent.parent)
@@ -135,7 +135,7 @@ def start_training(
 
 @router.get("/status", response_model=TrainingStatusResponse)
 def get_training_status(request: Request):
-    settings = request.app_state.settings
+    settings = request.app.state.settings
     progress_path = settings.training_runs_dir / "current.json"
 
     if not progress_path.exists():

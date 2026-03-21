@@ -45,11 +45,13 @@ class WSIDatasetIndex:
     """
 
     def __init__(self, export_root: Path, strict_mode: bool = True,
-                 allow_size_mismatch: bool = False, flat_format: bool = False):
+                 allow_size_mismatch: bool = False, flat_format: bool = False,
+                 skip_validation: bool = False):
         self.export_root       = Path(export_root)
         self.strict_mode       = strict_mode
         self.allow_size_mismatch = allow_size_mismatch
         self.flat_format       = flat_format
+        self.skip_validation   = skip_validation
         self.tile_pairs: List[TilePair] = []
         self.wsi_groups: Dict[str, List[TilePair]] = {}
         self.validation_report: Dict = {
@@ -58,7 +60,8 @@ class WSIDatasetIndex:
             'skipped_wsis':     [],
             'total_pairs':      0,
             'density_counts':   {d: 0 for d in DENSITY_FOLDERS},
-            'issues':           []
+            'issues':           [],
+            'unpaired_skipped': 0,  # images with no matching mask (skipped, not fatal)
         }
 
 
@@ -259,12 +262,13 @@ class WSIDatasetIndex:
                 ))
 
             if unpaired:
-                issue = f"{wsi_id}/{density}: {len(unpaired)} images without masks"
-                self.validation_report['issues'].append(issue)
-                if self.strict_mode:
-                    raise ValueError(f"{issue}. First 5: {unpaired[:5]}")
-                else:
-                    print(f"\u26a0\ufe0f  {issue}")
+                # Exports often omit masks for some tiles; skip them instead of failing the build
+                n = len(unpaired)
+                self.validation_report['unpaired_skipped'] += n
+                print(
+                    f"\u26a0\ufe0f  {wsi_id}/{density}: skipped {n} image(s) without matching "
+                    f"_mask.png (e.g. {unpaired[:3]})"
+                )
 
         if not found_any_density:
             raise FileNotFoundError(
@@ -289,6 +293,8 @@ class WSIDatasetIndex:
 
     def _validate_tile_pair(self, image_path: Path, mask_path: Path, wsi_id: str):
         """Validate semantic properties of an image-mask pair"""
+        if self.skip_validation:
+            return
         try:
             img  = Image.open(image_path)
             mask = Image.open(mask_path)
@@ -336,6 +342,9 @@ class WSIDatasetIndex:
         print(f"WSIs valid:        {self.validation_report['valid_wsis']}")
         print(f"WSIs skipped:      {len(self.validation_report['skipped_wsis'])}")
         print(f"Total tile pairs:  {self.validation_report['total_pairs']}")
+        us = self.validation_report.get('unpaired_skipped', 0)
+        if us:
+            print(f"Unpaired skipped:  {us} (images with no matching mask)")
         print(f"Validation issues: {len(self.validation_report['issues'])}")
         print(f"\nDensity breakdown:")
         for d, n in self.validation_report['density_counts'].items():

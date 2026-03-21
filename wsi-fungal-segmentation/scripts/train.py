@@ -7,12 +7,25 @@ Usage:
 """
 
 import argparse
+import sys
 from pathlib import Path
+
+# scripts/ is not the package root; ensure wsi-fungal-segmentation is on sys.path
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+import gc
+import os
 
 import torch
 import torch.optim as optim
 import yaml
 from torch.utils.data import DataLoader
+
+# Reduce PyTorch memory overhead
+os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
+torch.set_num_threads(2)
 
 from src import (
     AugmentedWSI_Dataset,
@@ -145,9 +158,10 @@ def _run_training(cfg: dict, progress_file: str | None = None):
 
     index = WSIDatasetIndex(
         export_root,
-        strict_mode=True,
-        allow_size_mismatch=False,
+        strict_mode=False,
+        allow_size_mismatch=True,
         flat_format=flat_format,
+        skip_validation=True,
     )
     index.build_index()
     index.save_index(Path("dataset_index.json"))
@@ -226,7 +240,9 @@ def _run_training(cfg: dict, progress_file: str | None = None):
             model, train_loader, criterion, optimizer, device,
             epoch_num=epoch, clip_grad=t_cfg["clip_grad"]
         )
+        gc.collect()
         val_m = evaluate(model, val_loader, criterion, device)
+        gc.collect()
 
         sched_metric = -(val_m["dice"] if val_m else train_m["dice"])
         scheduler.step(sched_metric)

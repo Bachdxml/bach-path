@@ -315,6 +315,12 @@ body {
   font-size: 12px;
 }
 
+.training-format {
+  font-size: 12px;
+  margin-top: -8px;
+  word-break: break-all;
+}
+
 .training-folder-row {
   display: flex;
   gap: 12px;

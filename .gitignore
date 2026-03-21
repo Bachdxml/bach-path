@@ -28,4 +28,8 @@ Thumbs.db
 data/
 tiles_cache/
 inference_runs/
+training_runs/
 logs/
+
+# Training data
+MASTERTILE/

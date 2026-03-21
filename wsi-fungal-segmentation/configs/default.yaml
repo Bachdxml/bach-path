@@ -2,11 +2,11 @@
 # Data
 # -----------------------------------------------------------------------
 data:
-  export_root: ""  # Set via --export-root or API
+  export_root: ""  # Set via --export-root or API (e.g. MASTERTILE folder)
   img_size: 512
   val_ratio: 0.2
   random_seed: 42
-  flat_format: true   # QuPath export: <slide>/images, <slide>/masks
+  flat_format: false  # MASTERTILE format: <slide>/<density>/images, <slide>/<density>/masks
 
 # -----------------------------------------------------------------------
 # DataLoader

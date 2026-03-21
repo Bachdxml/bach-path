@@ -54,12 +54,16 @@
           <div class="training-form">
             <h2>Train Model</h2>
             <p class="training-hint">
-              Import a folder of QuPath-exported tiles. Each slide should have
-              <code>images/</code> and <code>masks/</code> subfolders with
-              matching PNG files (e.g. tile.png and tile_mask.png).
+              Use a folder structured like <strong>MASTERTILE</strong>: each slide is a subfolder
+              containing density classes (<code>low</code>, <code>medium</code>, <code>high</code>, <code>negative</code>).
+              Each density has <code>images/</code> and <code>masks/</code> with matching
+              PNGs (e.g. tile_x512_y1024.png and tile_x512_y1024_mask.png).
+            </p>
+            <p class="training-hint training-format">
+              <code>MASTERTILE/slide.svs[...]/low/images/</code>, <code>.../medium/masks/</code>, etc.
             </p>
             <div class="form-group">
-              <label>Marked slides folder</label>
+              <label>Training data folder (e.g. MASTERTILE)</label>
               <div class="training-folder-row">
                 <input type="text" id="training-folder-path" readonly placeholder="Select a folder..." />
                 <button class="btn btn-primary" id="btn-select-training-folder">Select folder</button>

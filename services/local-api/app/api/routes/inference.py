@@ -23,7 +23,7 @@ _inference_executor = ThreadPoolExecutor(max_workers=2)
 
 def _get_script_path() -> Path:
     """Path to run_inference_api.py"""
-    base = Path(__file__).resolve().parent.parent.parent.parent.parent
+    base = Path(__file__).resolve().parent.parent.parent.parent.parent.parent
     script = base / "wsi-fungal-segmentation" / "scripts" / "run_inference_api.py"
     return script
 
@@ -34,7 +34,7 @@ def _get_checkpoint_path() -> Path:
     env_path = os.environ.get("INFERENCE_CHECKPOINT")
     if env_path:
         return Path(env_path).resolve()
-    base = Path(__file__).resolve().parent.parent.parent.parent.parent
+    base = Path(__file__).resolve().parent.parent.parent.parent.parent.parent
     return base / "wsi-fungal-segmentation" / "checkpoints" / "best_model.pth"
 
 
@@ -44,7 +44,7 @@ def _get_inference_python() -> str:
     env_py = os.environ.get("INFERENCE_PYTHON")
     if env_py:
         return env_py
-    base = Path(__file__).resolve().parent.parent.parent.parent.parent
+    base = Path(__file__).resolve().parent.parent.parent.parent.parent.parent
     for venv in [
         base / "wsi-fungal-segmentation" / ".venv" / "bin" / "python",
         base / "wsi-fungal-segmentation" / ".venv" / "Scripts" / "python.exe",
