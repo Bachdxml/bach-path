@@ -84,10 +84,19 @@ def _run_training_task(export_root: str, progress_path: Path):
         )
         _, stderr = _training_process.communicate(timeout=86400)  # 24h max
         if _training_process.returncode != 0:
+            code = _training_process.returncode
+            signal_hint = ""
+            if code == -9:
+                signal_hint = (
+                    "Process was killed (SIGKILL, exit -9). "
+                    "This is often due to system memory pressure. "
+                    "Try smaller training settings (e.g., batch size 1 or smaller image size), "
+                    "close other heavy apps, then retry.\n\n"
+                )
             with open(progress_path, "w") as f:
                 json.dump({
                     "status": "failed",
-                    "error_message": (stderr or f"Exit code {_training_process.returncode}")[:2000],
+                    "error_message": (signal_hint + (stderr or f"Exit code {code}"))[:2000],
                 }, f, indent=2)
     except subprocess.TimeoutExpired:
         _training_process.kill()

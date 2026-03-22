@@ -68,7 +68,7 @@ class DensityEmbedding(nn.Module):
 
 
 class ResidualAttentionUNet(nn.Module):
-    def __init__(self, in_ch, out_ch, num_density_classes, dropout_p):
+    def __init__(self, in_ch, out_ch, num_density_classes, dropout_p=0.3):
         super().__init__()
 
         # Encoder
@@ -120,7 +120,7 @@ class ResidualAttentionUNet(nn.Module):
         self.aux_head2 = nn.Conv2d(128, 1, 1)
 
     def forward(self, x, density_label: torch.Tensor = None):
-       """
+        """
         x             : [B, 3, H, W]
         density_label : [B] long tensor at training time, None at inference
 
@@ -184,7 +184,7 @@ class ResidualAttentionUNet(nn.Module):
 
 # ── Sanity check ─────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    model  = ResidualAttentionUNet(in_ch=3, out_ch=1, num_density_classes=4, dropout_p=0.3))
+    model  = ResidualAttentionUNet(in_ch=3, out_ch=1, num_density_classes=4, dropout_p=0.3)
     x      = torch.randn(2, 3, 512, 512)
     labels = torch.tensor([0, 2], dtype=torch.long)
     seg_out, density_out, aux3, aux2 = model(x, labels)  # was seg_out, density_out = ...
@@ -194,4 +194,3 @@ if __name__ == "__main__":
     print(f"Aux3 output    : {aux3.shape}")           # [2, 1, 32, 32]
     print(f"Aux2 output    : {aux2.shape}")           # [2, 1, 64, 64]
     print(f"Params         : {sum(p.numel() for p in model.parameters()):,}")
-    ,}")

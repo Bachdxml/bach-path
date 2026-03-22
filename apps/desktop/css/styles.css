@@ -133,6 +133,16 @@ body {
   background: var(--accent-hover);
 }
 
+.btn-secondary {
+  background: var(--surface-hover);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.btn-secondary:hover {
+  border-color: var(--accent);
+}
+
 .import-status {
   min-height: 24px;
   font-size: 13px;
@@ -244,6 +254,20 @@ body {
   height: 100%;
 }
 
+.viewer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.viewer-inference-status {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
 /* Settings tab */
 #tab-settings {
   padding: 24px;
@@ -278,6 +302,27 @@ body {
   border-radius: 6px;
   color: var(--text);
   font-size: 14px;
+}
+
+.form-group select {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.settings-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.settings-row select {
+  flex: 1;
+  min-width: 0;
 }
 
 .settings-hint {

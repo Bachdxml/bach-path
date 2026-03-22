@@ -107,10 +107,16 @@ async function loadLatestInferenceOverlay(slideId) {
 async function handleRunInference() {
   if (!currentSlideId) return;
   runInferenceBtn.disabled = true;
-  setInferenceStatus("Starting...");
+  const selectedModel =
+    typeof window.getSelectedInferenceModel === "function"
+      ? window.getSelectedInferenceModel()
+      : null;
+  setInferenceStatus(
+    selectedModel ? `Starting... (${selectedModel})` : "Starting..."
+  );
 
   try {
-    const run = await window.slidesApi.runInference(currentSlideId);
+    const run = await window.slidesApi.runInference(currentSlideId, selectedModel);
     setInferenceStatus("Running...");
 
     const poll = async () => {

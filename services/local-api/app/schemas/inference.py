@@ -6,6 +6,7 @@ from datetime import datetime
 class InferenceRunCreate(BaseModel):
     model_name: str = "ResidualAttentionUNet"
     model_version: str = "1.0"
+    model_file: str | None = None
 
 
 class InferenceRunResponse(BaseModel):
@@ -35,3 +36,16 @@ class RegionResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class InferenceModelInfo(BaseModel):
+    id: str
+    label: str
+    path: str
+    size_bytes: int
+    modified_at: str | None = None
+
+
+class InferenceModelListResponse(BaseModel):
+    models: list[InferenceModelInfo]
+    default_model_id: str | None = None

@@ -449,11 +449,13 @@ def make_stratified_sampler(tile_pairs: list) -> WeightedRandomSampler:
     equal expected frequency in every batch, regardless of how many
     tiles exist per class.
     """
+    if not tile_pairs:
+        raise ValueError("Cannot create stratified sampler for an empty dataset.")
+
     labels = [DENSITY_LABELS.get(p.density, 0) for p in tile_pairs]
     class_counts = [0] * len(DENSITY_LABELS)
     for lbl in labels:
         class_counts[lbl] += 1
-    sample_weights = [class_weights[lbl] for lbl in labels]
 
     # Weight per class = 1 / count (zero-safe)
     class_weights = [1.0 / max(c, 1) for c in class_counts]

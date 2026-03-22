@@ -47,11 +47,13 @@ function getTileUrl(slideId, level, x, y) {
   return `${apiBase}/slides/${slideId}/tiles/${level}/${x}/${y}.jpg`;
 }
 
-async function runInference(slideId) {
+async function runInference(slideId, modelFile = null) {
+  const payload = {};
+  if (modelFile) payload.model_file = modelFile;
   const res = await fetch(`${apiBase}/inference/slides/${slideId}/run`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({}),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error(await parseErrorResponse(res));
   return res.json();
@@ -71,6 +73,12 @@ async function getInferenceRegions(runId) {
 
 async function getSlideInferenceRuns(slideId) {
   const res = await fetch(`${apiBase}/inference/slides/${slideId}/runs`);
+  if (!res.ok) throw new Error(await parseErrorResponse(res));
+  return res.json();
+}
+
+async function listInferenceModels() {
+  const res = await fetch(`${apiBase}/inference/models`);
   if (!res.ok) throw new Error(await parseErrorResponse(res));
   return res.json();
 }
@@ -103,6 +111,7 @@ window.slidesApi = {
   getInferenceRun,
   getInferenceRegions,
   getSlideInferenceRuns,
+  listInferenceModels,
   startTraining,
   getTrainingStatus,
 };

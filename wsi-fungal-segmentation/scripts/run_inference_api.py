@@ -82,7 +82,7 @@ def main():
     # Load model
     try:
         device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-        model = ResidualAttentionUNet(in_ch=3, out_ch=1, num_density_classes=4)
+        model = ResidualAttentionUNet(in_ch=3, out_ch=1, num_density_classes=4, dropout_p=0.3)
         ckpt = torch.load(checkpoint_path, map_location=device, weights_only=True)
         if "model_state_dict" in ckpt:
             model.load_state_dict(ckpt["model_state_dict"])
@@ -157,8 +157,8 @@ def main():
 
             try:
                 with torch.no_grad():
-                    logits = model(batch, density_batch)
-                probs = torch.sigmoid(logits)
+                    seg_logits, _, _, _ = model(batch, density_batch)
+                probs = torch.sigmoid(seg_logits)
             except Exception as e:
                 print(f"Inference error at batch {i // batch_size}: {e}", file=sys.stderr)
                 return EXIT_INFERENCE

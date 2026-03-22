@@ -8,6 +8,7 @@ Usage:
 
 import argparse
 import sys
+import platform
 from pathlib import Path
 
 # scripts/ is not the package root; ensure wsi-fungal-segmentation is on sys.path
@@ -180,7 +181,18 @@ def _run_training(cfg: dict, progress_file: str | None = None):
     img_size   = cfg["data"]["img_size"]
     batch_size = cfg["loader"]["batch_size"]
     n_workers  = cfg["loader"]["num_workers"]
-    pin        = torch.cuda.is_available()
+    has_cuda = torch.cuda.is_available()
+    has_mps = bool(getattr(torch.backends, "mps", None)) and torch.backends.mps.is_available()
+    pin = has_cuda
+
+    # Desktop training on macOS/CPU can be killed by OS memory pressure (exit -9).
+    # Use a conservative batch size for large tiles when CUDA is unavailable.
+    if not has_cuda and img_size >= 512 and batch_size > 1:
+        print(
+            f"⚠️  Reducing batch size from {batch_size} to 1 for stability "
+            f"(device={'mps' if has_mps else 'cpu'}, img_size={img_size}, os={platform.system()})."
+        )
+        batch_size = 1
 
     train_ds = AugmentedWSI_Dataset(train_pairs, img_size=img_size, augment=True)
     val_ds   = AugmentedWSI_Dataset(val_pairs,   img_size=img_size, augment=False) \
@@ -194,7 +206,12 @@ def _run_training(cfg: dict, progress_file: str | None = None):
                    if val_ds else None
 
     print(f"Train: {len(train_ds)} tiles  |  Val: {len(val_ds) if val_ds else 0} tiles")
-    device    = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if has_cuda:
+        device = torch.device("cuda")
+    elif has_mps:
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
     print(f"Device: {device}")
 
     model     = ResidualAttentionUNet(**cfg["model"]).to(device)
