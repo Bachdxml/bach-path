@@ -9,6 +9,7 @@ Usage:
 import argparse
 import sys
 import platform
+import signal
 from pathlib import Path
 
 # scripts/ is not the package root; ensure wsi-fungal-segmentation is on sys.path
@@ -43,7 +44,7 @@ from src import (
 # ---------------------------------------------------------------------------
 
 def train_one_epoch(model, loader, criterion, optimizer, device,
-                    epoch_num, clip_grad=1.0):
+                    epoch_num, clip_grad=1.0, should_stop=None):
     """
     Runs one full pass over the training DataLoader.
     Expects loader to yield (imgs, masks, density_labels).
@@ -56,8 +57,11 @@ def train_one_epoch(model, loader, criterion, optimizer, device,
     running_iou  = 0.0
     n_batches    = len(loader)
     log_interval = max(1, n_batches // 10)
+    processed_batches = 0
 
     for batch_idx, (imgs, masks, density_labels) in enumerate(loader):
+        if callable(should_stop) and should_stop():
+            break
         imgs           = imgs.to(device, non_blocking=True)
         masks          = masks.to(device, non_blocking=True)
         density_labels = density_labels.to(device, non_blocking=True)
@@ -78,16 +82,19 @@ def train_one_epoch(model, loader, criterion, optimizer, device,
         running_loss += total.item()
         running_dice += m['dice']
         running_iou  += m['iou']
+        processed_batches += 1
 
         if batch_idx % log_interval == 0:
             print(f"  [Epoch {epoch_num} | Batch {batch_idx+1}/{n_batches}] "
                   f"loss={total.item():.4f}  dice={m['dice']:.4f}  "
                   f"iou={m['iou']:.4f}")
 
+    denom = max(1, processed_batches)
     return {
-        "loss": running_loss / n_batches,
-        "dice": running_dice / n_batches,
-        "iou":  running_iou  / n_batches,
+        "loss": running_loss / denom,
+        "dice": running_dice / denom,
+        "iou":  running_iou  / denom,
+        "stopped_early": processed_batches < n_batches,
     }
 
 def evaluate(model, loader, criterion, device):
@@ -233,6 +240,7 @@ def _run_training(cfg: dict, progress_file: str | None = None):
     }
     best_val_dice    = -1.0
     no_improve_count = 0
+    stop_requested = {"value": False}
 
     def write_progress(status: str, epoch: int = 0, **kwargs):
         if progress_file:
@@ -241,54 +249,90 @@ def _run_training(cfg: dict, progress_file: str | None = None):
             with open(progress_file, "w") as f:
                 json.dump(data, f, indent=2)
 
+    def handle_stop_signal(signum, frame):
+        stop_requested["value"] = True
+        print(f"\n⚠️  Stop requested (signal {signum}). Will save checkpoint and exit after current step.")
+
+    prev_sigterm = signal.getsignal(signal.SIGTERM)
+    prev_sigint = signal.getsignal(signal.SIGINT)
+    signal.signal(signal.SIGTERM, handle_stop_signal)
+    signal.signal(signal.SIGINT, handle_stop_signal)
+
     print("\n" + "=" * 60)
     print("Starting Training")
     print("=" * 60)
     write_progress("running", epoch=0)
 
-    for epoch in range(1, t_cfg["epochs"] + 1):
-        current_lr = optimizer.param_groups[0]["lr"]
-        print(f"\n{'='*60}")
-        print(f"Epoch {epoch}/{t_cfg['epochs']}   |   LR = {current_lr:.2e}")
-        print("=" * 60)
+    epoch = 0
+    try:
+        for epoch in range(1, t_cfg["epochs"] + 1):
+            current_lr = optimizer.param_groups[0]["lr"]
+            print(f"\n{'='*60}")
+            print(f"Epoch {epoch}/{t_cfg['epochs']}   |   LR = {current_lr:.2e}")
+            print("=" * 60)
 
-        train_m = train_one_epoch(
-            model, train_loader, criterion, optimizer, device,
-            epoch_num=epoch, clip_grad=t_cfg["clip_grad"]
-        )
-        gc.collect()
-        val_m = evaluate(model, val_loader, criterion, device)
-        gc.collect()
+            train_m = train_one_epoch(
+                model, train_loader, criterion, optimizer, device,
+                epoch_num=epoch, clip_grad=t_cfg["clip_grad"],
+                should_stop=lambda: stop_requested["value"],
+            )
+            gc.collect()
+            val_m = evaluate(model, val_loader, criterion, device) if not stop_requested["value"] else None
+            gc.collect()
 
-        sched_metric = val_m["dice"] if val_m else train_m["dice"]
-        scheduler.step(sched_metric)
+            sched_metric = val_m["dice"] if val_m else train_m["dice"]
+            scheduler.step(sched_metric)
 
-        history["lr"].append(current_lr)
-        history["train_loss"].append(train_m["loss"])
-        history["train_dice"].append(train_m["dice"])
-        history["train_iou"].append(train_m["iou"])
+            history["lr"].append(current_lr)
+            history["train_loss"].append(train_m["loss"])
+            history["train_dice"].append(train_m["dice"])
+            history["train_iou"].append(train_m["iou"])
 
-        
-        history["val_loss"].append(val_m["loss"] if val_m else None)
-        history["val_dice"].append(val_m["dice"] if val_m else None)
-        history["val_iou"].append(val_m["iou"]  if val_m else None)
+            
+            history["val_loss"].append(val_m["loss"] if val_m else None)
+            history["val_dice"].append(val_m["dice"] if val_m else None)
+            history["val_iou"].append(val_m["iou"]  if val_m else None)
 
-        write_progress("running", epoch=epoch,
-                      train_loss=train_m["loss"], train_dice=train_m["dice"],
-                      val_loss=val_m["loss"] if val_m else None,
-                      val_dice=val_m["dice"] if val_m else None,
-                      best_dice=best_val_dice)
+            write_progress("running", epoch=epoch,
+                        train_loss=train_m["loss"], train_dice=train_m["dice"],
+                        val_loss=val_m["loss"] if val_m else None,
+                        val_dice=val_m["dice"] if val_m else None,
+                        best_dice=best_val_dice)
 
-        print(f"\nEpoch {epoch} Summary:")
-        print(f"  Train → loss={train_m['loss']:.4f}  dice={train_m['dice']:.4f}  iou={train_m['iou']:.4f}")
-        if val_m:
-            print(f"  Val   → loss={val_m['loss']:.4f}  dice={val_m['dice']:.4f}  iou={val_m['iou']:.4f}")
-            print(f"           precision={val_m['precision']:.4f}  recall={val_m['recall']:.4f}")
+            print(f"\nEpoch {epoch} Summary:")
+            print(f"  Train → loss={train_m['loss']:.4f}  dice={train_m['dice']:.4f}  iou={train_m['iou']:.4f}")
+            if val_m:
+                print(f"  Val   → loss={val_m['loss']:.4f}  dice={val_m['dice']:.4f}  iou={val_m['iou']:.4f}")
+                print(f"           precision={val_m['precision']:.4f}  recall={val_m['recall']:.4f}")
 
-        monitor_dice = val_m["dice"] if val_m else train_m["dice"]
-        if monitor_dice > best_val_dice:
-            best_val_dice    = monitor_dice
-            no_improve_count = 0
+            monitor_dice = val_m["dice"] if val_m else train_m["dice"]
+            if monitor_dice > best_val_dice:
+                best_val_dice    = monitor_dice
+                no_improve_count = 0
+                torch.save({
+                    "epoch":                epoch,
+                    "model_state_dict":     model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict(),
+                    "best_dice":            best_val_dice,
+                    "history":              history,
+                    "cfg": cfg,
+                }, checkpoint_path)
+                print(f"  ✅  New best dice={best_val_dice:.4f} — checkpoint saved.")
+            else:
+                no_improve_count += 1
+                print(f"  ⏳  No improvement ({no_improve_count}/{t_cfg['early_stop_patience']}). Best={best_val_dice:.4f}")
+
+            if stop_requested["value"]:
+                print(f"\n🛑 Stop requested by user at epoch {epoch}.")
+                break
+
+            if no_improve_count >= t_cfg["early_stop_patience"]:
+                print(f"\n🛑 Early stopping at epoch {epoch}.")
+                break
+
+        if stop_requested["value"]:
+            stopped_checkpoint = str(Path(checkpoint_path).with_name("stopped_model.pth"))
             torch.save({
                 "epoch":                epoch,
                 "model_state_dict":     model.state_dict(),
@@ -297,23 +341,25 @@ def _run_training(cfg: dict, progress_file: str | None = None):
                 "best_dice":            best_val_dice,
                 "history":              history,
                 "cfg": cfg,
-            }, checkpoint_path)
-            print(f"  ✅  New best dice={best_val_dice:.4f} — checkpoint saved.")
-        else:
-            no_improve_count += 1
-            print(f"  ⏳  No improvement ({no_improve_count}/{t_cfg['early_stop_patience']}). Best={best_val_dice:.4f}")
+                "stopped_by_user":      True,
+            }, stopped_checkpoint)
+            print("\n" + "=" * 60)
+            print(f"Training stopped by user. Saved checkpoint: {stopped_checkpoint}")
+            print("=" * 60)
+            write_progress("stopped", epoch=epoch, best_dice=best_val_dice,
+                        checkpoint_path=str(stopped_checkpoint))
+            return history
 
-        if no_improve_count >= t_cfg["early_stop_patience"]:
-            print(f"\n🛑 Early stopping at epoch {epoch}.")
-            break
-
-    print("\n" + "=" * 60)
-    print(f"Training complete. Best dice: {best_val_dice:.4f}")
-    print(f"Checkpoint: {checkpoint_path}")
-    print("=" * 60)
-    write_progress("succeeded", epoch=epoch, best_dice=best_val_dice,
-                   checkpoint_path=str(checkpoint_path))
-    return history
+        print("\n" + "=" * 60)
+        print(f"Training complete. Best dice: {best_val_dice:.4f}")
+        print(f"Checkpoint: {checkpoint_path}")
+        print("=" * 60)
+        write_progress("succeeded", epoch=epoch, best_dice=best_val_dice,
+                    checkpoint_path=str(checkpoint_path))
+        return history
+    finally:
+        signal.signal(signal.SIGTERM, prev_sigterm)
+        signal.signal(signal.SIGINT, prev_sigint)
 
 
 def main(cfg_path: str = "configs/default.yaml"):

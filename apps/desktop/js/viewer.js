@@ -32,18 +32,54 @@ async function showViewer(slideId) {
   }
 
   try {
-    const meta = await window.slidesApi.getSlideMetadata(slideId);
     const apiBase = window.slidesApi.getApiBase();
-    const tileSource = {
-      type: "custom",
-      width: meta.dimensions[0],
-      height: meta.dimensions[1],
-      tileSize: 256,
-      minLevel: 0,
-      maxLevel: meta.level_count - 1,
-      getTileUrl: (level, x, y) =>
-        `${apiBase}/slides/${slideId}/tiles/${level}/${x}/${y}.jpg`,
-    };
+    const dziUrl = `${apiBase}/slides/${slideId}/deepzoom.dzi`;
+    let tileSource = null;
+
+    // Prefer pre-generated DeepZoom: fastest open + smooth zoom.
+    try {
+      const dziCheck = await fetch(dziUrl, { method: "HEAD" });
+      if (dziCheck.ok) {
+        tileSource = dziUrl;
+      }
+    } catch (_) {}
+
+    // Fallback to OpenSlide-backed custom tiles when DeepZoom is unavailable.
+    if (!tileSource) {
+      const meta = await window.slidesApi.getSlideMetadata(slideId);
+      const osdLevelDimensions = (meta.level_dimensions || []).slice().reverse();
+      if (!osdLevelDimensions.length) {
+        osdLevelDimensions.push([meta.dimensions[0], meta.dimensions[1]]);
+      }
+      const maxLevel = Math.max(0, osdLevelDimensions.length - 1);
+      const maxWidth = Math.max(1, osdLevelDimensions[maxLevel][0] || 1);
+      const osdToOpenSlideLevel = (osdLevel) => maxLevel - osdLevel;
+
+      tileSource = {
+        type: "custom",
+        width: meta.dimensions[0],
+        height: meta.dimensions[1],
+        tileSize: 256,
+        minLevel: 0,
+        maxLevel,
+        getLevelScale: (level) => {
+          const w = osdLevelDimensions[level]?.[0] || maxWidth;
+          return w / maxWidth;
+        },
+        getNumTiles: (level) => {
+          const w = osdLevelDimensions[level]?.[0] || osdLevelDimensions[maxLevel][0];
+          const h = osdLevelDimensions[level]?.[1] || osdLevelDimensions[maxLevel][1];
+          return new OpenSeadragon.Point(
+            Math.max(1, Math.ceil(w / 256)),
+            Math.max(1, Math.ceil(h / 256))
+          );
+        },
+        getTileUrl: (level, x, y) => {
+          const openSlideLevel = osdToOpenSlideLevel(level);
+          return `${apiBase}/slides/${slideId}/tiles/${openSlideLevel}/${x}/${y}.jpg`;
+        },
+      };
+    }
 
     viewer = OpenSeadragon({
       element: viewerContainer,
@@ -51,9 +87,21 @@ async function showViewer(slideId) {
       prefixUrl: "node_modules/openseadragon/build/openseadragon/images/",
       showNavigator: true,
       navigatorPosition: "BOTTOM_RIGHT",
+      showNavigationControl: true,
+      // Photo-like behavior: keep slide inside viewport bounds.
+      constrainDuringPan: true,
+      visibilityRatio: 1.0,
+      wrapHorizontal: false,
+      wrapVertical: false,
+      // Keep initial fit visually larger without forcing crop.
+      minZoomImageRatio: 0.9,
+      immediateRender: true,
+      homeFillsViewer: false,
     });
 
     viewer.addHandler("open", () => {
+      // Start with full-slide fit in view every time.
+      viewer.viewport.goHome(true);
       loadLatestInferenceOverlay(slideId);
     });
   } catch (err) {

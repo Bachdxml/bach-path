@@ -2,15 +2,17 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 from pathlib import Path
-import os
+import logging
 
 from app.api.deps import get_db
 from app.schemas.slides import SlideImportRequest, SlideImportResponse, SlideListResponse, SlideListItem, SlideMetadataResponse
 from app.models.slide import Slide
 from app.slides.storage import copy_into_managed_storage
 from app.slides.metadata import read_openslide_metadata
+from app.slides.deepzoom import deepzoom_paths, ensure_deepzoom, has_deepzoom
 
 from fastapi import Response
+from fastapi.responses import FileResponse
 import io
 
 import openslide
@@ -19,6 +21,7 @@ from PIL import Image
 from app.util.exceptions import AppError, ErrorCode
 
 router = APIRouter(prefix="/slides", tags=["slides"])
+logger = logging.getLogger(__name__)
 
 WSI_EXTENSIONS = {".svs", ".tif", ".tiff"}
 
@@ -76,6 +79,12 @@ def import_slide(payload: SlideImportRequest, request: Request, db: Session = De
 
     slide.stored_filename = dest_filename
     slide.stored_path = str(dest_path)
+
+    try:
+        ensure_deepzoom(dest_path, settings.tiles_cache_dir, slide.id)
+    except Exception as e:
+        # Keep import successful even if pre-generation fails; viewer can still use dynamic tiles.
+        logger.warning("DeepZoom generation failed for slide %s: %s", slide.id, e)
 
     return SlideImportResponse(slide_id=slide.id, stored_path=slide.stored_path)
 
@@ -168,8 +177,6 @@ def slide_tile(
     overlap = 0  # set to e.g. 10 for 10px overlap between tiles (helps with some viewers)
 
     # 7) Cache tile to disk
-    cache_dir = Path(settings.tiles_cache_dir) if hasattr(settings, "tiles_cache_dir") else (settings.app_data_dir / "tiles_cache")
-    
     tile_path = (
         settings.app_data_dir
         / "tiles_cache"
@@ -239,3 +246,51 @@ def slide_tile(
             osr.close()
         except Exception:
             pass
+
+
+@router.get("/{slide_id}/deepzoom.dzi")
+def slide_deepzoom_descriptor(
+    slide_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    settings = request.app.state.settings
+    slide = db.get(Slide, slide_id)
+    if not slide:
+        raise AppError(ErrorCode.NOT_FOUND, f"Slide {slide_id} not found")
+
+    slide_path = Path(slide.stored_path)
+    if not slide_path.exists():
+        raise AppError(ErrorCode.STORAGE_INCONSISTENT, "Slide file missing from managed storage")
+
+    dz_paths = deepzoom_paths(settings.tiles_cache_dir, slide_id)
+    if not has_deepzoom(dz_paths):
+        raise AppError(ErrorCode.NOT_FOUND, "DeepZoom tiles not pre-generated for this slide")
+    return FileResponse(path=dz_paths.descriptor, media_type="application/xml")
+
+
+@router.get("/{slide_id}/slide_files/{level}/{x}_{y}.jpg")
+def slide_deepzoom_tile(
+    slide_id: int,
+    level: int,
+    x: int,
+    y: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    settings = request.app.state.settings
+    slide = db.get(Slide, slide_id)
+    if not slide:
+        raise AppError(ErrorCode.NOT_FOUND, f"Slide {slide_id} not found")
+
+    slide_path = Path(slide.stored_path)
+    if not slide_path.exists():
+        raise AppError(ErrorCode.STORAGE_INCONSISTENT, "Slide file missing from managed storage")
+
+    dz_paths = deepzoom_paths(settings.tiles_cache_dir, slide_id)
+    if not has_deepzoom(dz_paths):
+        raise AppError(ErrorCode.NOT_FOUND, "DeepZoom tiles not pre-generated for this slide")
+    tile_path = dz_paths.tiles_dir / str(level) / f"{x}_{y}.jpg"
+    if not tile_path.exists():
+        raise AppError(ErrorCode.NOT_FOUND, f"Tile out of bounds: level={level} x={x} y={y}")
+    return FileResponse(path=tile_path, media_type="image/jpeg")

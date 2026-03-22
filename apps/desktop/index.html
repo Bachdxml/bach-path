@@ -69,20 +69,6 @@
                 <button class="btn btn-primary" id="btn-select-training-folder">Select folder</button>
               </div>
             </div>
-            <div class="training-actions">
-              <button class="btn btn-primary" id="btn-start-training">Start training</button>
-            </div>
-            <div class="training-status" id="training-status"></div>
-          </div>
-        </section>
-
-        <section id="tab-settings" class="tab-pane">
-          <div class="settings-form">
-            <h2>Settings</h2>
-            <div class="form-group">
-              <label for="api-port">API Port</label>
-              <input type="number" id="api-port" min="1024" max="65535" value="8765" />
-            </div>
             <div class="form-group">
               <label for="inference-model-select">Inference Model</label>
               <div class="settings-row">
@@ -94,6 +80,21 @@
               <p class="settings-hint" id="inference-model-status">
                 Models are loaded from wsi-fungal-segmentation/models
               </p>
+            </div>
+            <div class="training-actions">
+              <button class="btn btn-primary" id="btn-start-training">Start training</button>
+              <button class="btn btn-danger" id="btn-stop-training" disabled>Stop training</button>
+            </div>
+            <div class="training-status" id="training-status"></div>
+          </div>
+        </section>
+
+        <section id="tab-settings" class="tab-pane">
+          <div class="settings-form">
+            <h2>Settings</h2>
+            <div class="form-group">
+              <label for="api-port">API Port</label>
+              <input type="number" id="api-port" min="1024" max="65535" value="8765" />
             </div>
             <p class="settings-hint">Changes take effect on next app restart.</p>
             <button class="btn btn-primary" id="btn-save-settings">Save</button>

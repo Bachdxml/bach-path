@@ -43,7 +43,7 @@ class TrainingStartRequest(BaseModel):
 
 
 class TrainingStatusResponse(BaseModel):
-    status: str  # idle | running | succeeded | failed
+    status: str  # idle | running | stopped | succeeded | failed
     epoch: int | None = None
     train_loss: float | None = None
     train_dice: float | None = None
@@ -85,6 +85,13 @@ def _run_training_task(export_root: str, progress_path: Path):
         _, stderr = _training_process.communicate(timeout=86400)  # 24h max
         if _training_process.returncode != 0:
             code = _training_process.returncode
+            try:
+                with open(progress_path) as f:
+                    current = json.load(f)
+                if current.get("status") in {"stopped", "succeeded"}:
+                    return
+            except (json.JSONDecodeError, OSError):
+                pass
             signal_hint = ""
             if code == -9:
                 signal_hint = (
@@ -93,9 +100,11 @@ def _run_training_task(export_root: str, progress_path: Path):
                     "Try smaller training settings (e.g., batch size 1 or smaller image size), "
                     "close other heavy apps, then retry.\n\n"
                 )
+            elif code == -15:
+                signal_hint = "Training stopped by user.\n\n"
             with open(progress_path, "w") as f:
                 json.dump({
-                    "status": "failed",
+                    "status": "stopped" if code == -15 else "failed",
                     "error_message": (signal_hint + (stderr or f"Exit code {code}"))[:2000],
                 }, f, indent=2)
     except subprocess.TimeoutExpired:
@@ -167,3 +176,21 @@ def get_training_status(request: Request):
         checkpoint_path=data.get("checkpoint_path"),
         error_message=data.get("error_message"),
     )
+
+
+@router.post("/stop", response_model=TrainingStatusResponse)
+def stop_training(request: Request):
+    global _training_process
+    if _training_process is None or _training_process.poll() is not None:
+        raise AppError(ErrorCode.CONFLICT, "No training process is currently running")
+
+    _training_process.terminate()
+    settings = request.app.state.settings
+    progress_path = settings.training_runs_dir / "current.json"
+    try:
+        with open(progress_path, "w") as f:
+            json.dump({"status": "running", "error_message": "Stop requested..."}, f, indent=2)
+    except OSError:
+        pass
+
+    return TrainingStatusResponse(status="running", error_message="Stop requested...")

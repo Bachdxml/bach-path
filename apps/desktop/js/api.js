@@ -99,6 +99,16 @@ async function getTrainingStatus() {
   return res.json();
 }
 
+async function stopTraining() {
+  const res = await fetch(`${apiBase}/training/stop`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  if (!res.ok) throw new Error(await parseErrorResponse(res));
+  return res.json();
+}
+
 window.slidesApi = {
   setApiBase,
   getApiBase,
@@ -114,4 +124,5 @@ window.slidesApi = {
   listInferenceModels,
   startTraining,
   getTrainingStatus,
+  stopTraining,
 };

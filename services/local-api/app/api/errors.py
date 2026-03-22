@@ -13,7 +13,20 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def app_error_handler(request: Request, exc: AppError):
         rid = request.headers.get("x-request-id") or str(uuid.uuid4())
-        logger.warning("AppError", extra={"code": exc.code, "rid": rid, "path": str(request.url), "detail": exc.message})
+        # Put details in the message line (stderr formatters often ignore `extra`).
+        # NOT_FOUND is common during WSI viewing (tile probes, race conditions) — avoid WARNING spam.
+        line = f"{exc.code}: {exc.message} | {request.method} {request.url.path} | rid={rid}"
+        if exc.code == ErrorCode.NOT_FOUND:
+            logger.debug("AppError %s", line)
+        elif exc.code in (
+            ErrorCode.SLIDE_UNREADABLE,
+            ErrorCode.STORAGE_INCONSISTENT,
+            ErrorCode.DB_ERROR,
+            ErrorCode.INTERNAL,
+        ) or exc.http_status >= 500:
+            logger.warning("AppError %s", line)
+        else:
+            logger.info("AppError %s", line)
         return JSONResponse(
             status_code=exc.http_status,
             content={

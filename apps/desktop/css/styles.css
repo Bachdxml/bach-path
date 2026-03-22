@@ -133,6 +133,15 @@ body {
   background: var(--accent-hover);
 }
 
+.btn-danger {
+  background: #8b1e2b;
+  color: #fff;
+}
+
+.btn-danger:hover {
+  background: #a82837;
+}
+
 .btn-secondary {
   background: var(--surface-hover);
   color: var(--text);
@@ -379,6 +388,8 @@ body {
 
 .training-actions {
   margin-top: 20px;
+  display: flex;
+  gap: 12px;
 }
 
 .training-status {

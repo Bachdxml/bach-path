@@ -1,6 +1,7 @@
 const folderPathInput = document.getElementById("training-folder-path");
 const selectFolderBtn = document.getElementById("btn-select-training-folder");
 const startTrainingBtn = document.getElementById("btn-start-training");
+const stopTrainingBtn = document.getElementById("btn-stop-training");
 const trainingStatus = document.getElementById("training-status");
 
 let pollInterval = null;
@@ -13,16 +14,28 @@ async function pollTrainingStatus() {
   try {
     const s = await window.slidesApi.getTrainingStatus();
     if (s.status === "running") {
+      stopTrainingBtn.disabled = false;
       const epoch = s.epoch ?? 0;
       const trainInfo = s.train_dice != null
         ? `Epoch ${epoch} — loss: ${(s.train_loss ?? 0).toFixed(4)}  dice: ${(s.train_dice ?? 0).toFixed(4)}`
         : `Starting...`;
       const valInfo = s.val_dice != null ? `  Val dice: ${s.val_dice.toFixed(4)}` : "";
       setTrainingStatus(`<span class="training-running">Training: ${trainInfo}${valInfo}</span>`);
+      if (s.error_message) {
+        setTrainingStatus(`<span class="training-running">${s.error_message}</span>`);
+      }
+    } else if (s.status === "stopped") {
+      if (pollInterval) clearInterval(pollInterval);
+      pollInterval = null;
+      startTrainingBtn.disabled = false;
+      stopTrainingBtn.disabled = true;
+      const ckpt = s.checkpoint_path ? `<br/>Saved: ${s.checkpoint_path}` : "";
+      setTrainingStatus(`<span class="training-success">Training stopped by user.${ckpt}</span>`);
     } else if (s.status === "succeeded") {
       if (pollInterval) clearInterval(pollInterval);
       pollInterval = null;
       startTrainingBtn.disabled = false;
+      stopTrainingBtn.disabled = true;
       const best = s.best_dice != null ? (s.best_dice * 100).toFixed(1) : "?";
       setTrainingStatus(
         `<span class="training-success">Training complete. Best dice: ${best}%</span>`
@@ -31,9 +44,12 @@ async function pollTrainingStatus() {
       if (pollInterval) clearInterval(pollInterval);
       pollInterval = null;
       startTrainingBtn.disabled = false;
+      stopTrainingBtn.disabled = true;
       const err = s.error_message || "Unknown error";
       setTrainingStatus(`<span class="training-error">Failed: ${err}</span>`);
     } else if (s.status === "idle") {
+      startTrainingBtn.disabled = false;
+      stopTrainingBtn.disabled = true;
       setTrainingStatus("");
     }
   } catch (e) {
@@ -41,6 +57,7 @@ async function pollTrainingStatus() {
     if (pollInterval) clearInterval(pollInterval);
     pollInterval = null;
     startTrainingBtn.disabled = false;
+    stopTrainingBtn.disabled = true;
   }
 }
 
@@ -51,6 +68,7 @@ async function handleStartTraining() {
     return;
   }
   startTrainingBtn.disabled = true;
+  stopTrainingBtn.disabled = false;
   setTrainingStatus('<span class="training-running">Starting...</span>');
 
   try {
@@ -60,6 +78,21 @@ async function handleStartTraining() {
   } catch (err) {
     setTrainingStatus(`<span class="training-error">Error: ${err.message}</span>`);
     startTrainingBtn.disabled = false;
+    stopTrainingBtn.disabled = true;
+  }
+}
+
+async function handleStopTraining() {
+  stopTrainingBtn.disabled = true;
+  setTrainingStatus('<span class="training-running">Stopping and saving checkpoint...</span>');
+  try {
+    await window.slidesApi.stopTraining();
+    if (!pollInterval) {
+      pollInterval = setInterval(pollTrainingStatus, 2000);
+    }
+  } catch (err) {
+    setTrainingStatus(`<span class="training-error">Error: ${err.message}</span>`);
+    stopTrainingBtn.disabled = false;
   }
 }
 
@@ -73,6 +106,7 @@ function initTraining() {
   });
 
   startTrainingBtn?.addEventListener("click", handleStartTraining);
+  stopTrainingBtn?.addEventListener("click", handleStopTraining);
 }
 
 if (document.readyState === "loading") {
