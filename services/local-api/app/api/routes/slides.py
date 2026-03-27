@@ -8,7 +8,7 @@ from app.api.deps import get_db
 from app.schemas.slides import SlideImportRequest, SlideImportResponse, SlideListResponse, SlideListItem, SlideMetadataResponse
 from app.models.slide import Slide
 from app.slides.storage import copy_into_managed_storage
-from app.slides.metadata import read_openslide_metadata
+from app.slides.metadata import read_openslide_metadata, read_raster_metadata, RASTER_EXTENSIONS
 from app.slides.deepzoom import deepzoom_paths, ensure_deepzoom, has_deepzoom
 
 from fastapi import Response
@@ -23,7 +23,46 @@ from app.util.exceptions import AppError, ErrorCode
 router = APIRouter(prefix="/slides", tags=["slides"])
 logger = logging.getLogger(__name__)
 
-WSI_EXTENSIONS = {".svs", ".tif", ".tiff"}
+WSI_EXTENSIONS = {".svs", ".tif", ".tiff", ".png"}
+
+TILE_SIZE_DEFAULT = 256
+
+
+def _raster_thumbnail_jpeg(slide_path: Path, size: int) -> bytes:
+    with Image.open(slide_path) as img:
+        img = img.convert("RGB")
+        w, h = img.size
+        if w > size or h > size:
+            ratio = min(size / w, size / h)
+            new_w = max(1, int(w * ratio))
+            new_h = max(1, int(h * ratio))
+            img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        return buf.getvalue()
+
+
+def _raster_tile_jpeg(slide_path: Path, level: int, x: int, y: int, tile_size: int) -> bytes:
+    if level != 0:
+        raise AppError(ErrorCode.SLIDE_INVALID, f"Raster images have only level 0; got {level}")
+    with Image.open(slide_path) as img:
+        img = img.convert("RGB")
+        iw, ih = img.size
+        px = x * tile_size
+        py = y * tile_size
+        if px >= iw or py >= ih or x < 0 or y < 0:
+            raise AppError(ErrorCode.NOT_FOUND, f"Tile out of bounds: level={level} x={x} y={y}")
+        w = min(tile_size, iw - px)
+        h = min(tile_size, ih - py)
+        crop = img.crop((px, py, px + w, py + h))
+        if w != tile_size or h != tile_size:
+            padded = Image.new("RGB", (tile_size, tile_size))
+            padded.paste(crop, (0, 0))
+            crop = padded
+        buf = io.BytesIO()
+        crop.save(buf, format="JPEG", quality=85)
+        return buf.getvalue()
+
 
 # List all slides in db for gallery
 @router.get("", response_model=SlideListResponse)
@@ -52,7 +91,7 @@ def import_slide(payload: SlideImportRequest, request: Request, db: Session = De
         raise AppError(ErrorCode.SLIDE_INVALID, f"Not a file: {src}")
 
     # Basic extension gate (don’t rely solely on it)
-    if src.suffix.lower() not in {".svs", ".tif", ".tiff"}:
+    if src.suffix.lower() not in WSI_EXTENSIONS:
         raise AppError(ErrorCode.SLIDE_INVALID, f"Unsupported extension: {src.suffix}")
 
     # Create DB row first to reserve an ID (stable filename)
@@ -99,11 +138,17 @@ def slide_metadata(slide_id: int, db: Session = Depends(get_db)):
         # Clinical-track: DB says it exists but file is missing => integrity issue
         raise AppError(ErrorCode.STORAGE_INCONSISTENT, "Slide file missing from managed storage")
 
-    try:
-        meta = read_openslide_metadata(p)
-    except Exception as e:
-        # OpenSlide errors vary; treat as “unprocessable slide”
-        raise AppError(ErrorCode.SLIDE_UNREADABLE, f"OpenSlide failed: {e}")
+    if p.suffix.lower() in RASTER_EXTENSIONS:
+        try:
+            meta = read_raster_metadata(p)
+        except Exception as e:
+            raise AppError(ErrorCode.SLIDE_UNREADABLE, f"Could not read image: {e}")
+    else:
+        try:
+            meta = read_openslide_metadata(p)
+        except Exception as e:
+            # OpenSlide errors vary; treat as “unprocessable slide”
+            raise AppError(ErrorCode.SLIDE_UNREADABLE, f"OpenSlide failed: {e}")
 
     return SlideMetadataResponse(slide_id=slide_id, **meta)
 
@@ -121,6 +166,15 @@ def slide_thumbnail(
     slide_path = Path(slide.stored_path)
     if not slide_path.exists():
         raise AppError(ErrorCode.STORAGE_INCONSISTENT, "Slide file missing from managed storage")
+
+    if slide_path.suffix.lower() in RASTER_EXTENSIONS:
+        try:
+            jpg = _raster_thumbnail_jpeg(slide_path, size)
+            return Response(content=jpg, media_type="image/jpeg")
+        except AppError:
+            raise
+        except Exception as e:
+            raise AppError(ErrorCode.SLIDE_UNREADABLE, f"Could not read image: {e}")
 
     try:
         osr = openslide.OpenSlide(str(slide_path))
@@ -173,7 +227,7 @@ def slide_tile(
         raise AppError(ErrorCode.STORAGE_INCONSISTENT, "Slide file missing from managed storage")
 
     # Tile settings
-    TILE_SIZE = 256  # common default; adjust if your frontend expects something else
+    TILE_SIZE = TILE_SIZE_DEFAULT
     overlap = 0  # set to e.g. 10 for 10px overlap between tiles (helps with some viewers)
 
     # 7) Cache tile to disk
@@ -189,6 +243,16 @@ def slide_tile(
 
     if tile_path.exists():
         return Response(content=tile_path.read_bytes(), media_type="image/jpeg")
+
+    if slide_path.suffix.lower() in RASTER_EXTENSIONS:
+        try:
+            jpg_bytes = _raster_tile_jpeg(slide_path, level, x, y, TILE_SIZE)
+            tile_path.write_bytes(jpg_bytes)
+            return Response(content=jpg_bytes, media_type="image/jpeg")
+        except AppError:
+            raise
+        except Exception as e:
+            raise AppError(ErrorCode.SLIDE_UNREADABLE, f"Could not read image: {e}")
 
     # 2) Validate level exists + 3) compute tile region
     try:

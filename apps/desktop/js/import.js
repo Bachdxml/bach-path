@@ -4,7 +4,7 @@ const folderBtn = document.getElementById("btn-select-folder");
 const importStatus = document.getElementById("import-status");
 const importProgress = document.getElementById("import-progress");
 
-const WSI_EXTENSIONS = [".svs", ".tif", ".tiff"];
+const WSI_EXTENSIONS = [".svs", ".tif", ".tiff", ".png"];
 
 function getPathsFromFiles(files) {
   const paths = [];
@@ -74,7 +74,7 @@ function initImport() {
     if (paths.length) {
       importPaths(paths);
     } else {
-      setStatus("No valid WSI files (SVS, TIF, TIFF) dropped.", true);
+      setStatus("No valid files (SVS, TIF, TIFF, PNG) dropped.", true);
     }
   });
 
@@ -90,7 +90,7 @@ function initImport() {
     if (paths.length) {
       importPaths(paths);
     } else {
-      setStatus("No valid WSI files (SVS, TIF, TIFF) selected.", true);
+      setStatus("No valid files (SVS, TIF, TIFF, PNG) selected.", true);
     }
   });
 

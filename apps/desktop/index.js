@@ -5,7 +5,7 @@ const { spawn } = require("child_process");
 const http = require("http");
 
 const DEFAULT_PORT = 8765;
-const WSI_EXTENSIONS = new Set([".svs", ".tif", ".tiff"]);
+const WSI_EXTENSIONS = new Set([".svs", ".tif", ".tiff", ".png"]);
 
 let apiProcess = null;
 let mainWindow = null;
@@ -228,7 +228,7 @@ ipcMain.handle("select-files", async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ["openFile", "multiSelections"],
     filters: [
-      { name: "Whole Slide Images", extensions: ["svs", "tif", "tiff"] },
+      { name: "Slides & images", extensions: ["svs", "tif", "tiff", "png"] },
       { name: "All Files", extensions: ["*"] },
     ],
   });

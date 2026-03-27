@@ -28,6 +28,9 @@ if str(_project_root) not in sys.path:
 import openslide
 from src.model import ResidualAttentionUNet
 
+# Formats OpenSlide cannot open — run tile inference from a raster in memory.
+RASTER_SLIDE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
+
 # ImageNet normalization (matches training)
 MEAN = [0.485, 0.456, 0.406]
 STD = [0.229, 0.224, 0.225]
@@ -94,25 +97,25 @@ def main():
         print(f"Error loading model: {e}", file=sys.stderr)
         return EXIT_ARGS
 
-    # Open slide
-    try:
-        slide = openslide.OpenSlide(str(slide_path))
-    except Exception as e:
-        print(f"Error opening slide: {e}", file=sys.stderr)
-        return EXIT_SLIDE
+    tile_size = args.tile_size
+    stride = args.stride
+    level = args.level
 
-    try:
-        level = args.level
-        if level < 0 or level >= slide.level_count:
-            print(f"Error: Invalid level {level} (slide has {slide.level_count} levels)", file=sys.stderr)
+    # --- Raster image (PNG/JPEG): no OpenSlide ---
+    if slide_path.suffix.lower() in RASTER_SLIDE_EXTENSIONS:
+        try:
+            full_img = Image.open(slide_path).convert("RGB")
+        except Exception as e:
+            print(f"Error opening image: {e}", file=sys.stderr)
             return EXIT_SLIDE
 
-        level_w, level_h = slide.level_dimensions[level]
-        dims = slide.dimensions
-        tile_size = args.tile_size
-        stride = args.stride
+        if level != 0:
+            print("Error: Raster images only support --level 0", file=sys.stderr)
+            return EXIT_SLIDE
 
-        # Build tile grid (level coordinates)
+        level_w, level_h = full_img.size
+        dims = (level_w, level_h)
+
         tiles_x = list(range(0, level_w, stride))
         tiles_y = list(range(0, level_h, stride))
         tile_positions = []
@@ -131,63 +134,146 @@ def main():
         regions = []
         total_tiles = len(tile_positions)
         batch_size = args.batch_size
-
-        # Density label: 3 = negative (unknown at inference)
         density_label = torch.tensor([3] * batch_size, dtype=torch.long, device=device)
 
-        for i in range(0, total_tiles, batch_size):
-            batch_positions = tile_positions[i : i + batch_size]
-            batch_tensors = []
+        try:
+            for i in range(0, total_tiles, batch_size):
+                batch_positions = tile_positions[i : i + batch_size]
+                batch_tensors = []
 
-            for x, y, w, h in batch_positions:
-                # read_region uses level-0 coordinates
-                downsample = float(slide.level_downsamples[level])
-                x0 = int(x * downsample)
-                y0 = int(y * downsample)
-                region = slide.read_region((x0, y0), level, (w, h))
-                region = region.convert("RGB")
-                # Pad/resize to tile_size if needed
-                if w != tile_size or h != tile_size:
-                    region = region.resize((tile_size, tile_size), Image.BILINEAR)
-                tensor = preprocess_tile(region, tile_size)
-                batch_tensors.append(tensor)
+                for x, y, w, h in batch_positions:
+                    region = full_img.crop((x, y, x + w, y + h))
+                    if w != tile_size or h != tile_size:
+                        region = region.resize((tile_size, tile_size), Image.BILINEAR)
+                    tensor = preprocess_tile(region, tile_size)
+                    batch_tensors.append(tensor)
 
-            batch = torch.cat(batch_tensors, dim=0).to(device)
-            density_batch = density_label[: len(batch_positions)]
+                batch = torch.cat(batch_tensors, dim=0).to(device)
+                density_batch = density_label[: len(batch_positions)]
 
+                try:
+                    with torch.no_grad():
+                        seg_logits, _, _, _ = model(batch, density_batch)
+                    probs = torch.sigmoid(seg_logits)
+                except Exception as e:
+                    print(f"Inference error at batch {i // batch_size}: {e}", file=sys.stderr)
+                    return EXIT_INFERENCE
+
+                for j, (x, y, w, h) in enumerate(batch_positions):
+                    score = float(probs[j].mean().item())
+                    label = "fungus_positive" if score >= args.threshold else "fungus_negative"
+                    if args.positive_only and label != "fungus_positive":
+                        continue
+                    regions.append({
+                        "x": int(x),
+                        "y": int(y),
+                        "w": int(w),
+                        "h": int(h),
+                        "score": round(score, 4),
+                        "label": label,
+                    })
+        except Exception as e:
+            print(f"Error processing image: {e}", file=sys.stderr)
+            return EXIT_SLIDE
+
+    else:
+        # --- OpenSlide WSI ---
+        try:
+            slide = openslide.OpenSlide(str(slide_path))
+        except Exception as e:
+            print(f"Error opening slide: {e}", file=sys.stderr)
+            return EXIT_SLIDE
+
+        try:
+            if level < 0 or level >= slide.level_count:
+                print(f"Error: Invalid level {level} (slide has {slide.level_count} levels)", file=sys.stderr)
+                slide.close()
+                return EXIT_SLIDE
+
+            level_w, level_h = slide.level_dimensions[level]
+            dims = slide.dimensions
+
+            # Build tile grid (level coordinates)
+            tiles_x = list(range(0, level_w, stride))
+            tiles_y = list(range(0, level_h, stride))
+            tile_positions = []
+            for y in tiles_y:
+                for x in tiles_x:
+                    w = min(tile_size, level_w - x)
+                    h = min(tile_size, level_h - y)
+                    if w < tile_size // 2 or h < tile_size // 2:
+                        continue
+                    tile_positions.append((x, y, w, h))
+
+            if not tile_positions:
+                print("Error: No tiles to process", file=sys.stderr)
+                slide.close()
+                return EXIT_SLIDE
+
+            regions = []
+            total_tiles = len(tile_positions)
+            batch_size = args.batch_size
+
+            # Density label: 3 = negative (unknown at inference)
+            density_label = torch.tensor([3] * batch_size, dtype=torch.long, device=device)
+
+            for i in range(0, total_tiles, batch_size):
+                batch_positions = tile_positions[i : i + batch_size]
+                batch_tensors = []
+
+                for x, y, w, h in batch_positions:
+                    # read_region uses level-0 coordinates
+                    downsample = float(slide.level_downsamples[level])
+                    x0 = int(x * downsample)
+                    y0 = int(y * downsample)
+                    region = slide.read_region((x0, y0), level, (w, h))
+                    region = region.convert("RGB")
+                    # Pad/resize to tile_size if needed
+                    if w != tile_size or h != tile_size:
+                        region = region.resize((tile_size, tile_size), Image.BILINEAR)
+                    tensor = preprocess_tile(region, tile_size)
+                    batch_tensors.append(tensor)
+
+                batch = torch.cat(batch_tensors, dim=0).to(device)
+                density_batch = density_label[: len(batch_positions)]
+
+                try:
+                    with torch.no_grad():
+                        seg_logits, _, _, _ = model(batch, density_batch)
+                    probs = torch.sigmoid(seg_logits)
+                except Exception as e:
+                    print(f"Inference error at batch {i // batch_size}: {e}", file=sys.stderr)
+                    slide.close()
+                    return EXIT_INFERENCE
+
+                for j, (x, y, w, h) in enumerate(batch_positions):
+                    score = float(probs[j].mean().item())
+                    label = "fungus_positive" if score >= args.threshold else "fungus_negative"
+                    if args.positive_only and label != "fungus_positive":
+                        continue
+                    # Convert to level-0 coordinates for API/Region
+                    downsample = float(slide.level_downsamples[level])
+                    x0 = int(x * downsample)
+                    y0 = int(y * downsample)
+                    w0 = int(w * downsample)
+                    h0 = int(h * downsample)
+                    regions.append({
+                        "x": x0,
+                        "y": y0,
+                        "w": w0,
+                        "h": h0,
+                        "score": round(score, 4),
+                        "label": label,
+                    })
+
+            slide.close()
+        except Exception as e:
             try:
-                with torch.no_grad():
-                    seg_logits, _, _, _ = model(batch, density_batch)
-                probs = torch.sigmoid(seg_logits)
-            except Exception as e:
-                print(f"Inference error at batch {i // batch_size}: {e}", file=sys.stderr)
-                return EXIT_INFERENCE
-
-            for j, (x, y, w, h) in enumerate(batch_positions):
-                score = float(probs[j].mean().item())
-                label = "fungus_positive" if score >= args.threshold else "fungus_negative"
-                if args.positive_only and label != "fungus_positive":
-                    continue
-                # Convert to level-0 coordinates for API/Region
-                downsample = float(slide.level_downsamples[level])
-                x0 = int(x * downsample)
-                y0 = int(y * downsample)
-                w0 = int(w * downsample)
-                h0 = int(h * downsample)
-                regions.append({
-                    "x": x0,
-                    "y": y0,
-                    "w": w0,
-                    "h": h0,
-                    "score": round(score, 4),
-                    "label": label,
-                })
-
-        slide.close()
-    except Exception as e:
-        slide.close()
-        print(f"Error processing slide: {e}", file=sys.stderr)
-        return EXIT_SLIDE
+                slide.close()
+            except Exception:
+                pass
+            print(f"Error processing slide: {e}", file=sys.stderr)
+            return EXIT_SLIDE
 
     n_pos = sum(1 for r in regions if r["label"] == "fungus_positive")
     n_neg = sum(1 for r in regions if r["label"] == "fungus_negative")

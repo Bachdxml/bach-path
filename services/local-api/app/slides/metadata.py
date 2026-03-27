@@ -3,6 +3,26 @@ from pathlib import Path
 from typing import Any
 
 import openslide
+from PIL import Image
+
+RASTER_EXTENSIONS = {".png"}
+
+
+def read_raster_metadata(slide_path: Path) -> dict[str, Any]:
+    """Metadata for flat raster images (PNG, etc.) used when OpenSlide does not apply."""
+    with Image.open(slide_path) as im:
+        w, h = im.size
+    w, h = int(w), int(h)
+    return {
+        "vendor": None,
+        "level_count": 1,
+        "dimensions": (w, h),
+        "level_dimensions": [(w, h)],
+        "mpp_x": None,
+        "mpp_y": None,
+        "properties": {},
+    }
+
 
 def read_openslide_metadata(slide_path: Path) -> dict[str, Any]:
     with openslide.OpenSlide(str(slide_path)) as s:
