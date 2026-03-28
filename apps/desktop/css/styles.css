@@ -202,13 +202,20 @@ body {
 .gallery-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, 200px);
+  grid-auto-rows: auto;
   justify-content: start;
+  align-content: start;
+  align-items: start;
   gap: 16px;
   width: 100%;
+  min-height: 0;
 }
 
 .gallery-card {
   position: relative;
+  width: 100%;
+  max-width: 200px;
+  box-sizing: border-box;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -892,6 +899,10 @@ body {
 }
 
 .gallery-skeleton {
+  width: 100%;
+  max-width: 200px;
+  aspect-ratio: 1;
+  box-sizing: border-box;
   background: linear-gradient(
     90deg,
     var(--surface-hover) 25%,
@@ -901,7 +912,6 @@ body {
   background-size: 200% 100%;
   animation: skeleton-shimmer 1.2s ease-in-out infinite;
   border-radius: 8px;
-  min-height: 260px;
 }
 
 @keyframes skeleton-shimmer {
