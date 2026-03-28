@@ -13,6 +13,8 @@ const viewerMetadataAside = document.getElementById("viewer-metadata-aside");
 const viewerMetaContent = document.getElementById("viewer-meta-content");
 const btnViewerSlideInfo = document.getElementById("btn-viewer-slide-info");
 const btnViewerMetadataClose = document.getElementById("btn-viewer-metadata-close");
+const btnViewerExportView = document.getElementById("viewer-export-view");
+const btnViewerExportRegions = document.getElementById("viewer-export-regions");
 
 let viewer = null;
 let currentSlideId = null;
@@ -352,6 +354,55 @@ viewerOverlayOpacity?.addEventListener("input", () => {
   addRegionOverlays(lastRegions, viewerShowNegative?.checked || false);
 });
 
+async function exportViewerViewport() {
+  if (!viewerContainer || !currentSlideId) return;
+  const api = window.electronAPI;
+  if (!api?.saveViewerCapture) {
+    window.appToast?.("Export requires the desktop app.", "error");
+    return;
+  }
+  const r = viewerContainer.getBoundingClientRect();
+  const rect = {
+    x: Math.round(r.x),
+    y: Math.round(r.y),
+    width: Math.round(r.width),
+    height: Math.round(r.height),
+  };
+  const defaultFilename = `slide-${currentSlideId}-view.png`;
+  try {
+    const res = await api.saveViewerCapture(rect, defaultFilename);
+    if (res?.canceled) return;
+    if (res?.ok === false) {
+      window.appToast?.(res.error === "invalid_rect" ? "Invalid viewport." : res.error || "Export failed.", "error");
+      return;
+    }
+    if (res?.path) window.appToast?.("Saved image.", "success");
+  } catch (e) {
+    window.appToast?.(e?.message || "Export failed.", "error");
+  }
+}
+
+function exportInferenceRegionsJson() {
+  if (!currentSlideId || !lastRegions?.length) {
+    window.appToast?.("No regions to export. Run inference first.", "info");
+    return;
+  }
+  const payload = {
+    slide_id: currentSlideId,
+    run_id: currentRunId,
+    exported_at: new Date().toISOString(),
+    regions: lastRegions,
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `slide-${currentSlideId}-regions.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  window.appToast?.("Regions JSON downloaded.", "success");
+}
+
 async function handleRunInference() {
   if (!currentSlideId) return;
   runInferenceBtn.disabled = true;
@@ -419,6 +470,9 @@ if (runInferenceBtn) {
   runInferenceBtn.addEventListener("click", handleRunInference);
 }
 
+btnViewerExportView?.addEventListener("click", () => exportViewerViewport());
+btnViewerExportRegions?.addEventListener("click", () => exportInferenceRegionsJson());
+
 document.addEventListener("keydown", (e) => {
   const t = e.target;
   const typing =
@@ -434,6 +488,12 @@ document.addEventListener("keydown", (e) => {
     if (!e.ctrlKey && !e.metaKey && currentSlideId) {
       e.preventDefault();
       handleRunInference();
+    }
+  }
+  if (e.key === "e" || e.key === "E") {
+    if (!e.ctrlKey && !e.metaKey && currentSlideId) {
+      e.preventDefault();
+      exportViewerViewport();
     }
   }
 });

@@ -9,4 +9,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
   selectFolder: () => ipcRenderer.invoke("select-folder"),
   selectFiles: () => ipcRenderer.invoke("select-files"),
   selectDirectory: () => ipcRenderer.invoke("select-directory"),
+  saveViewerCapture: (rect, defaultFilename) =>
+    ipcRenderer.invoke("save-viewer-capture", { rect, defaultFilename }),
 });

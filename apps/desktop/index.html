@@ -103,6 +103,12 @@
                 <button type="button" class="btn btn-secondary btn-sm" id="btn-viewer-slide-info">
                   Slide info
                 </button>
+                <button type="button" class="btn btn-secondary btn-sm" id="viewer-export-view" title="Save PNG of current viewport">
+                  Export view
+                </button>
+                <button type="button" class="btn btn-secondary btn-sm" id="viewer-export-regions" title="Download overlay regions as JSON">
+                  Export regions
+                </button>
                 <button type="button" class="btn btn-primary" id="viewer-run-inference">Run inference</button>
                 <span class="viewer-inference-status" id="viewer-inference-status"></span>
                 <select
@@ -244,7 +250,8 @@
         </ol>
         <p class="help-shortcuts">
           Shortcuts: <kbd>1</kbd>–<kbd>5</kbd> tabs · <kbd>G</kbd> gallery · <kbd>V</kbd> viewer ·
-          <kbd>I</kbd> import · <kbd>R</kbd> run inference (viewer) · <kbd>?</kbd> help
+          <kbd>I</kbd> import · <kbd>R</kbd> run inference (viewer) · <kbd>E</kbd> export view (viewer) ·
+          <kbd>?</kbd> help
         </p>
         <div class="modal-actions">
           <label class="help-dismiss-row">

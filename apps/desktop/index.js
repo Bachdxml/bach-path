@@ -35,13 +35,22 @@ function getApiLogDir() {
   return path.join(app.getPath("userData"), "api-logs");
 }
 
+function getApiBaseDir() {
+  if (app.isPackaged) {
+    const bundled = path.join(process.resourcesPath, "local-api");
+    if (fs.existsSync(bundled)) return bundled;
+  }
+  return path.join(__dirname, "..", "..", "services", "local-api");
+}
+
 function getApiScriptPath() {
-  return path.join(__dirname, "..", "..", "services", "local-api", "run_api.py");
+  return path.join(getApiBaseDir(), "run_api.py");
 }
 
 function getPythonPath() {
-  const venvPython = path.join(__dirname, "..", "..", "services", "local-api", ".venv", "bin", "python");
-  const venvPythonWin = path.join(__dirname, "..", "..", "services", "local-api", ".venv", "Scripts", "python.exe");
+  const base = getApiBaseDir();
+  const venvPython = path.join(base, ".venv", "bin", "python");
+  const venvPythonWin = path.join(base, ".venv", "Scripts", "python.exe");
   if (fs.existsSync(venvPython)) return venvPython;
   if (fs.existsSync(venvPythonWin)) return venvPythonWin;
   return "python";
@@ -236,4 +245,33 @@ ipcMain.handle("select-files", async () => {
   return result.filePaths.filter((p) =>
     WSI_EXTENSIONS.has(path.extname(p).toLowerCase())
   );
+});
+
+ipcMain.handle("save-viewer-capture", async (_, payload) => {
+  if (!mainWindow?.webContents) return { ok: false, error: "no_window" };
+  const rect = payload?.rect;
+  const defaultFilename = payload?.defaultFilename || "slide-view.png";
+  if (
+    !rect ||
+    typeof rect.x !== "number" ||
+    typeof rect.y !== "number" ||
+    typeof rect.width !== "number" ||
+    typeof rect.height !== "number" ||
+    rect.width < 1 ||
+    rect.height < 1
+  ) {
+    return { ok: false, error: "invalid_rect" };
+  }
+  try {
+    const image = await mainWindow.webContents.capturePage(rect);
+    const result = await dialog.showSaveDialog(mainWindow, {
+      defaultPath: defaultFilename,
+      filters: [{ name: "PNG", extensions: ["png"] }],
+    });
+    if (result.canceled || !result.filePath) return { canceled: true };
+    fs.writeFileSync(result.filePath, image.toPNG());
+    return { canceled: false, path: result.filePath };
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) };
+  }
 });

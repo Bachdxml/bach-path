@@ -8,6 +8,13 @@ const trainingLogOutput = document.getElementById("training-log-output");
 let pollInterval = null;
 let logPollInterval = null;
 
+function escapeHtml(s) {
+  if (s == null || s === "") return "";
+  const d = document.createElement("div");
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+
 function setTrainingStatus(html) {
   if (trainingStatus) trainingStatus.innerHTML = html;
 }
@@ -48,7 +55,7 @@ async function pollTrainingStatus() {
       const valInfo = s.val_dice != null ? `  Val dice: ${s.val_dice.toFixed(4)}` : "";
       setTrainingStatus(`<span class="training-running">Training: ${trainInfo}${valInfo}</span>`);
       if (s.error_message) {
-        setTrainingStatus(`<span class="training-running">${s.error_message}</span>`);
+        setTrainingStatus(`<span class="training-running">${escapeHtml(s.error_message)}</span>`);
       }
     } else if (s.status === "stopped") {
       if (pollInterval) clearInterval(pollInterval);
@@ -57,7 +64,9 @@ async function pollTrainingStatus() {
       await fetchTrainingLog();
       startTrainingBtn.disabled = false;
       stopTrainingBtn.disabled = true;
-      const ckpt = s.checkpoint_path ? `<br/>Saved: ${s.checkpoint_path}` : "";
+      const ckpt = s.checkpoint_path
+        ? `<br/>Saved: ${escapeHtml(s.checkpoint_path)}`
+        : "";
       setTrainingStatus(`<span class="training-success">Training stopped by user.${ckpt}</span>`);
     } else if (s.status === "succeeded") {
       if (pollInterval) clearInterval(pollInterval);
@@ -77,7 +86,7 @@ async function pollTrainingStatus() {
       await fetchTrainingLog();
       startTrainingBtn.disabled = false;
       stopTrainingBtn.disabled = true;
-      const err = s.error_message || "Unknown error";
+      const err = escapeHtml(s.error_message || "Unknown error");
       setTrainingStatus(`<span class="training-error">Failed: ${err}</span>`);
     } else if (s.status === "idle") {
       stopLogPolling();
@@ -86,7 +95,7 @@ async function pollTrainingStatus() {
       setTrainingStatus("");
     }
   } catch (e) {
-    setTrainingStatus(`<span class="training-error">Error: ${e.message}</span>`);
+    setTrainingStatus(`<span class="training-error">Error: ${escapeHtml(e.message)}</span>`);
     if (pollInterval) clearInterval(pollInterval);
     pollInterval = null;
     stopLogPolling();
@@ -112,7 +121,7 @@ async function handleStartTraining() {
     pollInterval = setInterval(pollTrainingStatus, 2000);
     pollTrainingStatus();
   } catch (err) {
-    setTrainingStatus(`<span class="training-error">Error: ${err.message}</span>`);
+    setTrainingStatus(`<span class="training-error">Error: ${escapeHtml(err.message)}</span>`);
     startTrainingBtn.disabled = false;
     stopTrainingBtn.disabled = true;
     stopLogPolling();
@@ -128,7 +137,7 @@ async function handleStopTraining() {
       pollInterval = setInterval(pollTrainingStatus, 2000);
     }
   } catch (err) {
-    setTrainingStatus(`<span class="training-error">Error: ${err.message}</span>`);
+    setTrainingStatus(`<span class="training-error">Error: ${escapeHtml(err.message)}</span>`);
     stopTrainingBtn.disabled = false;
   }
 }

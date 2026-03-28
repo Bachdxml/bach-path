@@ -1,17 +1,54 @@
 {
-  "name": "desktop",
+  "name": "pathology-viewer",
   "version": "1.0.0",
-  "description": "",
+  "description": "Desktop pathology slide viewer with inference",
   "main": "index.js",
   "scripts": {
     "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder",
     "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "build": {
+    "appId": "com.bachpath.pathologyviewer",
+    "productName": "Pathology Viewer",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "**/*",
+      "!dist/**"
+    ],
+    "extraResources": [
+      {
+        "from": "../../services/local-api",
+        "to": "local-api",
+        "filter": [
+          "**/*",
+          "!**/.venv/**",
+          "!**/__pycache__/**",
+          "!**/*.pyc"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.utilities"
+    },
+    "win": {
+      "target": ["nsis"]
+    },
+    "linux": {
+      "target": ["AppImage"]
+    }
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "electron": "^40.4.1",
     "openseadragon": "^5.0.1"
+  },
+  "devDependencies": {
+    "electron": "^40.4.1",
+    "electron-builder": "^25.1.8"
   }
 }
