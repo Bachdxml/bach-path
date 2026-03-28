@@ -201,7 +201,8 @@ body {
 
 .gallery-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fill, 200px);
+  justify-content: start;
   gap: 16px;
   width: 100%;
 }
@@ -749,16 +750,6 @@ body {
   100% {
     background-position: -200% 0;
   }
-}
-
-#tab-gallery {
-  padding: 0;
-}
-
-#tab-gallery .gallery-grid {
-  padding: 16px;
-  flex: 1;
-  overflow: auto;
 }
 
 /* Viewer extras */
