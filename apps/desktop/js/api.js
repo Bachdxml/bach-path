@@ -109,6 +109,12 @@ async function stopTraining() {
   return res.json();
 }
 
+async function getTrainingLog(tail = 200) {
+  const res = await fetch(`${apiBase}/training/log?tail=${tail}`);
+  if (!res.ok) throw new Error(await parseErrorResponse(res));
+  return res.json();
+}
+
 async function healthCheck() {
   const res = await fetch(`${apiBase}/health`, { method: "GET" });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -139,4 +145,5 @@ window.slidesApi = {
   startTraining,
   getTrainingStatus,
   stopTraining,
+  getTrainingLog,
 };

@@ -4,7 +4,7 @@ import subprocess
 import threading
 from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel
 
 from app.util.exceptions import AppError, ErrorCode
@@ -62,6 +62,7 @@ def _run_training_task(export_root: str, progress_path: Path):
     _training_progress_path = progress_path
 
     progress_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path = progress_path.parent / "training_console.log"
     with open(progress_path, "w") as f:
         json.dump({"status": "starting"}, f)
 
@@ -74,23 +75,45 @@ def _run_training_task(export_root: str, progress_path: Path):
     ]
     cwd = str(script_path.parent.parent)
 
+    log_file = None
+    proc = None
     try:
-        _training_process = subprocess.Popen(
+        log_file = open(log_path, "w", encoding="utf-8", buffering=1)
+        proc = subprocess.Popen(
             cmd,
             cwd=cwd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
             text=True,
         )
-        _, stderr = _training_process.communicate(timeout=86400)  # 24h max
-        if _training_process.returncode != 0:
-            code = _training_process.returncode
+        _training_process = proc
+        try:
+            proc.wait(timeout=86400)  # 24h max
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            raise
+        finally:
+            if log_file is not None:
+                try:
+                    log_file.close()
+                except OSError:
+                    pass
+                log_file = None
+
+        if proc.returncode != 0:
+            code = proc.returncode
             try:
                 with open(progress_path) as f:
                     current = json.load(f)
                 if current.get("status") in {"stopped", "succeeded"}:
                     return
             except (json.JSONDecodeError, OSError):
+                pass
+            log_tail = ""
+            try:
+                log_tail = log_path.read_text(encoding="utf-8", errors="replace")[-2000:]
+            except OSError:
                 pass
             signal_hint = ""
             if code == -9:
@@ -103,15 +126,28 @@ def _run_training_task(export_root: str, progress_path: Path):
             elif code == -15:
                 signal_hint = "Training stopped by user.\n\n"
             with open(progress_path, "w") as f:
-                json.dump({
-                    "status": "stopped" if code == -15 else "failed",
-                    "error_message": (signal_hint + (stderr or f"Exit code {code}"))[:2000],
-                }, f, indent=2)
+                json.dump(
+                    {
+                        "status": "stopped" if code == -15 else "failed",
+                        "error_message": (signal_hint + (log_tail or f"Exit code {code}"))[:2000],
+                    },
+                    f,
+                    indent=2,
+                )
     except subprocess.TimeoutExpired:
-        _training_process.kill()
+        if log_file is not None:
+            try:
+                log_file.close()
+            except OSError:
+                pass
         with open(progress_path, "w") as f:
             json.dump({"status": "failed", "error_message": "Training timed out"}, f, indent=2)
     except Exception as e:
+        if log_file is not None:
+            try:
+                log_file.close()
+            except OSError:
+                pass
         with open(progress_path, "w") as f:
             json.dump({"status": "failed", "error_message": str(e)[:2000]}, f, indent=2)
     finally:
@@ -194,3 +230,18 @@ def stop_training(request: Request):
         pass
 
     return TrainingStatusResponse(status="running", error_message="Stop requested...")
+
+
+@router.get("/log")
+def training_log_tail(request: Request, tail: int = Query(200, ge=1, le=5000)):
+    """Last N lines of the training subprocess stdout/stderr log."""
+    settings = request.app.state.settings
+    log_path = settings.training_runs_dir / "training_console.log"
+    if not log_path.is_file():
+        return {"lines": []}
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {"lines": []}
+    lines = text.splitlines()
+    return {"lines": lines[-tail:]}

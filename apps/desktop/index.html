@@ -96,42 +96,68 @@
         </section>
 
         <section id="tab-viewer" class="tab-pane">
-          <div class="viewer-toolbar">
-            <button type="button" class="btn btn-secondary" id="viewer-back">Back to Gallery</button>
-            <button type="button" class="btn btn-primary" id="viewer-run-inference">Run inference</button>
-            <span class="viewer-inference-status" id="viewer-inference-status"></span>
-            <select
-              id="viewer-run-select"
-              class="viewer-run-select"
-              title="Inference run"
-              disabled
-              aria-label="Inference run"
-            ></select>
-            <label class="viewer-toggle">
-              <input type="checkbox" id="viewer-show-negative" />
-              Show negative
-            </label>
-            <label class="viewer-opacity-label">
-              Overlay
-              <input
-                type="range"
-                id="viewer-overlay-opacity"
-                min="10"
-                max="100"
-                value="70"
-                aria-label="Overlay opacity"
-              />
-            </label>
-            <div class="viewer-scale-wrap" id="viewer-scale-wrap" hidden>
-              <div class="viewer-scale-inner">
-                <div class="viewer-scale-bar" id="viewer-scale-bar"></div>
+          <div class="viewer-layout">
+            <div class="viewer-main-column">
+              <div class="viewer-toolbar">
+                <button type="button" class="btn btn-secondary" id="viewer-back">Back to Gallery</button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-viewer-slide-info">
+                  Slide info
+                </button>
+                <button type="button" class="btn btn-primary" id="viewer-run-inference">Run inference</button>
+                <span class="viewer-inference-status" id="viewer-inference-status"></span>
+                <select
+                  id="viewer-run-select"
+                  class="viewer-run-select"
+                  title="Inference run"
+                  disabled
+                  aria-label="Inference run"
+                ></select>
+                <label class="viewer-toggle">
+                  <input type="checkbox" id="viewer-show-negative" />
+                  Show negative
+                </label>
+                <label class="viewer-opacity-label">
+                  Overlay
+                  <input
+                    type="range"
+                    id="viewer-overlay-opacity"
+                    min="10"
+                    max="100"
+                    value="70"
+                    aria-label="Overlay opacity"
+                  />
+                </label>
+                <div class="viewer-legend" aria-label="Inference overlay legend">
+                  <span class="viewer-legend-item"
+                    ><span class="viewer-legend-swatch viewer-legend-swatch--positive"></span> Positive</span
+                  >
+                  <span class="viewer-legend-item"
+                    ><span class="viewer-legend-swatch viewer-legend-swatch--negative"></span> Negative</span
+                  >
+                </div>
+                <div class="viewer-scale-wrap" id="viewer-scale-wrap" hidden>
+                  <div class="viewer-scale-inner">
+                    <div class="viewer-scale-bar" id="viewer-scale-bar"></div>
+                  </div>
+                  <span class="viewer-scale-label" id="viewer-scale-label"></span>
+                </div>
               </div>
-              <span class="viewer-scale-label" id="viewer-scale-label"></span>
+              <div class="viewer-canvas-wrap">
+                <div class="viewer-container" id="viewer-container"></div>
+                <div class="viewer-empty" id="viewer-empty">
+                  Select a slide from the Gallery to view.
+                </div>
+              </div>
             </div>
-          </div>
-          <div class="viewer-container" id="viewer-container"></div>
-          <div class="viewer-empty" id="viewer-empty">
-            Select a slide from the Gallery to view.
+            <aside id="viewer-metadata-aside" class="viewer-metadata-aside" hidden>
+              <div class="viewer-metadata-header">
+                <h3 class="viewer-metadata-title">Slide metadata</h3>
+                <button type="button" class="viewer-metadata-close" id="btn-viewer-metadata-close" aria-label="Close">
+                  ×
+                </button>
+              </div>
+              <div class="viewer-meta-content" id="viewer-meta-content"></div>
+            </aside>
           </div>
         </section>
 
@@ -176,6 +202,10 @@
               </button>
             </div>
             <div class="training-status" id="training-status"></div>
+            <div class="training-log-block">
+              <label class="training-log-label" for="training-log-output">Console output</label>
+              <pre id="training-log-output" class="training-log-output" aria-live="polite"></pre>
+            </div>
           </div>
         </section>
 

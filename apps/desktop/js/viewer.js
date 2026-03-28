@@ -9,6 +9,10 @@ const viewerOverlayOpacity = document.getElementById("viewer-overlay-opacity");
 const viewerScaleWrap = document.getElementById("viewer-scale-wrap");
 const viewerScaleBar = document.getElementById("viewer-scale-bar");
 const viewerScaleLabel = document.getElementById("viewer-scale-label");
+const viewerMetadataAside = document.getElementById("viewer-metadata-aside");
+const viewerMetaContent = document.getElementById("viewer-meta-content");
+const btnViewerSlideInfo = document.getElementById("btn-viewer-slide-info");
+const btnViewerMetadataClose = document.getElementById("btn-viewer-metadata-close");
 
 let viewer = null;
 let currentSlideId = null;
@@ -18,6 +22,62 @@ let lastRegions = [];
 
 function setInferenceStatus(text) {
   if (inferenceStatus) inferenceStatus.textContent = text;
+}
+
+function escapeHtml(s) {
+  if (s == null || s === "") return "";
+  const d = document.createElement("div");
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+
+function renderMetadataPanel(meta) {
+  if (!viewerMetaContent) return;
+  if (!meta) {
+    viewerMetaContent.innerHTML = '<p class="viewer-meta-empty">Metadata not available.</p>';
+    return;
+  }
+  const dim =
+    meta.dimensions && meta.dimensions.length >= 2
+      ? `${meta.dimensions[0].toLocaleString()} × ${meta.dimensions[1].toLocaleString()} px`
+      : "—";
+  const mppX =
+    meta.mpp_x != null && Number.isFinite(meta.mpp_x) ? `${meta.mpp_x.toFixed(4)} µm/px` : "—";
+  const mppY =
+    meta.mpp_y != null && Number.isFinite(meta.mpp_y) ? `${meta.mpp_y.toFixed(4)} µm/px` : "—";
+  const levels =
+    meta.level_dimensions && meta.level_dimensions.length
+      ? meta.level_dimensions.map((d) => `${d[0]}×${d[1]}`).join(", ")
+      : "—";
+
+  const props = meta.properties || {};
+  const propKeys = Object.keys(props).sort();
+  let propsHtml = "";
+  if (propKeys.length) {
+    const rows = propKeys
+      .slice(0, 40)
+      .map((k) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(props[k])}</dd>`)
+      .join("");
+    const more =
+      propKeys.length > 40 ? `<p class="viewer-meta-empty">${propKeys.length - 40} more…</p>` : "";
+    propsHtml = `<details class="viewer-meta-props"><summary>Vendor properties (${propKeys.length})</summary><dl class="viewer-meta-dl">${rows}</dl>${more}</details>`;
+  }
+
+  viewerMetaContent.innerHTML = `
+    <dl class="viewer-meta-dl">
+      <dt>Slide ID</dt><dd>${escapeHtml(meta.slide_id)}</dd>
+      <dt>Dimensions (level 0)</dt><dd>${escapeHtml(dim)}</dd>
+      <dt>Pyramid levels</dt><dd>${escapeHtml(meta.level_count)}</dd>
+      <dt>Level sizes</dt><dd style="font-size:11px">${escapeHtml(levels)}</dd>
+      <dt>MPP X / Y</dt><dd>${escapeHtml(mppX)} / ${escapeHtml(mppY)}</dd>
+      <dt>Vendor</dt><dd>${escapeHtml(meta.vendor || "—")}</dd>
+    </dl>
+    ${propsHtml}
+  `;
+}
+
+function showMetadataPanel(show) {
+  if (viewerMetadataAside) viewerMetadataAside.hidden = !show;
 }
 
 function niceRoundMicrons(x) {
@@ -72,14 +132,6 @@ function addRegionOverlays(regions, showNegative = false) {
   if (!viewer) return;
   viewer.clearOverlays();
   const opacity = getOverlayOpacity();
-  let width = 1;
-  let height = 1;
-  try {
-    const item = viewer.world.getItemAt(0);
-    const size = item.getContentSize();
-    width = size.x;
-    height = size.y;
-  } catch (_) {}
 
   regions.forEach((r) => {
     if (r.label === "fungus_negative" && !showNegative) return;
@@ -147,6 +199,16 @@ async function loadRegionsForRun(runId) {
   }
 }
 
+function applyMppFromMeta(meta) {
+  currentMpp = null;
+  if (!meta) return;
+  const mx = meta.mpp_x;
+  const my = meta.mpp_y;
+  if (mx != null && my != null) currentMpp = (mx + my) / 2;
+  else if (mx != null) currentMpp = mx;
+  else if (my != null) currentMpp = my;
+}
+
 async function showViewer(slideId) {
   currentSlideId = slideId;
   currentMpp = null;
@@ -168,6 +230,18 @@ async function showViewer(slideId) {
   setInferenceStatus("");
   if (viewerScaleWrap) viewerScaleWrap.hidden = true;
 
+  let meta = null;
+  try {
+    meta = await window.slidesApi.getSlideMetadata(slideId);
+    applyMppFromMeta(meta);
+    renderMetadataPanel(meta);
+    showMetadataPanel(true);
+  } catch (err) {
+    console.warn("Slide metadata:", err);
+    renderMetadataPanel(null);
+    showMetadataPanel(true);
+  }
+
   if (viewer) {
     viewer.destroy();
     viewer = null;
@@ -186,15 +260,10 @@ async function showViewer(slideId) {
     } catch (_) {}
 
     if (!tileSource) {
-      const meta = await window.slidesApi.getSlideMetadata(slideId);
-      const mx = meta.mpp_x;
-      const my = meta.mpp_y;
-      if (mx != null && my != null) {
-        currentMpp = (mx + my) / 2;
-      } else if (mx != null) {
-        currentMpp = mx;
-      } else if (my != null) {
-        currentMpp = my;
+      if (!meta) {
+        meta = await window.slidesApi.getSlideMetadata(slideId);
+        applyMppFromMeta(meta);
+        renderMetadataPanel(meta);
       }
       const osdLevelDimensions = (meta.level_dimensions || []).slice().reverse();
       if (!osdLevelDimensions.length) {
@@ -228,15 +297,6 @@ async function showViewer(slideId) {
           return `${apiBase}/slides/${slideId}/tiles/${openSlideLevel}/${x}/${y}.jpg`;
         },
       };
-    } else {
-      try {
-        const meta = await window.slidesApi.getSlideMetadata(slideId);
-        const mx = meta.mpp_x;
-        const my = meta.mpp_y;
-        if (mx != null && my != null) currentMpp = (mx + my) / 2;
-        else if (mx != null) currentMpp = mx;
-        else if (my != null) currentMpp = my;
-      } catch (_) {}
     }
 
     viewer = OpenSeadragon({
@@ -264,10 +324,19 @@ async function showViewer(slideId) {
     viewer.addHandler("animation", updateScaleBar);
     viewer.addHandler("resize", updateScaleBar);
   } catch (err) {
-    viewerContainer.innerHTML = `<p class="viewer-error">Failed to load slide: ${err.message}</p>`;
+    viewerContainer.innerHTML = `<p class="viewer-error">Failed to load slide: ${escapeHtml(err.message)}</p>`;
     console.error(err);
   }
 }
+
+btnViewerSlideInfo?.addEventListener("click", () => {
+  if (!viewerMetadataAside) return;
+  viewerMetadataAside.hidden = !viewerMetadataAside.hidden;
+});
+
+btnViewerMetadataClose?.addEventListener("click", () => {
+  showMetadataPanel(false);
+});
 
 viewerRunSelect?.addEventListener("change", async () => {
   const v = viewerRunSelect.value;
@@ -336,11 +405,13 @@ if (viewerBack) {
     lastRegions = [];
     viewerContainer.innerHTML = "";
     viewerContainer.style.display = "none";
-    viewerEmpty.style.display = "block";
+    viewerEmpty.style.display = "flex";
     if (viewerRunSelect) {
       viewerRunSelect.innerHTML = "";
       viewerRunSelect.disabled = true;
     }
+    if (viewerMetaContent) viewerMetaContent.innerHTML = "";
+    showMetadataPanel(false);
   });
 }
 
