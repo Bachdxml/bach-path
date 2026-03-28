@@ -1,10 +1,13 @@
 const dropZone = document.getElementById("drop-zone");
 const filesBtn = document.getElementById("btn-select-files");
 const folderBtn = document.getElementById("btn-select-folder");
+const cancelBtn = document.getElementById("btn-cancel-import");
 const importStatus = document.getElementById("import-status");
 const importProgress = document.getElementById("import-progress");
 
 const WSI_EXTENSIONS = [".svs", ".tif", ".tiff", ".png"];
+
+let importCancelled = false;
 
 function getPathsFromFiles(files) {
   const paths = [];
@@ -27,12 +30,24 @@ function setProgress(current, total) {
   importProgress.style.visibility = total > 0 ? "visible" : "hidden";
 }
 
+function setImporting(active) {
+  if (cancelBtn) cancelBtn.disabled = !active;
+}
+
+cancelBtn?.addEventListener("click", () => {
+  importCancelled = true;
+  setStatus("Stopping after current file…");
+});
+
 async function importPaths(paths) {
   if (!paths.length) return;
+  importCancelled = false;
+  setImporting(true);
   setProgress(0, paths.length);
   let success = 0;
   let failed = 0;
   for (let i = 0; i < paths.length; i++) {
+    if (importCancelled) break;
     setProgress(i + 1, paths.length);
     try {
       await window.slidesApi.importSlide(paths[i]);
@@ -43,11 +58,25 @@ async function importPaths(paths) {
     }
   }
   setProgress(0, 0);
-  if (failed > 0) {
+  setImporting(false);
+
+  if (importCancelled) {
+    setStatus(`Import stopped. ${success} slide(s) imported before cancel.`, failed > 0);
+    if (typeof window.appToast === "function") {
+      window.appToast(`Import stopped. ${success} slide(s) added.`, "info", 5000);
+    }
+  } else if (failed > 0) {
     setStatus(`Imported ${success} slide(s). ${failed} failed.`, true);
+    if (typeof window.appToast === "function") {
+      window.appToast(`${failed} file(s) failed to import. See status below.`, "error", 6000);
+    }
   } else {
     setStatus(`Imported ${success} slide(s) successfully.`);
+    if (typeof window.appToast === "function" && success > 0) {
+      window.appToast(`Imported ${success} slide(s).`, "success", 3000);
+    }
   }
+
   if (typeof window.galleryRefresh === "function") {
     window.galleryRefresh();
   }

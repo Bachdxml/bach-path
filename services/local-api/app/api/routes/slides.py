@@ -3,10 +3,12 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 from pathlib import Path
 import logging
+import shutil
 
 from app.api.deps import get_db
 from app.schemas.slides import SlideImportRequest, SlideImportResponse, SlideListResponse, SlideListItem, SlideMetadataResponse
 from app.models.slide import Slide
+from app.models.inference_run import InferenceRun
 from app.slides.storage import copy_into_managed_storage
 from app.slides.metadata import read_openslide_metadata, read_raster_metadata, RASTER_EXTENSIONS
 from app.slides.deepzoom import deepzoom_paths, ensure_deepzoom, has_deepzoom
@@ -62,6 +64,40 @@ def _raster_tile_jpeg(slide_path: Path, level: int, x: int, y: int, tile_size: i
         buf = io.BytesIO()
         crop.save(buf, format="JPEG", quality=85)
         return buf.getvalue()
+
+
+@router.delete("/{slide_id}")
+def delete_slide(slide_id: int, request: Request, db: Session = Depends(get_db)):
+    """Remove slide from storage, caches, inference artifacts, and database."""
+    slide = db.get(Slide, slide_id)
+    if not slide:
+        raise AppError(ErrorCode.NOT_FOUND, f"Slide {slide_id} not found")
+
+    settings = request.app.state.settings
+
+    runs = db.query(InferenceRun).filter(InferenceRun.slide_id == slide_id).all()
+    for run in runs:
+        json_path = settings.inference_runs_dir / f"{run.id}.json"
+        if json_path.is_file():
+            try:
+                json_path.unlink()
+            except OSError as e:
+                logger.warning("Could not delete inference output %s: %s", json_path, e)
+
+    slide_path = Path(slide.stored_path)
+    if slide_path.is_file():
+        try:
+            slide_path.unlink()
+        except OSError as e:
+            logger.warning("Could not delete slide file %s: %s", slide_path, e)
+
+    cache_slide = settings.tiles_cache_dir / str(slide_id)
+    if cache_slide.exists():
+        shutil.rmtree(cache_slide, ignore_errors=True)
+
+    db.delete(slide)
+    db.commit()
+    return {"ok": True, "id": slide_id}
 
 
 # List all slides in db for gallery

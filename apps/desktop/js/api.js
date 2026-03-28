@@ -109,11 +109,25 @@ async function stopTraining() {
   return res.json();
 }
 
+async function healthCheck() {
+  const res = await fetch(`${apiBase}/health`, { method: "GET" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+async function deleteSlide(slideId) {
+  const res = await fetch(`${apiBase}/slides/${slideId}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await parseErrorResponse(res));
+  return res.json();
+}
+
 window.slidesApi = {
   setApiBase,
   getApiBase,
+  healthCheck,
   listSlides,
   importSlide,
+  deleteSlide,
   getThumbnailUrl,
   getSlideMetadata,
   getTileUrl,

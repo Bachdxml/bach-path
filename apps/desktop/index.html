@@ -8,13 +8,31 @@
     <script src="node_modules/openseadragon/build/openseadragon/openseadragon.min.js"></script>
   </head>
   <body>
+    <div id="toast-host" class="toast-host" aria-live="polite"></div>
+
     <div class="app">
-      <nav class="tab-bar">
-        <button class="tab-btn active" data-tab="import">Import</button>
-        <button class="tab-btn" data-tab="gallery">Gallery</button>
-        <button class="tab-btn" data-tab="viewer">Viewer</button>
-        <button class="tab-btn" data-tab="training">Training</button>
-        <button class="tab-btn settings-btn" data-tab="settings" title="Settings">⚙</button>
+      <header class="status-bar" role="status">
+        <span id="api-status" class="api-status api-status--unknown">Checking API…</span>
+        <span class="status-bar-meta" id="api-status-meta"></span>
+        <span class="status-bar-spacer"></span>
+        <button type="button" class="btn btn-ghost btn-sm" id="btn-open-help" title="Help">
+          Help
+        </button>
+      </header>
+
+      <nav class="tab-bar" aria-label="Main">
+        <button type="button" class="tab-btn active" data-tab="import">Import</button>
+        <button type="button" class="tab-btn" data-tab="gallery">Gallery</button>
+        <button type="button" class="tab-btn" data-tab="viewer">Viewer</button>
+        <button type="button" class="tab-btn" data-tab="training">Training</button>
+        <button
+          type="button"
+          class="tab-btn settings-btn"
+          data-tab="settings"
+          title="Settings"
+        >
+          Settings
+        </button>
       </nav>
 
       <main class="tab-content">
@@ -24,14 +42,53 @@
             <p class="drop-zone-hint">Supports .svs, .tif, .tiff, .png</p>
           </div>
           <div class="import-actions">
-            <button class="btn btn-primary" id="btn-select-files">Select file(s)</button>
-            <button class="btn btn-primary" id="btn-select-folder">Select folder (recursive)</button>
+            <button type="button" class="btn btn-primary" id="btn-select-files">Select file(s)</button>
+            <button type="button" class="btn btn-primary" id="btn-select-folder">
+              Select folder (recursive)
+            </button>
+            <button type="button" class="btn btn-secondary" id="btn-cancel-import" disabled>
+              Cancel import
+            </button>
           </div>
           <div class="import-status" id="import-status"></div>
           <div class="import-progress" id="import-progress"></div>
         </section>
 
         <section id="tab-gallery" class="tab-pane">
+          <div class="gallery-toolbar">
+            <input
+              type="search"
+              id="gallery-search"
+              class="gallery-search"
+              placeholder="Search by filename…"
+              autocomplete="off"
+              aria-label="Search slides"
+            />
+            <select id="gallery-sort" class="gallery-sort" title="Sort slides" aria-label="Sort slides">
+              <option value="date-desc">Newest first</option>
+              <option value="date-asc">Oldest first</option>
+              <option value="name-asc">Name A–Z</option>
+              <option value="name-desc">Name Z–A</option>
+            </select>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-gallery-refresh">
+              Refresh
+            </button>
+            <label class="toolbar-toggle">
+              <input type="checkbox" id="gallery-favorites-only" />
+              Favorites
+            </label>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-gallery-select">
+              Select
+            </button>
+            <button
+              type="button"
+              class="btn btn-danger btn-sm"
+              id="btn-gallery-delete-selected"
+              disabled
+            >
+              Delete selected
+            </button>
+          </div>
           <div class="gallery-grid" id="gallery-grid"></div>
           <div class="gallery-empty" id="gallery-empty">
             No slides yet. Import slides from the Import tab.
@@ -40,9 +97,37 @@
 
         <section id="tab-viewer" class="tab-pane">
           <div class="viewer-toolbar">
-            <button class="btn btn-secondary" id="viewer-back">Back to Gallery</button>
-            <button class="btn btn-primary" id="viewer-run-inference">Run inference</button>
+            <button type="button" class="btn btn-secondary" id="viewer-back">Back to Gallery</button>
+            <button type="button" class="btn btn-primary" id="viewer-run-inference">Run inference</button>
             <span class="viewer-inference-status" id="viewer-inference-status"></span>
+            <select
+              id="viewer-run-select"
+              class="viewer-run-select"
+              title="Inference run"
+              disabled
+              aria-label="Inference run"
+            ></select>
+            <label class="viewer-toggle">
+              <input type="checkbox" id="viewer-show-negative" />
+              Show negative
+            </label>
+            <label class="viewer-opacity-label">
+              Overlay
+              <input
+                type="range"
+                id="viewer-overlay-opacity"
+                min="10"
+                max="100"
+                value="70"
+                aria-label="Overlay opacity"
+              />
+            </label>
+            <div class="viewer-scale-wrap" id="viewer-scale-wrap" hidden>
+              <div class="viewer-scale-inner">
+                <div class="viewer-scale-bar" id="viewer-scale-bar"></div>
+              </div>
+              <span class="viewer-scale-label" id="viewer-scale-label"></span>
+            </div>
           </div>
           <div class="viewer-container" id="viewer-container"></div>
           <div class="viewer-empty" id="viewer-empty">
@@ -55,25 +140,28 @@
             <h2>Train Model</h2>
             <p class="training-hint">
               Use a folder structured like <strong>MASTERTILE</strong>: each slide is a subfolder
-              containing density classes (<code>low</code>, <code>medium</code>, <code>high</code>, <code>negative</code>).
-              Each density has <code>images/</code> and <code>masks/</code> with matching
-              PNGs (e.g. tile_x512_y1024.png and tile_x512_y1024_mask.png).
+              containing density classes (<code>low</code>, <code>medium</code>, <code>high</code>,
+              <code>negative</code>). Each density has <code>images/</code> and <code>masks/</code> with
+              matching PNGs (e.g. tile_x512_y1024.png and tile_x512_y1024_mask.png).
             </p>
             <p class="training-hint training-format">
-              <code>MASTERTILE/slide.svs[...]/low/images/</code>, <code>.../medium/masks/</code>, etc.
+              <code>MASTERTILE/slide.svs[...]/low/images/</code>,
+              <code>.../medium/masks/</code>, etc.
             </p>
             <div class="form-group">
               <label>Training data folder (e.g. MASTERTILE)</label>
               <div class="training-folder-row">
-                <input type="text" id="training-folder-path" readonly placeholder="Select a folder..." />
-                <button class="btn btn-primary" id="btn-select-training-folder">Select folder</button>
+                <input type="text" id="training-folder-path" readonly placeholder="Select a folder…" />
+                <button type="button" class="btn btn-primary" id="btn-select-training-folder">
+                  Select folder
+                </button>
               </div>
             </div>
             <div class="form-group">
               <label for="inference-model-select">Inference Model</label>
               <div class="settings-row">
                 <select id="inference-model-select"></select>
-                <button class="btn btn-secondary" id="btn-refresh-models" type="button">
+                <button type="button" class="btn btn-secondary" id="btn-refresh-models">
                   Refresh
                 </button>
               </div>
@@ -82,8 +170,10 @@
               </p>
             </div>
             <div class="training-actions">
-              <button class="btn btn-primary" id="btn-start-training">Start training</button>
-              <button class="btn btn-danger" id="btn-stop-training" disabled>Stop training</button>
+              <button type="button" class="btn btn-primary" id="btn-start-training">Start training</button>
+              <button type="button" class="btn btn-danger" id="btn-stop-training" disabled>
+                Stop training
+              </button>
             </div>
             <div class="training-status" id="training-status"></div>
           </div>
@@ -93,14 +183,47 @@
           <div class="settings-form">
             <h2>Settings</h2>
             <div class="form-group">
+              <label for="ui-theme">Appearance</label>
+              <select id="ui-theme">
+                <option value="system">Match system</option>
+                <option value="dark">Dark</option>
+                <option value="light">Light</option>
+              </select>
+              <p class="settings-hint">Applied immediately. Saved in local storage on this device.</p>
+            </div>
+            <div class="form-group">
               <label for="api-port">API Port</label>
               <input type="number" id="api-port" min="1024" max="65535" value="8765" />
             </div>
-            <p class="settings-hint">Changes take effect on next app restart.</p>
-            <button class="btn btn-primary" id="btn-save-settings">Save</button>
+            <p class="settings-hint">API port changes take effect after you restart the app.</p>
+            <button type="button" class="btn btn-primary" id="btn-save-settings">Save port</button>
           </div>
         </section>
       </main>
+    </div>
+
+    <div id="help-modal" class="modal" hidden>
+      <div class="modal-backdrop" data-close-modal tabindex="-1"></div>
+      <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="help-modal-title">
+        <h2 id="help-modal-title">Getting started</h2>
+        <ol class="help-steps">
+          <li><strong>Import</strong> — Add SVS/TIF/PNG slides via drag-and-drop or the file picker.</li>
+          <li><strong>Gallery</strong> — Search, sort, star favorites, or select multiple slides to remove.</li>
+          <li><strong>Viewer</strong> — Pan and zoom; run inference and pick which run to overlay.</li>
+          <li><strong>Training</strong> — Point at a MASTERTILE-style folder and train; pick a checkpoint for inference.</li>
+        </ol>
+        <p class="help-shortcuts">
+          Shortcuts: <kbd>1</kbd>–<kbd>5</kbd> tabs · <kbd>G</kbd> gallery · <kbd>V</kbd> viewer ·
+          <kbd>I</kbd> import · <kbd>R</kbd> run inference (viewer) · <kbd>?</kbd> help
+        </p>
+        <div class="modal-actions">
+          <label class="help-dismiss-row">
+            <input type="checkbox" id="help-never-show" />
+            Don’t show again
+          </label>
+          <button type="button" class="btn btn-primary" id="btn-help-dismiss">Got it</button>
+        </div>
+      </div>
     </div>
 
     <script src="js/api.js"></script>
