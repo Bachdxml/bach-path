@@ -2,7 +2,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import openslide
 from PIL import Image
 
 RASTER_EXTENSIONS = {".png"}
@@ -25,6 +24,8 @@ def read_raster_metadata(slide_path: Path) -> dict[str, Any]:
 
 
 def read_openslide_metadata(slide_path: Path) -> dict[str, Any]:
+    import openslide
+
     with openslide.OpenSlide(str(slide_path)) as s:
         props = dict(s.properties)  # OpenSlideProperties
         dims = (int(s.dimensions[0]), int(s.dimensions[1]))

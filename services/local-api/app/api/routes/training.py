@@ -119,6 +119,7 @@ def _run_training_task(export_root: str, progress_path: Path):
             except OSError:
                 pass
             signal_hint = ""
+            stop_requested = False
             if code == -9:
                 signal_hint = (
                     "Process was killed (SIGKILL, exit -9). "
@@ -128,10 +129,16 @@ def _run_training_task(export_root: str, progress_path: Path):
                 )
             elif code == -15:
                 signal_hint = "Training stopped by user.\n\n"
+            try:
+                with open(progress_path) as f:
+                    current = json.load(f)
+                stop_requested = current.get("error_message") == "Stop requested..."
+            except (json.JSONDecodeError, OSError):
+                stop_requested = False
             with open(progress_path, "w") as f:
                 json.dump(
                     {
-                        "status": "stopped" if code == -15 else "failed",
+                        "status": "stopped" if (code == -15 or stop_requested) else "failed",
                         "error_message": (signal_hint + (log_tail or f"Exit code {code}"))[:2000],
                     },
                     f,
@@ -169,26 +176,26 @@ def start_training(
             raise AppError(ErrorCode.CONFLICT, "Training already in progress")
         _training_starting = True
 
-    export_root = Path(payload.export_root)
-    if not export_root.exists():
-        raise AppError(ErrorCode.IO_ERROR, f"Export folder not found: {export_root}")
-    if not export_root.is_dir():
-        raise AppError(ErrorCode.IO_ERROR, "Export path must be a directory")
-
-    script_path = _get_train_script_path()
-    if not script_path.exists():
-        raise AppError(ErrorCode.IO_ERROR, f"Training script not found: {script_path}")
-
-    settings = request.app.state.settings
-    settings.training_runs_dir.mkdir(parents=True, exist_ok=True)
-    progress_path = settings.training_runs_dir / "current.json"
-
-    thread = threading.Thread(
-        target=_run_training_task,
-        args=(str(export_root), progress_path),
-        daemon=True,
-    )
     try:
+        export_root = Path(payload.export_root)
+        if not export_root.exists():
+            raise AppError(ErrorCode.IO_ERROR, f"Export folder not found: {export_root}")
+        if not export_root.is_dir():
+            raise AppError(ErrorCode.IO_ERROR, "Export path must be a directory")
+
+        script_path = _get_train_script_path()
+        if not script_path.exists():
+            raise AppError(ErrorCode.IO_ERROR, f"Training script not found: {script_path}")
+
+        settings = request.app.state.settings
+        settings.training_runs_dir.mkdir(parents=True, exist_ok=True)
+        progress_path = settings.training_runs_dir / "current.json"
+
+        thread = threading.Thread(
+            target=_run_training_task,
+            args=(str(export_root), progress_path),
+            daemon=True,
+        )
         thread.start()
     except Exception:
         with _training_lock:
@@ -228,12 +235,14 @@ def get_training_status(request: Request):
 @router.post("/stop", response_model=TrainingStatusResponse)
 def stop_training(request: Request):
     global _training_process, _training_starting
-    if _training_starting and (_training_process is None or _training_process.poll() is not None):
-        raise AppError(ErrorCode.CONFLICT, "Training is still starting; try again in a moment")
-    if _training_process is None or _training_process.poll() is not None:
-        raise AppError(ErrorCode.CONFLICT, "No training process is currently running")
+    with _training_lock:
+        proc = _training_process
+        if _training_starting and (proc is None or proc.poll() is not None):
+            raise AppError(ErrorCode.CONFLICT, "Training is still starting; try again in a moment")
+        if proc is None or proc.poll() is not None:
+            raise AppError(ErrorCode.CONFLICT, "No training process is currently running")
 
-    _training_process.terminate()
+    proc.terminate()
     settings = request.app.state.settings
     progress_path = settings.training_runs_dir / "current.json"
     try:

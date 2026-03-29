@@ -63,9 +63,10 @@ function getPythonPath() {
 function waitForHealth(port, host = "127.0.0.1", maxAttempts = 30) {
   return new Promise((resolve, reject) => {
     let attempts = 0;
+    const hostForUrl = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
 
     const tryFetch = () => {
-      const req = http.get(`http://${host}:${port}/health`, (res) => {
+      const req = http.get(`http://${hostForUrl}:${port}/health`, (res) => {
         if (res.statusCode >= 200 && res.statusCode < 300) {
           resolve();
         } else if (attempts < maxAttempts) {
@@ -131,11 +132,15 @@ function startApi() {
   const spawnEnv = { ...process.env };
   if (dyldPath) spawnEnv.DYLD_LIBRARY_PATH = dyldPath;
 
-  apiProcess = spawn(pythonPath, [scriptPath, "--port", String(port), "--data-dir", dataDir, "--log-dir", logDir], {
-    cwd: path.dirname(scriptPath),
-    stdio: "pipe",
-    env: spawnEnv,
-  });
+  apiProcess = spawn(
+    pythonPath,
+    [scriptPath, "--host", String(host), "--port", String(port), "--data-dir", dataDir, "--log-dir", logDir],
+    {
+      cwd: path.dirname(scriptPath),
+      stdio: "pipe",
+      env: spawnEnv,
+    }
+  );
 
   apiProcess.on("error", (err) => {
     console.error("API process error:", err);
@@ -171,7 +176,7 @@ function createWindow(apiReady) {
     },
   });
 
-  mainWindow.loadFile("index.html");
+  mainWindow.loadFile(path.join(__dirname, "index.html"));
   mainWindow.webContents.on("did-finish-load", () => {
     mainWindow.webContents.send("api-ready", apiReady);
   });
@@ -295,10 +300,10 @@ ipcMain.handle("save-viewer-capture", async (_, payload) => {
       defaultPath: defaultFilename,
       filters: [{ name: "PNG", extensions: ["png"] }],
     });
-    if (result.canceled || !result.filePath) return { canceled: true };
+    if (result.canceled || !result.filePath) return { ok: true, canceled: true };
     fs.writeFileSync(result.filePath, image.toPNG());
-    return { canceled: false, path: result.filePath };
+    return { ok: true, canceled: false, path: result.filePath };
   } catch (e) {
-    return { ok: false, error: String(e?.message || e) };
+    return { ok: false, canceled: false, error: String(e?.message || e) };
   }
 });

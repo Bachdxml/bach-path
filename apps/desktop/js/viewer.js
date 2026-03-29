@@ -59,7 +59,7 @@ async function navigateViewer(delta) {
   const idx = viewerSlideOrder.indexOf(currentSlideId);
   if (idx < 0) return;
   const nextId = viewerSlideOrder[idx + delta];
-  if (!nextId) return;
+  if (nextId == null) return;
   await showViewer(nextId);
 }
 
@@ -218,12 +218,18 @@ function addRegionOverlays(regions, showNegative = false) {
   });
 }
 
-async function populateRunSelector(slideId) {
+async function populateRunSelector(slideId, requestId = null) {
   if (!viewerRunSelect) return;
   viewerRunSelect.innerHTML = "";
   viewerRunSelect.disabled = true;
   try {
     const { runs } = await window.slidesApi.getSlideInferenceRuns(slideId);
+    if (
+      (requestId != null && requestId !== viewerRequestSeq) ||
+      currentSlideId !== slideId
+    ) {
+      return;
+    }
     const succeeded = (runs || []).filter((r) => r.status === "succeeded");
     if (succeeded.length === 0) {
       const opt = document.createElement("option");
@@ -243,8 +249,14 @@ async function populateRunSelector(slideId) {
     viewerRunSelect.disabled = false;
     viewerRunSelect.value = String(succeeded[0].id);
     currentRunId = succeeded[0].id;
-    await loadRegionsForRun(currentRunId);
+    await loadRegionsForRun(currentRunId, slideId, requestId ?? viewerRequestSeq);
   } catch (_) {
+    if (
+      (requestId != null && requestId !== viewerRequestSeq) ||
+      currentSlideId !== slideId
+    ) {
+      return;
+    }
     const opt = document.createElement("option");
     opt.value = "";
     opt.textContent = "Runs unavailable";
@@ -252,14 +264,16 @@ async function populateRunSelector(slideId) {
   }
 }
 
-async function loadRegionsForRun(runId) {
+async function loadRegionsForRun(runId, slideId = currentSlideId, requestId = viewerRequestSeq) {
   if (!runId) return;
   try {
     const { regions } = await window.slidesApi.getInferenceRegions(runId);
+    if (requestId !== viewerRequestSeq || currentSlideId !== slideId) return;
     lastRegions = regions || [];
     const showNeg = viewerShowNegative?.checked || false;
     addRegionOverlays(lastRegions, showNeg);
   } catch (_) {
+    if (requestId !== viewerRequestSeq || currentSlideId !== slideId) return;
     lastRegions = [];
     clearOverlays();
   }
@@ -386,7 +400,7 @@ async function showViewer(slideId) {
       if (requestId !== viewerRequestSeq || currentSlideId !== slideId) return;
       viewer.viewport.goHome(true);
       updateScaleBar();
-      populateRunSelector(slideId);
+      populateRunSelector(slideId, requestId);
     });
 
     viewer.addHandler("animation", updateScaleBar);
@@ -422,7 +436,7 @@ btnViewerMetadataClose?.addEventListener("click", () => {
 viewerRunSelect?.addEventListener("change", async () => {
   const v = viewerRunSelect.value;
   currentRunId = v ? parseInt(v, 10) : null;
-  if (currentRunId) await loadRegionsForRun(currentRunId);
+  if (currentRunId) await loadRegionsForRun(currentRunId, currentSlideId, viewerRequestSeq);
 });
 
 viewerShowNegative?.addEventListener("change", () => {
@@ -510,7 +524,7 @@ async function handleRunInference() {
       if (r.status === "succeeded") {
         setInferenceStatus(`Done: ${r.summary?.fungus_positive ?? 0} positive`);
         runInferenceBtn.disabled = false;
-        await populateRunSelector(runSlideId);
+        await populateRunSelector(runSlideId, viewerRequestSeq);
         return;
       }
       if (r.status === "failed") {

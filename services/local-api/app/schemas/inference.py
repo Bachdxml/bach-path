@@ -15,9 +15,9 @@ class InferenceRunResponse(BaseModel):
     model_name: str
     model_version: str
     status: str
-    started_at: str | None
-    finished_at: str | None
-    created_at: str
+    started_at: datetime | None
+    finished_at: datetime | None
+    created_at: datetime
     summary: dict | None = None
     error_message: str | None = None
 

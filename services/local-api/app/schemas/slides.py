@@ -1,6 +1,7 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import Literal
+from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
 
 class SlideImportRequest(BaseModel):
@@ -21,7 +22,7 @@ class SlideImportResponse(BaseModel):
 class SlideListItem(BaseModel):
     id: int
     original_path: str | None
-    created_at: str
+    created_at: datetime
     inference_result: Literal["positive", "negative", "unchecked"] = "unchecked"
     folder_label: str = "Uncategorized"
     folder_key: str = "uncategorized"

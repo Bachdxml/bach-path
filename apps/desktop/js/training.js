@@ -89,6 +89,8 @@ async function pollTrainingStatus() {
       const err = escapeHtml(s.error_message || "Unknown error");
       setTrainingStatus(`<span class="training-error">Failed: ${err}</span>`);
     } else if (s.status === "idle") {
+      if (pollInterval) clearInterval(pollInterval);
+      pollInterval = null;
       stopLogPolling();
       startTrainingBtn.disabled = false;
       stopTrainingBtn.disabled = true;
@@ -118,6 +120,7 @@ async function handleStartTraining() {
   try {
     await window.slidesApi.startTraining(path);
     startLogPolling();
+    if (pollInterval) clearInterval(pollInterval);
     pollInterval = setInterval(pollTrainingStatus, 2000);
     pollTrainingStatus();
   } catch (err) {

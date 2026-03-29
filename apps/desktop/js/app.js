@@ -143,8 +143,9 @@ document.addEventListener("DOMContentLoaded", () => {
     btn.addEventListener("click", () => activateTab(btn.dataset.tab));
   });
 
-  window.electronAPI.onApiReady(({ port, host }) => {
-    window.slidesApi.setApiBase(`http://${host}:${port}`);
+  const offApiReady = window.electronAPI.onApiReady(({ port, host }) => {
+    const hostForUrl = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+    window.slidesApi.setApiBase(`http://${hostForUrl}:${port}`);
     if (healthTimer) clearInterval(healthTimer);
     pingApi();
     healthTimer = setInterval(pingApi, 10000);
@@ -153,15 +154,28 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     loadModelOptions();
   });
-
-  window.electronAPI.getConfig().then((config) => {
-    const portInput = document.getElementById("api-port");
-    if (portInput) portInput.value = config.apiPort ?? 8765;
+  window.addEventListener("beforeunload", () => {
+    if (typeof offApiReady === "function") offApiReady();
   });
+
+  window.electronAPI
+    .getConfig()
+    .then((config) => {
+      const portInput = document.getElementById("api-port");
+      if (portInput) portInput.value = config.apiPort ?? 8765;
+    })
+    .catch((err) => {
+      toast(`Failed to load settings: ${err?.message || err}`, "error");
+    });
 
   document.getElementById("btn-save-settings")?.addEventListener("click", async () => {
     const portInput = document.getElementById("api-port");
-    const port = parseInt(portInput?.value || "8765", 10);
+    const raw = (portInput?.value || "8765").trim();
+    if (!/^\d+$/.test(raw)) {
+      toast("Port must be a whole number between 1024 and 65535", "error");
+      return;
+    }
+    const port = Number(raw);
     if (port < 1024 || port > 65535) {
       toast("Port must be between 1024 and 65535", "error");
       return;

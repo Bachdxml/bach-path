@@ -257,6 +257,7 @@ function renderCards() {
     } else {
       galleryEmpty.textContent = "No slides match your filters. Try clearing search or favorites.";
     }
+    updateCollapseToggleButton([]);
     return;
   }
 
@@ -324,6 +325,7 @@ async function deleteOneSlide(id) {
   try {
     await window.slidesApi.deleteSlide(id);
     selectedIds.delete(id);
+    updateSelectionUi();
     const fav = getFavorites();
     fav.delete(id);
     saveFavorites(fav);
@@ -374,7 +376,12 @@ async function loadGalleryData() {
     const data = await window.slidesApi.listSlides();
     if (requestId !== galleryLoadSeq) return;
     allSlides = data.slides || [];
+    const validIds = new Set(allSlides.map((s) => s.id));
+    for (const id of [...selectedIds]) {
+      if (!validIds.has(id)) selectedIds.delete(id);
+    }
     refreshFolderFilterOptions();
+    updateSelectionUi();
     renderCards();
   } catch (err) {
     if (requestId !== galleryLoadSeq) return;

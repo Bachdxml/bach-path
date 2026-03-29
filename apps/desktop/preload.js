@@ -4,8 +4,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getConfig: () => ipcRenderer.invoke("get-config"),
   setConfig: (config) => ipcRenderer.invoke("set-config", config),
   onApiReady: (callback) => {
-    ipcRenderer.on("api-ready", (_, data) => callback(data));
+    const listener = (_, data) => callback(data);
+    ipcRenderer.on("api-ready", listener);
+    return () => ipcRenderer.removeListener("api-ready", listener);
   },
+  getDroppedFilePaths: (pathStrings) => ipcRenderer.invoke("get-dropped-file-paths", pathStrings),
   selectFolder: () => ipcRenderer.invoke("select-folder"),
   selectFiles: () => ipcRenderer.invoke("select-files"),
   selectDirectory: () => ipcRenderer.invoke("select-directory"),

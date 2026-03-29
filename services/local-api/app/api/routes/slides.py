@@ -20,7 +20,6 @@ from fastapi import Response
 from fastapi.responses import FileResponse
 import io
 
-import openslide
 from PIL import Image
 
 from app.util.exceptions import AppError, ErrorCode
@@ -165,7 +164,7 @@ def list_slides(db: Session = Depends(get_db)):
             SlideListItem(
                 id=s.id,
                 original_path=s.original_path,
-                created_at=s.created_at.isoformat() if s.created_at else "",
+                created_at=s.created_at,
                 inference_result=_inference_result(s.id),
                 folder_label=folder_label,
                 folder_key=folder_key,
@@ -271,6 +270,7 @@ def slide_thumbnail(
             raise AppError(ErrorCode.SLIDE_UNREADABLE, f"Could not read image: {e}")
 
     try:
+        import openslide
         osr = openslide.OpenSlide(str(slide_path))
     except Exception as e:
         raise AppError(ErrorCode.SLIDE_UNREADABLE, f"OpenSlide failed: {e}")
@@ -333,7 +333,6 @@ def slide_tile(
         / str(level)
         / f"{x}_{y}.jpg"
     )
-    tile_path.parent.mkdir(parents=True, exist_ok=True)
 
     if tile_path.exists():
         return Response(content=tile_path.read_bytes(), media_type="image/jpeg")
@@ -341,6 +340,7 @@ def slide_tile(
     if slide_path.suffix.lower() in RASTER_EXTENSIONS:
         try:
             jpg_bytes = _raster_tile_jpeg(slide_path, level, x, y, TILE_SIZE)
+            tile_path.parent.mkdir(parents=True, exist_ok=True)
             tile_path.write_bytes(jpg_bytes)
             return Response(content=jpg_bytes, media_type="image/jpeg")
         except AppError:
@@ -350,6 +350,7 @@ def slide_tile(
 
     # 2) Validate level exists + 3) compute tile region
     try:
+        import openslide
         osr = openslide.OpenSlide(str(slide_path))
     except Exception as e:
         raise AppError(ErrorCode.SLIDE_UNREADABLE, f"OpenSlide failed: {e}")
@@ -396,6 +397,7 @@ def slide_tile(
         jpg_bytes = buf.getvalue()
 
         # write-through cache
+        tile_path.parent.mkdir(parents=True, exist_ok=True)
         tile_path.write_bytes(jpg_bytes)
 
         return Response(content=jpg_bytes, media_type="image/jpeg")

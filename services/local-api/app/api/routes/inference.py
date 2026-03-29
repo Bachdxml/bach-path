@@ -207,7 +207,20 @@ def _run_inference_task(run_id: int, slide_path: str, output_path: Path, checkpo
         with open(output_path) as f:
             data = json.load(f)
 
+        parsed_regions = []
         for r in data.get("regions", []):
+            parsed_regions.append(
+                {
+                    "x": int(r["x"]),
+                    "y": int(r["y"]),
+                    "w": int(r["w"]),
+                    "h": int(r["h"]),
+                    "score": float(r["score"]),
+                    "label": r.get("label"),
+                }
+            )
+
+        for r in parsed_regions:
             region = Region(
                 inference_run_id=run_id,
                 x=r["x"],
@@ -275,13 +288,21 @@ def run_inference(
 
     output_path = settings.inference_runs_dir / f"{run.id}.json"
 
-    _inference_executor.submit(
-        _run_inference_task,
-        run.id,
-        str(slide_path),
-        output_path,
-        checkpoint,
-    )
+    try:
+        _inference_executor.submit(
+            _run_inference_task,
+            run.id,
+            str(slide_path),
+            output_path,
+            checkpoint,
+        )
+    except Exception as e:
+        run.status = InferenceStatus.failed.value
+        run.finished_at = datetime.now(timezone.utc)
+        run.error_code = "executor_submit_failed"
+        run.error_message = str(e)[:2000]
+        db.commit()
+        raise AppError(ErrorCode.IO_ERROR, "Could not start inference task")
 
     return _run_to_response(run)
 
@@ -316,6 +337,9 @@ def get_inference_regions(run_id: int, db: Session = Depends(get_db)):
 
 @router.get("/slides/{slide_id}/runs")
 def list_slide_inference_runs(slide_id: int, db: Session = Depends(get_db)):
+    slide = db.get(Slide, slide_id)
+    if not slide:
+        raise AppError(ErrorCode.NOT_FOUND, f"Slide {slide_id} not found")
     runs = db.query(InferenceRun).filter(InferenceRun.slide_id == slide_id).order_by(InferenceRun.created_at.desc()).all()
     return {"runs": [_run_to_response(r, db) for r in runs]}
 
@@ -333,9 +357,9 @@ def _run_to_response(run: InferenceRun, db: Session | None = None) -> InferenceR
         model_name=run.model_name,
         model_version=run.model_version,
         status=run.status,
-        started_at=run.started_at.isoformat() if run.started_at else None,
-        finished_at=run.finished_at.isoformat() if run.finished_at else None,
-        created_at=run.created_at.isoformat() if run.created_at else "",
+        started_at=run.started_at,
+        finished_at=run.finished_at,
+        created_at=run.created_at,
         summary=summary,
         error_message=run.error_message,
     )
