@@ -11,6 +11,7 @@ import sys
 import platform
 import signal
 import time
+import shutil
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -41,6 +42,45 @@ from src import (
 
 def log(message: str = "") -> None:
     print(message, flush=True)
+
+
+def _torch_shm_manager_executable() -> bool:
+    shm_bin = (
+        Path(torch.__file__).resolve().parent / "bin" / "torch_shm_manager"
+    )
+    return shm_bin.exists() and os.access(shm_bin, os.X_OK)
+
+
+def _configure_sharing_strategy() -> None:
+    try:
+        import torch.multiprocessing as mp
+
+        strategies = mp.get_all_sharing_strategies()
+        if "file_descriptor" in strategies:
+            mp.set_sharing_strategy("file_descriptor")
+            log("⚙️  Sharing strategy: file_descriptor")
+        elif "file_system" in strategies:
+            mp.set_sharing_strategy("file_system")
+            log("⚙️  Sharing strategy: file_system")
+    except Exception as e:
+        log(f"⚠️  Could not set torch sharing strategy ({e}).")
+
+
+def _publish_checkpoint_for_inference(checkpoint: str | Path) -> tuple[str, str]:
+    src = Path(checkpoint)
+    models_dir = _PROJECT_ROOT / "models"
+    models_dir.mkdir(parents=True, exist_ok=True)
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    ext = src.suffix if src.suffix else ".pth"
+    stem = src.stem or "trained-model"
+    dest = models_dir / f"{stem}-{ts}{ext}"
+    i = 1
+    while dest.exists():
+        dest = models_dir / f"{stem}-{ts}-{i}{ext}"
+        i += 1
+    shutil.copy2(src, dest)
+    rel = dest.relative_to(models_dir).as_posix()
+    return str(dest), f"models/{rel}"
 
 
 def _set_nested(cfg: dict, path: str, value) -> None:
@@ -81,7 +121,8 @@ def apply_training_profile(cfg: dict, profile: str = "auto") -> str:
         }
     elif selected == "mac":
         profile_overrides = {
-            "loader.auto_num_workers": True,
+            "loader.auto_num_workers": False,
+            "loader.num_workers": 0,
             "loader.prefetch_factor": 2,
             "training.amp": False,
             "training.channels_last": False,
@@ -91,7 +132,8 @@ def apply_training_profile(cfg: dict, profile: str = "auto") -> str:
         }
     elif selected == "cpu":
         profile_overrides = {
-            "loader.auto_num_workers": True,
+            "loader.auto_num_workers": False,
+            "loader.num_workers": 0,
             "loader.prefetch_factor": 2,
             "training.amp": False,
             "training.channels_last": False,
@@ -306,6 +348,7 @@ def _run_training(cfg: dict, progress_file: str | None = None):
     if cpu_threads > 0:
         torch.set_num_threads(cpu_threads)
         log(f"⚙️  torch.set_num_threads({cpu_threads})")
+    _configure_sharing_strategy()
 
     index = WSIDatasetIndex(
         export_root,
@@ -350,6 +393,10 @@ def _run_training(cfg: dict, progress_file: str | None = None):
         worker_cap = 8 if has_cuda else 4
         n_workers = min(worker_cap, max(1, cpu_count - 1))
         log(f"⚡ Auto-selected num_workers={n_workers} for faster data loading.")
+
+    if n_workers > 0 and not _torch_shm_manager_executable():
+        log("⚠️  torch_shm_manager is not executable; forcing num_workers=0.")
+        n_workers = 0
 
     train_ds = AugmentedWSI_Dataset(train_pairs, img_size=img_size, augment=True)
     val_ds   = AugmentedWSI_Dataset(val_pairs,   img_size=img_size, augment=False) \
@@ -568,19 +615,37 @@ def _run_training(cfg: dict, progress_file: str | None = None):
                 "cfg": cfg,
                 "stopped_by_user":      True,
             }, stopped_checkpoint)
+            published_path = None
+            published_id = None
+            try:
+                published_path, published_id = _publish_checkpoint_for_inference(stopped_checkpoint)
+                log(f"Published model for inference: {published_id}")
+            except Exception as e:
+                log(f"⚠️  Could not publish stopped checkpoint for inference ({e}).")
             log("\n" + "=" * 60)
             log(f"Training stopped by user. Saved checkpoint: {stopped_checkpoint}")
             log("=" * 60)
             write_progress("stopped", epoch=epoch, best_dice=best_val_dice,
-                        checkpoint_path=str(stopped_checkpoint))
+                        checkpoint_path=str(stopped_checkpoint),
+                        published_model_path=published_path,
+                        published_model_id=published_id)
             return history
 
+        published_path = None
+        published_id = None
+        try:
+            published_path, published_id = _publish_checkpoint_for_inference(checkpoint_path)
+            log(f"Published model for inference: {published_id}")
+        except Exception as e:
+            log(f"⚠️  Could not publish final checkpoint for inference ({e}).")
         log("\n" + "=" * 60)
         log(f"Training complete. Best dice: {best_val_dice:.4f}")
         log(f"Checkpoint: {checkpoint_path}")
         log("=" * 60)
         write_progress("succeeded", epoch=epoch, best_dice=best_val_dice,
-                    checkpoint_path=str(checkpoint_path))
+                    checkpoint_path=str(checkpoint_path),
+                    published_model_path=published_path,
+                    published_model_id=published_id)
         return history
     finally:
         signal.signal(signal.SIGTERM, prev_sigterm)

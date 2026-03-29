@@ -48,6 +48,19 @@ def _get_models_dir() -> Path:
     return models_dir
 
 
+def _get_checkpoints_dir() -> Path:
+    checkpoints_dir = _get_project_root() / "wsi-fungal-segmentation" / "checkpoints"
+    checkpoints_dir.mkdir(parents=True, exist_ok=True)
+    return checkpoints_dir
+
+
+def _get_model_roots() -> list[tuple[str, Path]]:
+    return [
+        ("models", _get_models_dir().resolve()),
+        ("checkpoints", _get_checkpoints_dir().resolve()),
+    ]
+
+
 def _bootstrap_default_model() -> None:
     """
     Seed models/default_model.pth from legacy checkpoints/best_model.pth
@@ -69,41 +82,57 @@ def _bootstrap_default_model() -> None:
 
 def _model_infos() -> list[InferenceModelInfo]:
     _bootstrap_default_model()
-    models_dir = _get_models_dir().resolve()
+    roots = _get_model_roots()
     files = []
-    for p in models_dir.rglob("*"):
-        if not p.is_file() or p.suffix.lower() not in _MODEL_EXTENSIONS:
-            continue
-        rel = p.relative_to(models_dir).as_posix()
-        stat = p.stat()
-        files.append(
-            InferenceModelInfo(
-                id=rel,
-                label=rel,
-                path=str(p),
-                size_bytes=stat.st_size,
-                modified_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+    for prefix, root in roots:
+        for p in root.rglob("*"):
+            if not p.is_file() or p.suffix.lower() not in _MODEL_EXTENSIONS:
+                continue
+            rel = p.relative_to(root).as_posix()
+            stat = p.stat()
+            model_id = f"{prefix}/{rel}"
+            files.append(
+                InferenceModelInfo(
+                    id=model_id,
+                    label=model_id,
+                    path=str(p),
+                    size_bytes=stat.st_size,
+                    modified_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+                )
             )
-        )
     files.sort(key=lambda m: m.modified_at or "", reverse=True)
     return files
 
 
 def _resolve_model_checkpoint(model_file: str | None) -> tuple[Path, str]:
     """
-    Resolve requested checkpoint from model id relative to models/ directory.
+    Resolve requested checkpoint from model id relative to models/ or checkpoints/.
     Returns (path, model_id_for_display).
     """
     import os
 
     models_dir = _get_models_dir().resolve()
+    model_roots = _get_model_roots()
     model_infos = _model_infos()
 
     if model_file:
         requested = model_file.strip()
-        candidate = (models_dir / requested).resolve()
+        root_prefix = None
+        rel = None
+        for prefix, root in model_roots:
+            prefix_token = f"{prefix}/"
+            if requested.startswith(prefix_token):
+                root_prefix = (prefix, root)
+                rel = requested[len(prefix_token):]
+                break
+        if root_prefix is None:
+            # backward-compatible: plain id resolves under models/
+            root_prefix = ("models", models_dir)
+            rel = requested
+        _, root = root_prefix
+        candidate = (root / rel).resolve()
         try:
-            candidate.relative_to(models_dir)
+            candidate.relative_to(root)
         except ValueError as e:
             raise AppError(ErrorCode.IO_ERROR, "Invalid model path") from e
         if not candidate.exists() or not candidate.is_file():
@@ -118,7 +147,7 @@ def _resolve_model_checkpoint(model_file: str | None) -> tuple[Path, str]:
     # 2) default_model.pth in models folder, if present.
     default_model = models_dir / "default_model.pth"
     if default_model.exists():
-        return default_model, "default_model.pth"
+        return default_model, "models/default_model.pth"
 
     # 3) First discovered model file.
     if model_infos:

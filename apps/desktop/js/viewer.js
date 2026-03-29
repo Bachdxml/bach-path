@@ -21,11 +21,19 @@ const btnViewerMetadataClose = document.getElementById("btn-viewer-metadata-clos
 const btnViewerExportView = document.getElementById("viewer-export-view");
 const btnViewerExportRegions = document.getElementById("viewer-export-regions");
 
+if (viewerShowNegative) {
+  viewerShowNegative.checked = false;
+  viewerShowNegative.disabled = true;
+  viewerShowNegative.title = "Negative overlays are disabled";
+}
+
 let viewer = null;
 let currentSlideId = null;
 let currentMpp = null;
 let currentRunId = null;
 let lastRegions = [];
+let currentSlideWidth = null;
+let currentSlideHeight = null;
 let viewerRequestSeq = 0;
 let activeInferencePollToken = 0;
 let viewerSlideOrder = [];
@@ -71,6 +79,8 @@ function closeViewer() {
   }
   currentSlideId = null;
   currentMpp = null;
+  currentSlideWidth = null;
+  currentSlideHeight = null;
   lastRegions = [];
   viewerContainer.innerHTML = "";
   viewerContainer.style.display = "none";
@@ -194,28 +204,103 @@ function clearOverlays() {
   }
 }
 
+function normalizeRegionLabel(label) {
+  if (label === "fungus_positive" || label === "positive") return "fungus_positive";
+  if (label === "fungus_negative" || label === "negative") return "fungus_negative";
+  return String(label || "");
+}
+
+function getSlideDimensions() {
+  if (Number.isFinite(currentSlideWidth) && Number.isFinite(currentSlideHeight)) {
+    return { width: currentSlideWidth, height: currentSlideHeight };
+  }
+  try {
+    const item = viewer?.world?.getItemAt?.(0);
+    if (item) {
+      const size = item.getContentSize();
+      if (size?.x > 0 && size?.y > 0) {
+        return { width: size.x, height: size.y };
+      }
+    }
+  } catch (_) {}
+  return null;
+}
+
 function addRegionOverlays(regions, showNegative = false) {
   if (!viewer) return;
   viewer.clearOverlays();
+  const dims = getSlideDimensions();
+  if (!dims) return;
+
+  const positives = [];
+  for (const r of regions || []) {
+    const label = normalizeRegionLabel(r.label);
+    if (label !== "fungus_positive") continue;
+    const x = Number.isFinite(r.x) ? r.x : 0;
+    const y = Number.isFinite(r.y) ? r.y : 0;
+    const w = Math.max(1, Number.isFinite(r.w) ? r.w : 1);
+    const h = Math.max(1, Number.isFinite(r.h) ? r.h : 1);
+    const x1 = Math.max(0, Math.min(dims.width, x));
+    const y1 = Math.max(0, Math.min(dims.height, y));
+    const x2 = Math.max(0, Math.min(dims.width, x + w));
+    const y2 = Math.max(0, Math.min(dims.height, y + h));
+    if (x2 <= x1 || y2 <= y1) continue;
+    positives.push({
+      x1,
+      y1,
+      x2,
+      y2,
+      score: Number.isFinite(r.score) ? Math.max(0, Math.min(1, r.score)) : 0.5,
+    });
+  }
+  if (!positives.length) return;
+
+  // Build a full-slide heatmap canvas from positive detections.
+  const longSide = Math.max(dims.width, dims.height);
+  const scale = longSide > 1200 ? 1200 / longSide : 1;
+  const canvasW = Math.max(64, Math.round(dims.width * scale));
+  const canvasH = Math.max(64, Math.round(dims.height * scale));
+  const heatCanvas = document.createElement("canvas");
+  heatCanvas.width = canvasW;
+  heatCanvas.height = canvasH;
+  heatCanvas.style.width = "100%";
+  heatCanvas.style.height = "100%";
+  heatCanvas.style.display = "block";
+  heatCanvas.style.pointerEvents = "none";
+
+  const ctx = heatCanvas.getContext("2d");
+  if (!ctx) return;
   const opacity = getOverlayOpacity();
 
-  regions.forEach((r) => {
-    if (r.label === "fungus_negative" && !showNegative) return;
-    const rw = Math.max(1, r.w);
-    const rh = Math.max(1, r.h);
-    const rect = new OpenSeadragon.Rect(r.x, r.y, rw, rh);
-    const el = document.createElement("div");
-    el.className = "region-overlay";
-    const color = r.label === "fungus_positive" ? "#e74c3c" : "#27ae60";
-    el.style.border = `2px solid ${color}`;
-    el.style.boxSizing = "border-box";
-    el.style.pointerEvents = "none";
-    el.style.opacity = String(opacity);
-    el.title = `${r.label || "?"} (${((r.score || 0) * 100).toFixed(1)}%)`;
-    try {
-      viewer.addOverlay({ element: el, location: rect });
-    } catch (_) {}
-  });
+  for (const p of positives) {
+    const cx = ((p.x1 + p.x2) * 0.5 * canvasW) / dims.width;
+    const cy = ((p.y1 + p.y2) * 0.5 * canvasH) / dims.height;
+    const areaPx = (p.x2 - p.x1) * (p.y2 - p.y1);
+    const radiusImagePx = Math.max(18, Math.min(180, Math.sqrt(areaPx) * 0.33));
+    const radius = (radiusImagePx * Math.max(canvasW / dims.width, canvasH / dims.height));
+    const peak = Math.max(0.08, Math.min(0.9, opacity * (0.22 + p.score * 0.95)));
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+    g.addColorStop(0, `rgba(255, 48, 48, ${peak.toFixed(3)})`);
+    g.addColorStop(0.45, `rgba(255, 120, 0, ${(peak * 0.62).toFixed(3)})`);
+    g.addColorStop(1, "rgba(255, 0, 0, 0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(cx - radius, cy - radius, radius * 2, radius * 2);
+  }
+
+  const container = document.createElement("div");
+  container.className = "region-overlay region-heatmap-overlay";
+  container.style.width = "100%";
+  container.style.height = "100%";
+  container.style.pointerEvents = "none";
+  container.style.overflow = "hidden";
+  container.style.mixBlendMode = "multiply";
+  container.appendChild(heatCanvas);
+
+  const imageRect = new OpenSeadragon.Rect(0, 0, dims.width, dims.height);
+  const viewportRect = viewer.viewport.imageToViewportRectangle(imageRect);
+  try {
+    viewer.addOverlay({ element: container, location: viewportRect });
+  } catch (_) {}
 }
 
 async function populateRunSelector(slideId, requestId = null) {
@@ -270,8 +355,13 @@ async function loadRegionsForRun(runId, slideId = currentSlideId, requestId = vi
     const { regions } = await window.slidesApi.getInferenceRegions(runId);
     if (requestId !== viewerRequestSeq || currentSlideId !== slideId) return;
     lastRegions = regions || [];
-    const showNeg = viewerShowNegative?.checked || false;
-    addRegionOverlays(lastRegions, showNeg);
+    const hasPositive = lastRegions.some(
+      (r) => normalizeRegionLabel(r.label) === "fungus_positive"
+    );
+    if (!hasPositive) {
+      window.appToast?.("No positive regions found for this run.", "info", 3500);
+    }
+    addRegionOverlays(lastRegions, false);
   } catch (_) {
     if (requestId !== viewerRequestSeq || currentSlideId !== slideId) return;
     lastRegions = [];
@@ -281,12 +371,18 @@ async function loadRegionsForRun(runId, slideId = currentSlideId, requestId = vi
 
 function applyMppFromMeta(meta) {
   currentMpp = null;
+  currentSlideWidth = null;
+  currentSlideHeight = null;
   if (!meta) return;
   const mx = meta.mpp_x;
   const my = meta.mpp_y;
   if (mx != null && my != null) currentMpp = (mx + my) / 2;
   else if (mx != null) currentMpp = mx;
   else if (my != null) currentMpp = my;
+  if (Array.isArray(meta.dimensions) && meta.dimensions.length >= 2) {
+    currentSlideWidth = Number(meta.dimensions[0]) || null;
+    currentSlideHeight = Number(meta.dimensions[1]) || null;
+  }
 }
 
 async function showViewer(slideId) {

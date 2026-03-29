@@ -104,7 +104,7 @@ document.addEventListener("DOMContentLoaded", () => {
         opt.textContent = "No model files found";
         modelSelect.appendChild(opt);
         modelSelect.disabled = true;
-        setModelStatus("No models found in wsi-fungal-segmentation/models", true);
+        setModelStatus("No models found in wsi-fungal-segmentation/models or checkpoints", true);
         return;
       }
       modelSelect.disabled = false;
