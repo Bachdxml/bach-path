@@ -13,7 +13,7 @@
   },
   "build": {
     "appId": "com.bachpath.pathologyviewer",
-    "productName": "Pathology Viewer",
+    "productName": "Bach Path",
     "directories": {
       "output": "dist"
     },

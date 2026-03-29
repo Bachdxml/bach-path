@@ -7,346 +7,371 @@
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: http://127.0.0.1:* http://localhost:*; connect-src http://127.0.0.1:* http://localhost:*; object-src 'none'; base-uri 'self'; frame-ancestors 'none';"
     />
-    <title>Pathology Viewer</title>
+    <title>Bach Path</title>
     <link rel="stylesheet" href="css/styles.css" />
     <script src="node_modules/openseadragon/build/openseadragon/openseadragon.min.js"></script>
   </head>
   <body>
     <div id="toast-host" class="toast-host" aria-live="polite"></div>
 
-    <div class="app">
-      <header class="status-bar" role="status">
+    <div class="app-shell">
+      <header id="header">
+        <div class="logo-wrap">
+          <div class="logo-mark" aria-hidden="true">BP</div>
+          <div class="logo-copy">
+            <strong>Bach Path</strong>
+            <span>clinical workspace</span>
+          </div>
+        </div>
+        <div class="header-spacer"></div>
+        <button type="button" class="btn btn-ghost btn-sm" id="btn-open-help" title="Help">Help</button>
+      </header>
+
+      <div class="shell-body">
+        <nav id="sidebar" aria-label="Main navigation">
+          <div class="nav-label">Workspace</div>
+          <button type="button" class="tab-btn nav-item active" data-tab="home">
+            <span class="nav-icon">⌂</span>
+            <span class="nav-text">Home</span>
+          </button>
+          <button type="button" class="tab-btn nav-item" data-tab="import">
+            <span class="nav-icon">⤓</span>
+            <span class="nav-text">Import</span>
+          </button>
+          <button type="button" class="tab-btn nav-item" data-tab="gallery">
+            <span class="nav-icon">▦</span>
+            <span class="nav-text">Gallery</span>
+          </button>
+          <button type="button" class="tab-btn nav-item" data-tab="training">
+            <span class="nav-icon">◉</span>
+            <span class="nav-text">Training</span>
+          </button>
+          <div class="nav-spacer"></div>
+          <button type="button" class="tab-btn nav-item" data-tab="settings">
+            <span class="nav-icon">⚙</span>
+            <span class="nav-text">Settings</span>
+          </button>
+        </nav>
+
+        <main id="main">
+          <section id="tab-home" class="tab-pane active">
+            <div class="page-header">
+              <h1 class="page-title">Clinical Slide Intelligence Workspace</h1>
+              <p class="page-subtitle">
+                Import slides, run inference, review positive hotspots, and train improved models from one place.
+              </p>
+            </div>
+            <div class="page-body">
+              <div class="metrics-grid">
+                <article class="metric-card">
+                  <p class="metric-label">Slides</p>
+                  <p class="metric-value" id="home-metric-slides">—</p>
+                </article>
+                <article class="metric-card metric-card-positive">
+                  <p class="metric-label">Positive</p>
+                  <p class="metric-value" id="home-metric-positive">—</p>
+                </article>
+                <article class="metric-card metric-card-accent">
+                  <p class="metric-label">Models</p>
+                  <p class="metric-value" id="home-metric-models">—</p>
+                </article>
+              </div>
+
+              <div class="home-grid">
+                <article class="panel-card">
+                  <h2>Pipeline Status</h2>
+                  <p id="home-status-line">Checking API…</p>
+                  <ul class="home-list">
+                    <li><strong>Import:</strong> Add WSI files from file picker or recursive folder scan.</li>
+                    <li><strong>Analyze:</strong> Run inference with selectable model and threshold controls.</li>
+                    <li><strong>Review:</strong> Inspect heatmap overlays for model-positive regions.</li>
+                  </ul>
+                </article>
+
+                <article class="panel-card">
+                  <h2>Quick Actions</h2>
+                  <div class="quick-actions">
+                    <button type="button" class="action-card home-action" data-target-tab="import">
+                      <strong>Import Slides</strong>
+                      <span>Add WSI files from disk or folder</span>
+                    </button>
+                    <button type="button" class="action-card home-action" data-target-tab="gallery">
+                      <strong>Open Gallery</strong>
+                      <span>Browse and review slide cases</span>
+                    </button>
+                    <button type="button" class="action-card home-action" data-target-tab="training">
+                      <strong>Train Model</strong>
+                      <span>Run segmentation model training</span>
+                    </button>
+                    <button type="button" class="action-card home-action" data-target-tab="settings">
+                      <strong>System Settings</strong>
+                      <span>Configure API and appearance</span>
+                    </button>
+                  </div>
+                  <p class="home-footnote">Shortcuts: 1 Home, 2 Import, 3 Gallery, 4 Training, 5 Settings.</p>
+                </article>
+              </div>
+            </div>
+          </section>
+
+          <section id="tab-import" class="tab-pane">
+            <div class="page-header">
+              <h1 class="page-title">Import</h1>
+              <p class="page-subtitle">Add whole-slide images to your workspace.</p>
+            </div>
+            <div class="page-body import-body">
+              <div class="drop-zone" id="drop-zone">
+                <p class="drop-zone-text">Drag WSI files here or click to select</p>
+                <p class="drop-zone-hint">Supports .svs, .tif, .tiff, .png</p>
+              </div>
+              <div class="import-actions">
+                <button type="button" class="btn btn-primary" id="btn-select-files">Select file(s)</button>
+                <button type="button" class="btn btn-secondary" id="btn-select-folder">
+                  Select folder (recursive)
+                </button>
+                <button type="button" class="btn btn-danger" id="btn-cancel-import" disabled>
+                  Cancel import
+                </button>
+              </div>
+              <div class="import-status" id="import-status"></div>
+              <div class="import-progress" id="import-progress"></div>
+            </div>
+          </section>
+
+          <section id="tab-gallery" class="tab-pane">
+            <div class="gallery-toolbar">
+              <input
+                type="search"
+                id="gallery-search"
+                class="gallery-search"
+                placeholder="Search by filename…"
+                autocomplete="off"
+                aria-label="Search slides"
+              />
+              <select id="gallery-sort" class="gallery-sort" title="Sort slides" aria-label="Sort slides">
+                <option value="date-desc">Newest first</option>
+                <option value="date-asc">Oldest first</option>
+                <option value="name-asc">Name A–Z</option>
+                <option value="name-desc">Name Z–A</option>
+              </select>
+              <select
+                id="gallery-inference-filter"
+                class="gallery-sort"
+                title="Filter by inference result"
+                aria-label="Filter by inference result"
+              >
+                <option value="all">All results</option>
+                <option value="positive">Positive</option>
+                <option value="negative">Negative</option>
+                <option value="unchecked">Unchecked</option>
+              </select>
+              <select
+                id="gallery-folder-filter"
+                class="gallery-sort"
+                title="Filter by folder"
+                aria-label="Filter by folder"
+              >
+                <option value="all">All folders</option>
+              </select>
+              <button type="button" class="btn btn-secondary btn-sm" id="btn-gallery-refresh">Refresh</button>
+              <button type="button" class="btn btn-secondary btn-sm" id="btn-gallery-collapse-toggle">
+                Collapse all
+              </button>
+              <label class="toolbar-toggle">
+                <input type="checkbox" id="gallery-favorites-only" />
+                Favorites
+              </label>
+              <button type="button" class="btn btn-secondary btn-sm" id="btn-gallery-select">Select</button>
+              <button type="button" class="btn btn-danger btn-sm" id="btn-gallery-delete-selected" disabled>
+                Delete selected
+              </button>
+            </div>
+            <div id="gallery-grid"></div>
+            <div class="gallery-empty" id="gallery-empty">No slides yet. Import slides from the Import tab.</div>
+          </section>
+
+          <section id="tab-training" class="tab-pane">
+            <div class="page-header">
+              <h1 class="page-title">Training</h1>
+              <p class="page-subtitle">Train and monitor segmentation models.</p>
+            </div>
+            <div class="page-body">
+              <div class="training-layout">
+                <div class="panel-card training-form">
+                  <p class="training-hint">
+                    Use a folder structured like <strong>MASTERTILE</strong>: each slide is a subfolder
+                    containing density classes (<code>low</code>, <code>medium</code>, <code>high</code>,
+                    <code>negative</code>). Each density has <code>images/</code> and <code>masks/</code> with
+                    matching PNGs.
+                  </p>
+                  <p class="training-hint training-format">
+                    <code>MASTERTILE/slide.svs[...]/low/images/</code>,
+                    <code>.../medium/masks/</code>, etc.
+                  </p>
+                  <div class="form-group">
+                    <label>Training data folder (e.g. MASTERTILE)</label>
+                    <div class="training-folder-row">
+                      <input type="text" id="training-folder-path" readonly placeholder="Select a folder…" />
+                      <button type="button" class="btn btn-secondary" id="btn-select-training-folder">
+                        Select folder
+                      </button>
+                    </div>
+                  </div>
+                  <div class="form-group">
+                    <label for="inference-model-select">Inference Model</label>
+                    <div class="settings-row">
+                      <select id="inference-model-select"></select>
+                      <button type="button" class="btn btn-secondary" id="btn-refresh-models">Refresh</button>
+                    </div>
+                    <p class="settings-hint" id="inference-model-status">
+                      Models are loaded from wsi-fungal-segmentation/models
+                    </p>
+                  </div>
+                  <div class="training-actions">
+                    <button type="button" class="btn btn-primary" id="btn-start-training">Start training</button>
+                    <button type="button" class="btn btn-danger" id="btn-stop-training" disabled>
+                      Stop training
+                    </button>
+                  </div>
+                  <div class="training-status" id="training-status"></div>
+                </div>
+                <div class="console-wrap">
+                  <div class="console-header">Training Console</div>
+                  <pre id="training-log-output" class="training-log-output" aria-live="polite"></pre>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section id="tab-settings" class="tab-pane">
+            <div class="page-header">
+              <h1 class="page-title">Settings</h1>
+              <p class="page-subtitle">Configure appearance and local API behavior.</p>
+            </div>
+            <div class="page-body settings-body">
+              <div class="panel-card settings-form">
+                <div class="form-group">
+                  <label for="ui-theme">Appearance</label>
+                  <select id="ui-theme">
+                    <option value="system">Match system</option>
+                    <option value="dark">Dark</option>
+                    <option value="light">Light</option>
+                  </select>
+                  <p class="settings-hint">Applied immediately. Saved in local storage on this device.</p>
+                </div>
+                <div class="form-group">
+                  <label for="api-port">API Port</label>
+                  <input type="number" id="api-port" min="1024" max="65535" value="8765" />
+                </div>
+                <p class="settings-hint">API port changes take effect after you restart the app.</p>
+                <button type="button" class="btn btn-primary" id="btn-save-settings">Save port</button>
+              </div>
+            </div>
+          </section>
+        </main>
+      </div>
+
+      <footer id="statusbar" role="status">
         <span id="api-status" class="api-status api-status--unknown">Checking API…</span>
         <span class="status-bar-meta" id="api-status-meta"></span>
         <span class="status-bar-spacer"></span>
-        <button type="button" class="btn btn-ghost btn-sm" id="btn-open-help" title="Help">
-          Help
-        </button>
-      </header>
+        <span class="status-brand">Bach Path</span>
+      </footer>
+    </div>
 
-      <nav class="tab-bar" aria-label="Main">
-        <button type="button" class="tab-btn active" data-tab="home">Home</button>
-        <button type="button" class="tab-btn" data-tab="import">Import</button>
-        <button type="button" class="tab-btn" data-tab="gallery">Gallery</button>
-        <button type="button" class="tab-btn" data-tab="training">Training</button>
-        <button
-          type="button"
-          class="tab-btn settings-btn"
-          data-tab="settings"
-          title="Settings"
-        >
-          Settings
-        </button>
-      </nav>
-
-      <main class="tab-content">
-        <section id="tab-home" class="tab-pane active">
-          <div class="home-shell">
-            <section class="home-hero">
-              <div>
-                <p class="home-kicker">Pathology Workflow</p>
-                <h1>Clinical Slide Intelligence Workspace</h1>
-                <p class="home-subtitle">
-                  Import slides, run inference, review positive hotspots, and train improved models from one place.
-                </p>
-                <div class="home-actions">
-                  <button type="button" class="btn btn-primary home-action" data-target-tab="import">
-                    Import Slides
-                  </button>
-                  <button type="button" class="btn btn-secondary home-action" data-target-tab="gallery">
-                    Open Gallery
-                  </button>
-                  <button type="button" class="btn btn-secondary home-action" data-target-tab="training">
-                    Train Model
-                  </button>
-                </div>
+    <section id="tab-viewer" class="viewer-overlay" hidden>
+      <div class="viewer-overlay-backdrop" id="viewer-overlay-backdrop"></div>
+      <button type="button" class="viewer-nav viewer-nav--prev" id="viewer-prev-slide" aria-label="Previous slide">
+        ‹
+      </button>
+      <div class="viewer-overlay-shell" id="viewer-overlay-shell" role="dialog" aria-modal="true" aria-label="Slide viewer">
+        <div class="viewer-layout">
+          <div class="viewer-main-column">
+            <div class="viewer-toolbar">
+              <button type="button" class="btn btn-secondary" id="viewer-back">Close</button>
+              <button type="button" class="btn btn-secondary btn-sm" id="btn-viewer-slide-info">Slide info</button>
+              <button type="button" class="btn btn-secondary btn-sm" id="viewer-export-view" title="Save PNG of current viewport">
+                Export view
+              </button>
+              <button
+                type="button"
+                class="btn btn-secondary btn-sm"
+                id="viewer-export-regions"
+                title="Download overlay regions as JSON"
+              >
+                Export regions
+              </button>
+              <button type="button" class="btn btn-primary" id="viewer-run-inference">Run inference</button>
+              <span class="viewer-inference-status" id="viewer-inference-status"></span>
+              <select
+                id="viewer-run-select"
+                class="viewer-run-select"
+                title="Inference run"
+                disabled
+                aria-label="Inference run"
+              ></select>
+              <label class="viewer-toggle">
+                <input type="checkbox" id="viewer-show-negative" />
+                Show negative
+              </label>
+              <label class="viewer-opacity-label">
+                Threshold
+                <input
+                  type="range"
+                  id="viewer-inference-threshold"
+                  min="1"
+                  max="99"
+                  value="10"
+                  aria-label="Inference threshold"
+                />
+                <span id="viewer-inference-threshold-value">0.10</span>
+              </label>
+              <label class="viewer-opacity-label">
+                Overlay
+                <input
+                  type="range"
+                  id="viewer-overlay-opacity"
+                  min="10"
+                  max="100"
+                  value="70"
+                  aria-label="Overlay opacity"
+                />
+              </label>
+              <div class="viewer-legend" aria-label="Inference overlay legend">
+                <span class="viewer-legend-item">
+                  <span class="viewer-legend-swatch viewer-legend-swatch--positive"></span> Positive
+                </span>
+                <span class="viewer-legend-item">
+                  <span class="viewer-legend-swatch viewer-legend-swatch--negative"></span> Negative
+                </span>
               </div>
-              <div class="home-metrics">
-                <article class="home-metric-card">
-                  <p class="home-metric-label">Slides</p>
-                  <p class="home-metric-value" id="home-metric-slides">—</p>
-                </article>
-                <article class="home-metric-card">
-                  <p class="home-metric-label">Positive</p>
-                  <p class="home-metric-value" id="home-metric-positive">—</p>
-                </article>
-                <article class="home-metric-card">
-                  <p class="home-metric-label">Models</p>
-                  <p class="home-metric-value" id="home-metric-models">—</p>
-                </article>
-              </div>
-            </section>
-
-            <section class="home-grid">
-              <article class="home-panel">
-                <h2>Pipeline Status</h2>
-                <p id="home-status-line">Checking API…</p>
-                <ul class="home-list">
-                  <li><strong>Import:</strong> Add WSI files from file picker or recursive folder scan.</li>
-                  <li><strong>Analyze:</strong> Run inference with selectable model and threshold controls.</li>
-                  <li><strong>Review:</strong> Inspect heatmap overlays for model-positive regions.</li>
-                </ul>
-              </article>
-              <article class="home-panel">
-                <h2>Quick Navigation</h2>
-                <div class="home-shortcuts">
-                  <button type="button" class="btn btn-secondary home-action" data-target-tab="gallery">
-                    Review Cases
-                  </button>
-                  <button type="button" class="btn btn-secondary home-action" data-target-tab="settings">
-                    System Settings
-                  </button>
+              <div class="viewer-scale-wrap" id="viewer-scale-wrap" hidden>
+                <div class="viewer-scale-inner">
+                  <div class="viewer-scale-bar" id="viewer-scale-bar"></div>
                 </div>
-                <p class="home-footnote">Keyboard: `1` Home, `2` Import, `3` Gallery, `4` Training, `5` Settings.</p>
-              </article>
-            </section>
-          </div>
-        </section>
-
-        <section id="tab-import" class="tab-pane">
-          <div class="drop-zone" id="drop-zone">
-            <p class="drop-zone-text">Drag WSI files here or click to select</p>
-            <p class="drop-zone-hint">Supports .svs, .tif, .tiff, .png</p>
-          </div>
-          <div class="import-actions">
-            <button type="button" class="btn btn-primary" id="btn-select-files">Select file(s)</button>
-            <button type="button" class="btn btn-primary" id="btn-select-folder">
-              Select folder (recursive)
-            </button>
-            <button type="button" class="btn btn-secondary" id="btn-cancel-import" disabled>
-              Cancel import
-            </button>
-          </div>
-          <div class="import-status" id="import-status"></div>
-          <div class="import-progress" id="import-progress"></div>
-        </section>
-
-        <section id="tab-gallery" class="tab-pane">
-          <div class="gallery-toolbar">
-            <input
-              type="search"
-              id="gallery-search"
-              class="gallery-search"
-              placeholder="Search by filename…"
-              autocomplete="off"
-              aria-label="Search slides"
-            />
-            <select id="gallery-sort" class="gallery-sort" title="Sort slides" aria-label="Sort slides">
-              <option value="date-desc">Newest first</option>
-              <option value="date-asc">Oldest first</option>
-              <option value="name-asc">Name A–Z</option>
-              <option value="name-desc">Name Z–A</option>
-            </select>
-            <select
-              id="gallery-inference-filter"
-              class="gallery-sort"
-              title="Filter by inference result"
-              aria-label="Filter by inference result"
-            >
-              <option value="all">All results</option>
-              <option value="positive">Positive</option>
-              <option value="negative">Negative</option>
-              <option value="unchecked">Unchecked</option>
-            </select>
-            <select
-              id="gallery-folder-filter"
-              class="gallery-sort"
-              title="Filter by folder"
-              aria-label="Filter by folder"
-            >
-              <option value="all">All folders</option>
-            </select>
-            <button type="button" class="btn btn-secondary btn-sm" id="btn-gallery-refresh">
-              Refresh
-            </button>
-            <button type="button" class="btn btn-secondary btn-sm" id="btn-gallery-collapse-toggle">
-              Collapse all
-            </button>
-            <label class="toolbar-toggle">
-              <input type="checkbox" id="gallery-favorites-only" />
-              Favorites
-            </label>
-            <button type="button" class="btn btn-secondary btn-sm" id="btn-gallery-select">
-              Select
-            </button>
-            <button
-              type="button"
-              class="btn btn-danger btn-sm"
-              id="btn-gallery-delete-selected"
-              disabled
-            >
-              Delete selected
-            </button>
-          </div>
-          <div id="gallery-grid"></div>
-          <div class="gallery-empty" id="gallery-empty">
-            No slides yet. Import slides from the Import tab.
-          </div>
-        </section>
-
-        <section id="tab-viewer" class="viewer-overlay" hidden>
-          <div class="viewer-overlay-backdrop" id="viewer-overlay-backdrop"></div>
-          <button type="button" class="viewer-nav viewer-nav--prev" id="viewer-prev-slide" aria-label="Previous slide">
-            ‹
-          </button>
-          <div class="viewer-overlay-shell" id="viewer-overlay-shell" role="dialog" aria-modal="true" aria-label="Slide viewer">
-          <div class="viewer-layout">
-            <div class="viewer-main-column">
-              <div class="viewer-toolbar">
-                <button type="button" class="btn btn-secondary" id="viewer-back">Close</button>
-                <button type="button" class="btn btn-secondary btn-sm" id="btn-viewer-slide-info">
-                  Slide info
-                </button>
-                <button type="button" class="btn btn-secondary btn-sm" id="viewer-export-view" title="Save PNG of current viewport">
-                  Export view
-                </button>
-                <button type="button" class="btn btn-secondary btn-sm" id="viewer-export-regions" title="Download overlay regions as JSON">
-                  Export regions
-                </button>
-                <button type="button" class="btn btn-primary" id="viewer-run-inference">Run inference</button>
-                <span class="viewer-inference-status" id="viewer-inference-status"></span>
-                <select
-                  id="viewer-run-select"
-                  class="viewer-run-select"
-                  title="Inference run"
-                  disabled
-                  aria-label="Inference run"
-                ></select>
-                <label class="viewer-toggle">
-                  <input type="checkbox" id="viewer-show-negative" />
-                  Show negative
-                </label>
-                <label class="viewer-opacity-label">
-                  Threshold
-                  <input
-                    type="range"
-                    id="viewer-inference-threshold"
-                    min="1"
-                    max="99"
-                    value="10"
-                    aria-label="Inference threshold"
-                  />
-                  <span id="viewer-inference-threshold-value">0.10</span>
-                </label>
-                <label class="viewer-opacity-label">
-                  Overlay
-                  <input
-                    type="range"
-                    id="viewer-overlay-opacity"
-                    min="10"
-                    max="100"
-                    value="70"
-                    aria-label="Overlay opacity"
-                  />
-                </label>
-                <div class="viewer-legend" aria-label="Inference overlay legend">
-                  <span class="viewer-legend-item"
-                    ><span class="viewer-legend-swatch viewer-legend-swatch--positive"></span> Positive</span
-                  >
-                  <span class="viewer-legend-item"
-                    ><span class="viewer-legend-swatch viewer-legend-swatch--negative"></span> Negative</span
-                  >
-                </div>
-                <div class="viewer-scale-wrap" id="viewer-scale-wrap" hidden>
-                  <div class="viewer-scale-inner">
-                    <div class="viewer-scale-bar" id="viewer-scale-bar"></div>
-                  </div>
-                  <span class="viewer-scale-label" id="viewer-scale-label"></span>
-                </div>
-              </div>
-              <div class="viewer-canvas-wrap">
-                <div class="viewer-container" id="viewer-container"></div>
-                <div class="viewer-empty" id="viewer-empty">
-                  Select a slide from the Gallery to view.
-                </div>
+                <span class="viewer-scale-label" id="viewer-scale-label"></span>
               </div>
             </div>
-            <aside id="viewer-metadata-aside" class="viewer-metadata-aside" hidden>
-              <div class="viewer-metadata-header">
-                <h3 class="viewer-metadata-title">Slide metadata</h3>
-                <button type="button" class="viewer-metadata-close" id="btn-viewer-metadata-close" aria-label="Close">
-                  ×
-                </button>
-              </div>
-              <div class="viewer-meta-content" id="viewer-meta-content"></div>
-            </aside>
-          </div>
-          </div>
-          <button type="button" class="viewer-nav viewer-nav--next" id="viewer-next-slide" aria-label="Next slide">
-            ›
-          </button>
-        </section>
-
-        <section id="tab-training" class="tab-pane">
-          <div class="training-form">
-            <h2>Train Model</h2>
-            <p class="training-hint">
-              Use a folder structured like <strong>MASTERTILE</strong>: each slide is a subfolder
-              containing density classes (<code>low</code>, <code>medium</code>, <code>high</code>,
-              <code>negative</code>). Each density has <code>images/</code> and <code>masks/</code> with
-              matching PNGs (e.g. tile_x512_y1024.png and tile_x512_y1024_mask.png).
-            </p>
-            <p class="training-hint training-format">
-              <code>MASTERTILE/slide.svs[...]/low/images/</code>,
-              <code>.../medium/masks/</code>, etc.
-            </p>
-            <div class="form-group">
-              <label>Training data folder (e.g. MASTERTILE)</label>
-              <div class="training-folder-row">
-                <input type="text" id="training-folder-path" readonly placeholder="Select a folder…" />
-                <button type="button" class="btn btn-primary" id="btn-select-training-folder">
-                  Select folder
-                </button>
-              </div>
+            <div class="viewer-canvas-wrap">
+              <div class="viewer-container" id="viewer-container"></div>
+              <div class="viewer-empty" id="viewer-empty">Select a slide from the Gallery to view.</div>
             </div>
-            <div class="form-group">
-              <label for="inference-model-select">Inference Model</label>
-              <div class="settings-row">
-                <select id="inference-model-select"></select>
-                <button type="button" class="btn btn-secondary" id="btn-refresh-models">
-                  Refresh
-                </button>
-              </div>
-              <p class="settings-hint" id="inference-model-status">
-                Models are loaded from wsi-fungal-segmentation/models
-              </p>
-            </div>
-            <div class="training-actions">
-              <button type="button" class="btn btn-primary" id="btn-start-training">Start training</button>
-              <button type="button" class="btn btn-danger" id="btn-stop-training" disabled>
-                Stop training
+          </div>
+          <aside id="viewer-metadata-aside" class="viewer-metadata-aside" hidden>
+            <div class="viewer-metadata-header">
+              <h3 class="viewer-metadata-title">Slide metadata</h3>
+              <button type="button" class="viewer-metadata-close" id="btn-viewer-metadata-close" aria-label="Close">
+                ×
               </button>
             </div>
-            <div class="training-status" id="training-status"></div>
-            <div class="training-log-block">
-              <label class="training-log-label" for="training-log-output">Console output</label>
-              <pre id="training-log-output" class="training-log-output" aria-live="polite"></pre>
-            </div>
-          </div>
-        </section>
-
-        <section id="tab-settings" class="tab-pane">
-          <div class="settings-form">
-            <h2>Settings</h2>
-            <div class="form-group">
-              <label for="ui-theme">Appearance</label>
-              <select id="ui-theme">
-                <option value="system">Match system</option>
-                <option value="dark">Dark</option>
-                <option value="light">Light</option>
-              </select>
-              <p class="settings-hint">Applied immediately. Saved in local storage on this device.</p>
-            </div>
-            <div class="form-group">
-              <label for="api-port">API Port</label>
-              <input type="number" id="api-port" min="1024" max="65535" value="8765" />
-            </div>
-            <p class="settings-hint">API port changes take effect after you restart the app.</p>
-            <button type="button" class="btn btn-primary" id="btn-save-settings">Save port</button>
-          </div>
-        </section>
-      </main>
-    </div>
+            <div class="viewer-meta-content" id="viewer-meta-content"></div>
+          </aside>
+        </div>
+      </div>
+      <button type="button" class="viewer-nav viewer-nav--next" id="viewer-next-slide" aria-label="Next slide">
+        ›
+      </button>
+    </section>
 
     <div id="help-modal" class="modal" hidden>
       <div class="modal-backdrop" data-close-modal tabindex="-1"></div>
@@ -356,12 +381,13 @@
           <li><strong>Import</strong> — Add SVS/TIF/PNG slides via drag-and-drop or the file picker.</li>
           <li><strong>Gallery</strong> — Search, sort, star favorites, or select multiple slides to remove.</li>
           <li><strong>Viewer overlay</strong> — Click a slide card to open; click outside to close.</li>
-          <li><strong>Training</strong> — Point at a MASTERTILE-style folder and train; pick a checkpoint for inference.</li>
+          <li>
+            <strong>Training</strong> — Point at a MASTERTILE-style folder and train; pick a checkpoint for inference.
+          </li>
         </ol>
         <p class="help-shortcuts">
-          Shortcuts: <kbd>1</kbd>–<kbd>4</kbd> tabs · <kbd>G</kbd> gallery ·
-          <kbd>I</kbd> import · <kbd>R</kbd> run inference (viewer) · <kbd>E</kbd> export view (viewer) ·
-          <kbd>?</kbd> help
+          Shortcuts: <kbd>1</kbd>–<kbd>5</kbd> tabs · <kbd>G</kbd> gallery · <kbd>I</kbd> import · <kbd>R</kbd>
+          run inference (viewer) · <kbd>E</kbd> export view (viewer) · <kbd>?</kbd> help
         </p>
         <div class="modal-actions">
           <label class="help-dismiss-row">
