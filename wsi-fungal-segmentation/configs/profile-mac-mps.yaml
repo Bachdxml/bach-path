@@ -1,0 +1,46 @@
+# Mac profile (Apple Silicon / MPS) tuned for stability + throughput.
+data:
+  export_root: ""
+  img_size: 512
+  val_ratio: 0.2
+  random_seed: 42
+  flat_format: false
+
+loader:
+  batch_size: 1
+  num_workers: 0
+  auto_num_workers: true
+  prefetch_factor: 2
+
+model:
+  in_ch: 3
+  out_ch: 1
+  num_density_classes: 4
+  dropout_p: 0.3
+
+loss:
+  smooth: 0.000001
+  density_weight: 0.3
+  aux3_weight: 0.2
+  aux2_weight: 0.1
+
+optimizer:
+  lr: 0.0001
+  weight_decay: 0.0001
+
+scheduler:
+  factor: 0.5
+  patience: 5
+  min_lr: 0.0000001
+
+training:
+  epochs: 50
+  early_stop_patience: 15
+  clip_grad: 1.0
+  checkpoint_path: "checkpoints/best_model.pth"
+  amp: false
+  amp_dtype: "auto"
+  channels_last: false
+  tf32: false
+  compile: false
+  cpu_threads: 6

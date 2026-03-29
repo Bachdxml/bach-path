@@ -2,6 +2,7 @@ from __future__ import annotations
 import json
 import subprocess
 import threading
+import os
 from pathlib import Path
 
 from fastapi import APIRouter, Query, Request
@@ -74,6 +75,7 @@ def _run_training_task(export_root: str, progress_path: Path):
         "--config", str(cfg_path),
         "--export-root", export_root,
         "--progress-file", str(progress_path),
+        "--profile", os.environ.get("TRAINING_PROFILE", "auto"),
     ]
     cwd = str(script_path.parent.parent)
 

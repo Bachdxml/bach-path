@@ -11,6 +11,7 @@ import sys
 import platform
 import signal
 import time
+from contextlib import nullcontext
 from pathlib import Path
 
 # scripts/ is not the package root; ensure wsi-fungal-segmentation is on sys.path
@@ -28,7 +29,6 @@ from torch.utils.data import DataLoader
 
 # Reduce PyTorch memory overhead
 os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
-torch.set_num_threads(2)
 
 from src import (
     AugmentedWSI_Dataset,
@@ -43,12 +43,86 @@ def log(message: str = "") -> None:
     print(message, flush=True)
 
 
+def _set_nested(cfg: dict, path: str, value) -> None:
+    cur = cfg
+    keys = path.split(".")
+    for key in keys[:-1]:
+        if key not in cur or not isinstance(cur[key], dict):
+            cur[key] = {}
+        cur = cur[key]
+    cur[keys[-1]] = value
+
+
+def apply_training_profile(cfg: dict, profile: str = "auto") -> str:
+    has_cuda = torch.cuda.is_available()
+    has_mps = bool(getattr(torch.backends, "mps", None)) and torch.backends.mps.is_available()
+    selected = profile
+    if profile == "auto":
+        if has_cuda:
+            selected = "cuda"
+        elif has_mps and platform.system() == "Darwin":
+            selected = "mac"
+        else:
+            selected = "cpu"
+    if selected == "none":
+        return selected
+
+    profile_overrides: dict[str, object] = {}
+    if selected == "cuda":
+        profile_overrides = {
+            "loader.auto_num_workers": True,
+            "loader.prefetch_factor": 4,
+            "training.amp": True,
+            "training.amp_dtype": "auto",
+            "training.channels_last": True,
+            "training.tf32": True,
+            "training.compile": True,
+            "training.cpu_threads": 4,
+        }
+    elif selected == "mac":
+        profile_overrides = {
+            "loader.auto_num_workers": True,
+            "loader.prefetch_factor": 2,
+            "training.amp": False,
+            "training.channels_last": False,
+            "training.tf32": False,
+            "training.compile": False,
+            "training.cpu_threads": 6,
+        }
+    elif selected == "cpu":
+        profile_overrides = {
+            "loader.auto_num_workers": True,
+            "loader.prefetch_factor": 2,
+            "training.amp": False,
+            "training.channels_last": False,
+            "training.tf32": False,
+            "training.compile": False,
+            "training.cpu_threads": max(2, (os.cpu_count() or 4) // 2),
+        }
+
+    for dotted_key, value in profile_overrides.items():
+        _set_nested(cfg, dotted_key, value)
+    return selected
+
+
 # ---------------------------------------------------------------------------
 # Train / eval loops
 # ---------------------------------------------------------------------------
 
-def train_one_epoch(model, loader, criterion, optimizer, device,
-                    epoch_num, clip_grad=1.0, should_stop=None):
+def train_one_epoch(
+    model,
+    loader,
+    criterion,
+    optimizer,
+    device,
+    epoch_num,
+    clip_grad=1.0,
+    should_stop=None,
+    amp_enabled: bool = False,
+    amp_dtype: torch.dtype = torch.float16,
+    scaler: torch.cuda.amp.GradScaler | None = None,
+    use_channels_last: bool = False,
+):
     """
     Runs one full pass over the training DataLoader.
     Expects loader to yield (imgs, masks, density_labels).
@@ -69,15 +143,36 @@ def train_one_epoch(model, loader, criterion, optimizer, device,
         imgs           = imgs.to(device, non_blocking=True)
         masks          = masks.to(device, non_blocking=True)
         density_labels = density_labels.to(device, non_blocking=True)
+        if use_channels_last:
+            imgs = imgs.contiguous(memory_format=torch.channels_last)
 
         optimizer.zero_grad()
+        amp_ctx = (
+            torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=True)
+            if amp_enabled
+            else nullcontext()
+        )
+        with amp_ctx:
+            seg_logits, density_logits, aux3, aux2 = model(imgs, density_labels)
+            total, l_seg, l_density = criterion(
+                seg_logits,
+                density_logits,
+                masks,
+                density_labels,
+                aux3,
+                aux2,
+            )
 
-        seg_logits, density_logits, aux3, aux2 = model(imgs, density_labels)
-        total, l_seg, l_density = criterion(seg_logits, density_logits, masks, density_labels, aux3, aux2)
-
-        total.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_grad)
-        optimizer.step()
+        if amp_enabled and scaler is not None:
+            scaler.scale(total).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_grad)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            total.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_grad)
+            optimizer.step()
 
         with torch.no_grad():
             probs = torch.sigmoid(seg_logits)
@@ -104,7 +199,16 @@ def train_one_epoch(model, loader, criterion, optimizer, device,
         "stopped_early": processed_batches < n_batches,
     }
 
-def evaluate(model, loader, criterion, device, epoch_num: int | None = None):
+def evaluate(
+    model,
+    loader,
+    criterion,
+    device,
+    epoch_num: int | None = None,
+    amp_enabled: bool = False,
+    amp_dtype: torch.dtype = torch.float16,
+    use_channels_last: bool = False,
+):
     """
     Runs full validation pass.
     Expects loader to yield (imgs, masks, density_labels).
@@ -129,9 +233,23 @@ def evaluate(model, loader, criterion, device, epoch_num: int | None = None):
             imgs           = imgs.to(device,  non_blocking=True)
             masks          = masks.to(device, non_blocking=True)
             density_labels = density_labels.to(device, non_blocking=True)
-
-            seg_logits, density_logits, aux3, aux2 = model(imgs, density_labels)
-            total, l_seg, l_density = criterion(seg_logits, density_logits, masks, density_labels, aux3, aux2)
+            if use_channels_last:
+                imgs = imgs.contiguous(memory_format=torch.channels_last)
+            amp_ctx = (
+                torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=True)
+                if amp_enabled
+                else nullcontext()
+            )
+            with amp_ctx:
+                seg_logits, density_logits, aux3, aux2 = model(imgs, density_labels)
+                total, l_seg, l_density = criterion(
+                    seg_logits,
+                    density_logits,
+                    masks,
+                    density_labels,
+                    aux3,
+                    aux2,
+                )
             probs = torch.sigmoid(seg_logits)
             running_loss += total.item()
 
@@ -164,6 +282,7 @@ def evaluate(model, loader, criterion, device, epoch_num: int | None = None):
 def main_with_args(cfg_path: str = "configs/default.yaml",
                    export_root: str | None = None,
                    flat_format: bool | None = None,
+                   profile: str = "auto",
                    progress_file: str | None = None):
     with open(cfg_path) as f:
         cfg = yaml.safe_load(f)
@@ -171,6 +290,8 @@ def main_with_args(cfg_path: str = "configs/default.yaml",
         cfg["data"]["export_root"] = str(export_root)
     if flat_format is not None:
         cfg["data"]["flat_format"] = flat_format
+    selected_profile = apply_training_profile(cfg, profile=profile)
+    log(f"⚙️  Training profile: {selected_profile}")
     return _run_training(cfg, progress_file)
 
 
@@ -181,6 +302,10 @@ def _run_training(cfg: dict, progress_file: str | None = None):
     if not export_root.exists():
         raise FileNotFoundError(f"Export root not found: {export_root}")
     flat_format = cfg["data"].get("flat_format", False)
+    cpu_threads = int(cfg.get("training", {}).get("cpu_threads", 0))
+    if cpu_threads > 0:
+        torch.set_num_threads(cpu_threads)
+        log(f"⚙️  torch.set_num_threads({cpu_threads})")
 
     index = WSIDatasetIndex(
         export_root,
@@ -219,16 +344,38 @@ def _run_training(cfg: dict, progress_file: str | None = None):
         )
         batch_size = 1
 
+    auto_workers = cfg["loader"].get("auto_num_workers", True)
+    if n_workers == 0 and auto_workers:
+        cpu_count = os.cpu_count() or 2
+        worker_cap = 8 if has_cuda else 4
+        n_workers = min(worker_cap, max(1, cpu_count - 1))
+        log(f"⚡ Auto-selected num_workers={n_workers} for faster data loading.")
+
     train_ds = AugmentedWSI_Dataset(train_pairs, img_size=img_size, augment=True)
     val_ds   = AugmentedWSI_Dataset(val_pairs,   img_size=img_size, augment=False) \
                if val_pairs else None
 
     train_sampler = make_stratified_sampler(train_pairs)
-    train_loader = DataLoader(train_ds, batch_size=batch_size, sampler=train_sampler,
-                              num_workers=n_workers, pin_memory=pin)
-    val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False,
-                              num_workers=n_workers, pin_memory=pin) \
-                   if val_ds else None
+    prefetch_factor = int(cfg["loader"].get("prefetch_factor", 2))
+    train_loader_kwargs = {
+        "batch_size": batch_size,
+        "sampler": train_sampler,
+        "num_workers": n_workers,
+        "pin_memory": pin,
+    }
+    val_loader_kwargs = {
+        "batch_size": batch_size,
+        "shuffle": False,
+        "num_workers": n_workers,
+        "pin_memory": pin,
+    }
+    if n_workers > 0:
+        train_loader_kwargs["persistent_workers"] = True
+        val_loader_kwargs["persistent_workers"] = True
+        train_loader_kwargs["prefetch_factor"] = max(2, prefetch_factor)
+        val_loader_kwargs["prefetch_factor"] = max(2, prefetch_factor)
+    train_loader = DataLoader(train_ds, **train_loader_kwargs)
+    val_loader = DataLoader(val_ds, **val_loader_kwargs) if val_ds else None
 
     log(f"Train: {len(train_ds)} tiles  |  Val: {len(val_ds) if val_ds else 0} tiles")
     if has_cuda:
@@ -240,6 +387,21 @@ def _run_training(cfg: dict, progress_file: str | None = None):
     log(f"Device: {device}")
 
     model     = ResidualAttentionUNet(**cfg["model"]).to(device)
+    use_channels_last = bool(cfg["training"].get("channels_last", True)) and device.type == "cuda"
+    if use_channels_last:
+        model = model.to(memory_format=torch.channels_last)
+    if device.type == "cuda":
+        if bool(cfg["training"].get("tf32", True)):
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
+    compile_model = bool(cfg["training"].get("compile", False))
+    if compile_model and hasattr(torch, "compile"):
+        try:
+            model = torch.compile(model)
+            log("⚡ Enabled torch.compile for faster training.")
+        except Exception as e:
+            log(f"⚠️  torch.compile unavailable or failed; continuing without compile ({e}).")
     criterion = CombinedLoss(loss_cfg=cfg["loss"])
     optimizer = optim.AdamW(model.parameters(), **cfg["optimizer"])
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
@@ -259,6 +421,17 @@ def _run_training(cfg: dict, progress_file: str | None = None):
     best_val_dice    = -1.0
     no_improve_count = 0
     stop_requested = {"value": False}
+    amp_enabled = bool(cfg["training"].get("amp", True)) and device.type == "cuda"
+    amp_dtype_name = str(cfg["training"].get("amp_dtype", "auto")).lower()
+    if amp_dtype_name == "bfloat16":
+        amp_dtype = torch.bfloat16
+    elif amp_dtype_name == "float16":
+        amp_dtype = torch.float16
+    else:
+        amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
+    if amp_enabled:
+        log(f"⚡ AMP enabled ({str(amp_dtype).replace('torch.', '')}).")
 
     def write_progress(status: str, epoch: int = 0, **kwargs):
         if progress_file:
@@ -308,12 +481,25 @@ def _run_training(cfg: dict, progress_file: str | None = None):
                 model, train_loader, criterion, optimizer, device,
                 epoch_num=epoch, clip_grad=t_cfg["clip_grad"],
                 should_stop=lambda: stop_requested["value"],
+                amp_enabled=amp_enabled,
+                amp_dtype=amp_dtype,
+                scaler=scaler,
+                use_channels_last=use_channels_last,
             )
             gc.collect()
             if not stop_requested["value"] and val_loader is not None:
                 log(f"  [Epoch {epoch}] Starting validation...")
             val_m = (
-                evaluate(model, val_loader, criterion, device, epoch_num=epoch)
+                evaluate(
+                    model,
+                    val_loader,
+                    criterion,
+                    device,
+                    epoch_num=epoch,
+                    amp_enabled=amp_enabled,
+                    amp_dtype=amp_dtype,
+                    use_channels_last=use_channels_last,
+                )
                 if not stop_requested["value"]
                 else None
             )
@@ -414,10 +600,17 @@ if __name__ == "__main__":
     parser.add_argument("--progress-file", help="JSON file to write training progress for API polling")
     parser.add_argument("--flat-format", action="store_true",
                         help="Use flat format: <slide>/images, <slide>/masks (default in config)")
+    parser.add_argument(
+        "--profile",
+        choices=["auto", "cuda", "mac", "cpu", "none"],
+        default=os.environ.get("TRAINING_PROFILE", "auto"),
+        help="Performance profile: auto selects cuda on lab GPU, mac on Apple Silicon, otherwise cpu.",
+    )
     args = parser.parse_args()
     main_with_args(
         cfg_path=args.config,
         export_root=args.export_root or None,
         flat_format=args.flat_format if args.flat_format else None,
+        profile=args.profile,
         progress_file=args.progress_file,
     )

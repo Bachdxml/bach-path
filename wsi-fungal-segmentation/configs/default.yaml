@@ -14,6 +14,8 @@ data:
 loader:
   batch_size: 4
   num_workers: 0
+  auto_num_workers: true
+  prefetch_factor: 2
 
 # -----------------------------------------------------------------------
 # Model
@@ -56,3 +58,8 @@ training:
   early_stop_patience: 15
   clip_grad: 1.0
   checkpoint_path: "checkpoints/best_model.pth"
+  amp: true
+  amp_dtype: "auto" # auto | float16 | bfloat16
+  channels_last: true
+  tf32: true
+  compile: false
