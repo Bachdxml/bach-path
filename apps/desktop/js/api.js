@@ -60,6 +60,32 @@ async function runInference(slideId, modelFile = null, threshold = null) {
   return res.json();
 }
 
+async function runBatchInference(slideIds, modelFile = null, threshold = null) {
+  const payload = { slide_ids: slideIds || [] };
+  if (modelFile) payload.model_file = modelFile;
+  if (Number.isFinite(threshold)) payload.threshold = threshold;
+  const res = await fetch(`${apiBase}/inference/slides/batch-run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await parseErrorResponse(res));
+  return res.json();
+}
+
+async function runFolderInference(folderKey, modelFile = null, threshold = null) {
+  const payload = { folder_key: folderKey };
+  if (modelFile) payload.model_file = modelFile;
+  if (Number.isFinite(threshold)) payload.threshold = threshold;
+  const res = await fetch(`${apiBase}/inference/folders/run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await parseErrorResponse(res));
+  return res.json();
+}
+
 async function getInferenceRun(runId) {
   const res = await fetch(`${apiBase}/inference/runs/${runId}`);
   if (!res.ok) throw new Error(await parseErrorResponse(res));
@@ -139,6 +165,8 @@ window.slidesApi = {
   getSlideMetadata,
   getTileUrl,
   runInference,
+  runBatchInference,
+  runFolderInference,
   getInferenceRun,
   getInferenceRegions,
   getSlideInferenceRuns,

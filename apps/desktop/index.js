@@ -4,12 +4,15 @@ const fs = require("fs");
 const { spawn } = require("child_process");
 const http = require("http");
 
+const APP_DISPLAY_NAME = "Bach Path";
 const DEFAULT_PORT = 8765;
 const WSI_EXTENSIONS = new Set([".svs", ".tif", ".tiff", ".png"]);
 
 let apiProcess = null;
 let mainWindow = null;
 let apiReadyState = { port: DEFAULT_PORT, host: "127.0.0.1" };
+
+app.setName(APP_DISPLAY_NAME);
 
 function getConfigPath() {
   return path.join(app.getPath("userData"), "config.json");
@@ -166,9 +169,12 @@ function stopApi() {
 }
 
 function createWindow(apiReady) {
+  const appIconPath = path.join(__dirname, "assets", "icons", "icon.png");
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
+    title: APP_DISPLAY_NAME,
+    icon: fs.existsSync(appIconPath) ? appIconPath : undefined,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       nodeIntegration: false,
@@ -210,6 +216,10 @@ async function recursivelyFindWsiFiles(dir) {
 }
 
 app.whenReady().then(async () => {
+  const appIconPath = path.join(__dirname, "assets", "icons", "icon.png");
+  if (process.platform === "darwin" && fs.existsSync(appIconPath) && app.dock?.setIcon) {
+    app.dock.setIcon(appIconPath);
+  }
   try {
     apiReadyState = await startApi();
   } catch (err) {

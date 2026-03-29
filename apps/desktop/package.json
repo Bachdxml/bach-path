@@ -14,6 +14,7 @@
   "build": {
     "appId": "com.bachpath.pathologyviewer",
     "productName": "Bach Path",
+    "icon": "assets/icons/icon.png",
     "directories": {
       "output": "dist"
     },
@@ -34,13 +35,16 @@
       }
     ],
     "mac": {
-      "category": "public.app-category.utilities"
+      "category": "public.app-category.utilities",
+      "icon": "assets/icons/icon.png"
     },
     "win": {
       "signAndEditExecutable": false,
+      "icon": "assets/icons/icon.ico",
       "target": ["nsis", "portable"]
     },
     "linux": {
+      "icon": "assets/icons/icon.png",
       "target": ["AppImage"]
     }
   },

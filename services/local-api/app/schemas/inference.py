@@ -10,6 +10,14 @@ class InferenceRunCreate(BaseModel):
     threshold: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
+class InferenceBatchRunCreate(InferenceRunCreate):
+    slide_ids: list[int] = Field(default_factory=list, min_length=1)
+
+
+class InferenceFolderRunCreate(InferenceRunCreate):
+    folder_key: str = Field(min_length=1)
+
+
 class InferenceRunResponse(BaseModel):
     id: int
     slide_id: int
@@ -50,3 +58,8 @@ class InferenceModelInfo(BaseModel):
 class InferenceModelListResponse(BaseModel):
     models: list[InferenceModelInfo]
     default_model_id: str | None = None
+
+
+class InferenceBatchRunResponse(BaseModel):
+    run_ids: list[int]
+    slide_ids: list[int]

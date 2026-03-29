@@ -17,7 +17,9 @@
     <div class="app-shell">
       <header id="header">
         <div class="logo-wrap">
-          <div class="logo-mark" aria-hidden="true">BP</div>
+          <div class="logo-mark" aria-hidden="true">
+            <img src="assets/icons/icon-128.png" alt="" class="logo-mark-img" />
+          </div>
           <div class="logo-copy">
             <strong>Bach Path</strong>
             <span>clinical workspace</span>
@@ -182,6 +184,17 @@
                 Favorites
               </label>
               <button type="button" class="btn btn-secondary btn-sm" id="btn-gallery-select">Select</button>
+              <button
+                type="button"
+                class="btn btn-primary btn-sm"
+                id="btn-gallery-infer-selected"
+                disabled
+              >
+                Infer selected
+              </button>
+              <button type="button" class="btn btn-secondary btn-sm" id="btn-gallery-infer-folder">
+                Infer folder
+              </button>
               <button type="button" class="btn btn-danger btn-sm" id="btn-gallery-delete-selected" disabled>
                 Delete selected
               </button>

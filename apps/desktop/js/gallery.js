@@ -8,6 +8,8 @@ const galleryFavoritesOnly = document.getElementById("gallery-favorites-only");
 const btnGalleryCollapseToggle = document.getElementById("btn-gallery-collapse-toggle");
 const btnGalleryRefresh = document.getElementById("btn-gallery-refresh");
 const btnGallerySelect = document.getElementById("btn-gallery-select");
+const btnGalleryInferSelected = document.getElementById("btn-gallery-infer-selected");
+const btnGalleryInferFolder = document.getElementById("btn-gallery-infer-folder");
 const btnGalleryDeleteSelected = document.getElementById("btn-gallery-delete-selected");
 
 const FAV_KEY = "galleryFavoriteIds";
@@ -17,6 +19,8 @@ let allSlides = [];
 let selectionMode = false;
 const selectedIds = new Set();
 let galleryLoadSeq = 0;
+let inferencePollTimer = null;
+const pendingInferenceRunIds = new Set();
 
 function getCollapsedFolders() {
   try {
@@ -313,11 +317,68 @@ function updateSelectionUi() {
   if (btnGalleryDeleteSelected) {
     btnGalleryDeleteSelected.disabled = selectedIds.size === 0;
   }
+  if (btnGalleryInferSelected) {
+    btnGalleryInferSelected.disabled = selectedIds.size === 0;
+  }
   if (btnGallerySelect) {
     btnGallerySelect.classList.toggle("btn-primary", selectionMode);
     btnGallerySelect.classList.toggle("btn-secondary", !selectionMode);
     btnGallerySelect.textContent = selectionMode ? "Done" : "Select";
   }
+}
+
+function getPreferredThreshold(modelId) {
+  if (!modelId) return null;
+  try {
+    const raw = localStorage.getItem("inferenceThresholdByModel");
+    const map = raw ? JSON.parse(raw) : {};
+    const t = map?.[modelId];
+    return Number.isFinite(t) ? t : null;
+  } catch {
+    return null;
+  }
+}
+
+function startInferencePolling() {
+  if (inferencePollTimer) return;
+  inferencePollTimer = setInterval(async () => {
+    const ids = [...pendingInferenceRunIds];
+    if (!ids.length) {
+      clearInterval(inferencePollTimer);
+      inferencePollTimer = null;
+      return;
+    }
+    let completedNow = 0;
+    for (const runId of ids) {
+      try {
+        const run = await window.slidesApi.getInferenceRun(runId);
+        if (run.status === "succeeded" || run.status === "failed") {
+          pendingInferenceRunIds.delete(runId);
+          completedNow++;
+        }
+      } catch {
+        // Keep polling while API is transiently unavailable.
+      }
+    }
+    if (completedNow > 0 && typeof window.galleryRefresh === "function") {
+      window.galleryRefresh();
+    }
+    if (pendingInferenceRunIds.size === 0) {
+      clearInterval(inferencePollTimer);
+      inferencePollTimer = null;
+      window.appToast?.("Inference updates completed.", "success", 2200);
+    }
+  }, 2000);
+}
+
+function trackInferenceRuns(runIds) {
+  for (const id of runIds || []) {
+    if (Number.isFinite(id)) pendingInferenceRunIds.add(id);
+  }
+  if (typeof window.galleryRefresh === "function") {
+    window.galleryRefresh();
+  }
+  startInferencePolling();
 }
 
 async function deleteOneSlide(id) {
@@ -398,6 +459,7 @@ function loadGallery() {
 
 window.galleryRefresh = loadGallery;
 window.galleryGetOrderedSlideIds = () => getFilteredSlides().map((s) => s.id);
+window.galleryTrackInferenceRuns = trackInferenceRuns;
 
 function initGallery() {
   btnGalleryRefresh?.addEventListener("click", () => loadGalleryData());
@@ -424,6 +486,61 @@ function initGallery() {
     if (!selectionMode) selectedIds.clear();
     updateSelectionUi();
     renderCards();
+  });
+  btnGalleryInferSelected?.addEventListener("click", async () => {
+    const slideIds = [...selectedIds];
+    if (!slideIds.length) {
+      window.appToast?.("Select one or more slides first.", "info");
+      return;
+    }
+    const modelId =
+      typeof window.getSelectedInferenceModel === "function"
+        ? window.getSelectedInferenceModel()
+        : null;
+    const threshold = getPreferredThreshold(modelId);
+    btnGalleryInferSelected.disabled = true;
+    try {
+      const res = await window.slidesApi.runBatchInference(slideIds, modelId, threshold);
+      trackInferenceRuns(res?.run_ids || []);
+      window.appToast?.(`Queued inference for ${slideIds.length} slide(s).`, "success", 3500);
+    } catch (err) {
+      window.appToast?.(err?.message || "Batch inference failed", "error", 4500);
+    } finally {
+      updateSelectionUi();
+    }
+  });
+  btnGalleryInferFolder?.addEventListener("click", async () => {
+    const folderKey = galleryFolderFilter?.value || "all";
+    if (folderKey === "all") {
+      window.appToast?.("Choose a folder filter first, then click Infer folder.", "info");
+      return;
+    }
+    const folderSlides = allSlides.filter((s) => (s.folder_key || "uncategorized") === folderKey);
+    if (!folderSlides.length) {
+      window.appToast?.("No slides found in the selected folder.", "info");
+      return;
+    }
+    const proceed = confirm(`Run inference for ${folderSlides.length} slide(s) in this folder?`);
+    if (!proceed) return;
+    const modelId =
+      typeof window.getSelectedInferenceModel === "function"
+        ? window.getSelectedInferenceModel()
+        : null;
+    const threshold = getPreferredThreshold(modelId);
+    btnGalleryInferFolder.disabled = true;
+    try {
+      const res = await window.slidesApi.runFolderInference(folderKey, modelId, threshold);
+      trackInferenceRuns(res?.run_ids || []);
+      window.appToast?.(
+        `Queued folder inference for ${folderSlides.length} slide(s).`,
+        "success",
+        3500
+      );
+    } catch (err) {
+      window.appToast?.(err?.message || "Folder inference failed", "error", 4500);
+    } finally {
+      btnGalleryInferFolder.disabled = false;
+    }
   });
   btnGalleryDeleteSelected?.addEventListener("click", deleteSelectedSlides);
   gallerySearch?.addEventListener("input", () => renderCards());

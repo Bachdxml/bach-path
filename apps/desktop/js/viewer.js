@@ -666,6 +666,11 @@ async function handleRunInference() {
 
   try {
     const run = await window.slidesApi.runInference(currentSlideId, selectedModel, threshold);
+    if (typeof window.galleryTrackInferenceRuns === "function") {
+      window.galleryTrackInferenceRuns([run.id]);
+    } else if (typeof window.galleryRefresh === "function") {
+      window.galleryRefresh();
+    }
     setInferenceStatus("Running...");
 
     const poll = async () => {
@@ -681,6 +686,9 @@ async function handleRunInference() {
       if (r.status === "succeeded") {
         setInferenceStatus(`Done: ${r.summary?.fungus_positive ?? 0} positive`);
         runInferenceBtn.disabled = false;
+        if (typeof window.galleryRefresh === "function") {
+          window.galleryRefresh();
+        }
         await populateRunSelector(runSlideId, viewerRequestSeq);
         return;
       }

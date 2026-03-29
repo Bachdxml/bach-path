@@ -17,6 +17,9 @@ from app.models.region import Region
 from app.models.enums import InferenceStatus
 from app.schemas.inference import (
     InferenceRunCreate,
+    InferenceBatchRunCreate,
+    InferenceFolderRunCreate,
+    InferenceBatchRunResponse,
     InferenceRunResponse,
     RegionResponse,
     InferenceModelInfo,
@@ -27,6 +30,14 @@ from app.util.exceptions import AppError, ErrorCode
 router = APIRouter(prefix="/inference", tags=["inference"])
 _inference_executor = ThreadPoolExecutor(max_workers=2)
 _MODEL_EXTENSIONS = {".pth", ".pt", ".ckpt"}
+
+
+def _folder_key_for_slide(original_path: str | None) -> str:
+    if not original_path:
+        return "uncategorized"
+    p = Path(original_path)
+    parent = p.parent
+    return str(parent) if str(parent) else "uncategorized"
 
 
 def _get_project_root() -> Path:
@@ -288,32 +299,20 @@ def _run_inference_task(
         db.close()
 
 
-@router.post("/slides/{slide_id}/run", response_model=InferenceRunResponse)
-def run_inference(
-    slide_id: int,
-    request: Request,
-    payload: InferenceRunCreate | None = None,
-    db: Session = Depends(get_db),
-):
-    slide = db.get(Slide, slide_id)
-    if not slide:
-        raise AppError(ErrorCode.NOT_FOUND, f"Slide {slide_id} not found")
-
+def _queue_inference_run_for_slide(
+    *,
+    slide: Slide,
+    payload: InferenceRunCreate,
+    settings,
+    db: Session,
+) -> InferenceRun:
     slide_path = Path(slide.stored_path)
     if not slide_path.exists():
-        raise AppError(ErrorCode.STORAGE_INCONSISTENT, "Slide file missing")
+        raise AppError(ErrorCode.STORAGE_INCONSISTENT, f"Slide file missing for slide {slide.id}")
 
-    script_path = _get_script_path()
-    if not script_path.exists():
-        raise AppError(ErrorCode.IO_ERROR, f"Inference script not found: {script_path}")
-
-    settings = request.app.state.settings
-    settings.inference_runs_dir.mkdir(parents=True, exist_ok=True)
-
-    payload = payload or InferenceRunCreate()
     checkpoint, model_id = _resolve_model_checkpoint(payload.model_file)
     run = InferenceRun(
-        slide_id=slide_id,
+        slide_id=slide.id,
         model_name=payload.model_name,
         model_version=model_id or payload.model_version,
         status=InferenceStatus.queued.value,
@@ -324,7 +323,6 @@ def run_inference(
     db.refresh(run)
 
     output_path = settings.inference_runs_dir / f"{run.id}.json"
-
     try:
         _inference_executor.submit(
             _run_inference_task,
@@ -341,8 +339,112 @@ def run_inference(
         run.error_message = str(e)[:2000]
         db.commit()
         raise AppError(ErrorCode.IO_ERROR, "Could not start inference task")
+    return run
+
+
+@router.post("/slides/{slide_id}/run", response_model=InferenceRunResponse)
+def run_inference(
+    slide_id: int,
+    request: Request,
+    payload: InferenceRunCreate | None = None,
+    db: Session = Depends(get_db),
+):
+    slide = db.get(Slide, slide_id)
+    if not slide:
+        raise AppError(ErrorCode.NOT_FOUND, f"Slide {slide_id} not found")
+
+    script_path = _get_script_path()
+    if not script_path.exists():
+        raise AppError(ErrorCode.IO_ERROR, f"Inference script not found: {script_path}")
+
+    settings = request.app.state.settings
+    settings.inference_runs_dir.mkdir(parents=True, exist_ok=True)
+
+    payload = payload or InferenceRunCreate()
+    run = _queue_inference_run_for_slide(slide=slide, payload=payload, settings=settings, db=db)
 
     return _run_to_response(run)
+
+
+@router.post("/slides/batch-run", response_model=InferenceBatchRunResponse)
+def run_batch_inference(
+    request: Request,
+    payload: InferenceBatchRunCreate,
+    db: Session = Depends(get_db),
+):
+    script_path = _get_script_path()
+    if not script_path.exists():
+        raise AppError(ErrorCode.IO_ERROR, f"Inference script not found: {script_path}")
+
+    settings = request.app.state.settings
+    settings.inference_runs_dir.mkdir(parents=True, exist_ok=True)
+
+    slide_ids = list(dict.fromkeys(payload.slide_ids))
+    slides = db.query(Slide).filter(Slide.id.in_(slide_ids)).all()
+    found_by_id = {s.id: s for s in slides}
+    missing = [sid for sid in slide_ids if sid not in found_by_id]
+    if missing:
+        raise AppError(ErrorCode.NOT_FOUND, f"Slides not found: {missing}")
+
+    base_payload = InferenceRunCreate(
+        model_name=payload.model_name,
+        model_version=payload.model_version,
+        model_file=payload.model_file,
+        threshold=payload.threshold,
+    )
+    runs = []
+    for sid in slide_ids:
+        run = _queue_inference_run_for_slide(
+            slide=found_by_id[sid],
+            payload=base_payload,
+            settings=settings,
+            db=db,
+        )
+        runs.append(run)
+    return InferenceBatchRunResponse(run_ids=[r.id for r in runs], slide_ids=slide_ids)
+
+
+@router.post("/folders/run", response_model=InferenceBatchRunResponse)
+def run_folder_inference(
+    request: Request,
+    payload: InferenceFolderRunCreate,
+    db: Session = Depends(get_db),
+):
+    script_path = _get_script_path()
+    if not script_path.exists():
+        raise AppError(ErrorCode.IO_ERROR, f"Inference script not found: {script_path}")
+
+    settings = request.app.state.settings
+    settings.inference_runs_dir.mkdir(parents=True, exist_ok=True)
+
+    requested_key = payload.folder_key.strip()
+    if not requested_key:
+        raise AppError(ErrorCode.SLIDE_INVALID, "folder_key is required")
+
+    slides = db.query(Slide).order_by(Slide.created_at.desc()).all()
+    target_slides = [s for s in slides if _folder_key_for_slide(s.original_path) == requested_key]
+    if not target_slides:
+        raise AppError(ErrorCode.NOT_FOUND, "No slides found in that folder")
+
+    base_payload = InferenceRunCreate(
+        model_name=payload.model_name,
+        model_version=payload.model_version,
+        model_file=payload.model_file,
+        threshold=payload.threshold,
+    )
+    runs = []
+    for slide in target_slides:
+        run = _queue_inference_run_for_slide(
+            slide=slide,
+            payload=base_payload,
+            settings=settings,
+            db=db,
+        )
+        runs.append(run)
+    return InferenceBatchRunResponse(
+        run_ids=[r.id for r in runs],
+        slide_ids=[s.id for s in target_slides],
+    )
 
 
 @router.get("/models", response_model=InferenceModelListResponse)
