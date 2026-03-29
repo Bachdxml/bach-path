@@ -1,5 +1,6 @@
 from __future__ import annotations
 from pathlib import Path
+from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 class SlideImportRequest(BaseModel):
@@ -21,6 +22,9 @@ class SlideListItem(BaseModel):
     id: int
     original_path: str | None
     created_at: str
+    inference_result: Literal["positive", "negative", "unchecked"] = "unchecked"
+    folder_label: str = "Uncategorized"
+    folder_key: str = "uncategorized"
 
 class SlideListResponse(BaseModel):
     slides: list[SlideListItem]

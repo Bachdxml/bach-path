@@ -2,17 +2,48 @@ const galleryGrid = document.getElementById("gallery-grid");
 const galleryEmpty = document.getElementById("gallery-empty");
 const gallerySearch = document.getElementById("gallery-search");
 const gallerySort = document.getElementById("gallery-sort");
+const galleryInferenceFilter = document.getElementById("gallery-inference-filter");
+const galleryFolderFilter = document.getElementById("gallery-folder-filter");
 const galleryFavoritesOnly = document.getElementById("gallery-favorites-only");
+const btnGalleryCollapseToggle = document.getElementById("btn-gallery-collapse-toggle");
 const btnGalleryRefresh = document.getElementById("btn-gallery-refresh");
 const btnGallerySelect = document.getElementById("btn-gallery-select");
 const btnGalleryDeleteSelected = document.getElementById("btn-gallery-delete-selected");
 
 const FAV_KEY = "galleryFavoriteIds";
+const FOLDER_COLLAPSE_KEY = "galleryCollapsedFolders";
 
 let allSlides = [];
 let selectionMode = false;
 const selectedIds = new Set();
 let galleryLoadSeq = 0;
+
+function getCollapsedFolders() {
+  try {
+    const raw = localStorage.getItem(FOLDER_COLLAPSE_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(arr) ? arr : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveCollapsedFolders(set) {
+  localStorage.setItem(FOLDER_COLLAPSE_KEY, JSON.stringify([...set]));
+}
+
+function updateCollapseToggleButton(groups) {
+  if (!btnGalleryCollapseToggle) return;
+  if (!groups.length) {
+    btnGalleryCollapseToggle.disabled = true;
+    btnGalleryCollapseToggle.textContent = "Collapse all";
+    return;
+  }
+  btnGalleryCollapseToggle.disabled = false;
+  const collapsed = getCollapsedFolders();
+  const allCollapsed = groups.every((g) => collapsed.has(g.key));
+  btnGalleryCollapseToggle.textContent = allCollapsed ? "Expand all" : "Collapse all";
+}
 
 function filenameFromPath(p) {
   if (!p) return "Unknown";
@@ -72,10 +103,18 @@ function compareSlides(a, b, sort) {
 function getFilteredSlides() {
   const q = (gallerySearch?.value || "").trim().toLowerCase();
   const favOnly = galleryFavoritesOnly?.checked;
+  const inferenceFilter = galleryInferenceFilter?.value || "all";
+  const folderFilter = galleryFolderFilter?.value || "all";
   const fav = getFavorites();
   let list = [...allSlides];
   if (q) {
     list = list.filter((s) => filenameFromPath(s.original_path).toLowerCase().includes(q));
+  }
+  if (inferenceFilter !== "all") {
+    list = list.filter((s) => (s.inference_result || "unchecked") === inferenceFilter);
+  }
+  if (folderFilter !== "all") {
+    list = list.filter((s) => (s.folder_key || "uncategorized") === folderFilter);
   }
   if (favOnly) {
     list = list.filter((s) => fav.has(s.id));
@@ -96,6 +135,116 @@ function showSkeletons(n = 8) {
   }
 }
 
+function refreshFolderFilterOptions() {
+  if (!galleryFolderFilter) return;
+  const selected = galleryFolderFilter.value || "all";
+  const folders = new Map();
+  for (const s of allSlides) {
+    const key = s.folder_key || "uncategorized";
+    const label = s.folder_label || "Uncategorized";
+    if (!folders.has(key)) folders.set(key, label);
+  }
+  galleryFolderFilter.innerHTML = "";
+  const allOpt = document.createElement("option");
+  allOpt.value = "all";
+  allOpt.textContent = "All folders";
+  galleryFolderFilter.appendChild(allOpt);
+  for (const [key, label] of folders.entries()) {
+    const opt = document.createElement("option");
+    opt.value = key;
+    opt.textContent = label;
+    galleryFolderFilter.appendChild(opt);
+  }
+  if ([...folders.keys(), "all"].includes(selected)) {
+    galleryFolderFilter.value = selected;
+  }
+}
+
+function createSlideCard(s, fav) {
+  const card = document.createElement("div");
+  card.className = "gallery-card" + (selectionMode ? " gallery-card--selectable" : "");
+  card.dataset.slideId = String(s.id);
+
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.className = "gallery-card-select";
+  cb.checked = selectedIds.has(s.id);
+  cb.title = "Select slide";
+  cb.addEventListener("click", (e) => e.stopPropagation());
+  cb.addEventListener("change", () => {
+    if (cb.checked) selectedIds.add(s.id);
+    else selectedIds.delete(s.id);
+    updateSelectionUi();
+  });
+
+  const favBtn = document.createElement("button");
+  favBtn.type = "button";
+  favBtn.className = "gallery-card-fav";
+  favBtn.setAttribute("aria-pressed", fav.has(s.id) ? "true" : "false");
+  favBtn.title = fav.has(s.id) ? "Remove from favorites" : "Add to favorites";
+  favBtn.textContent = fav.has(s.id) ? "★" : "☆";
+  favBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    toggleFavorite(s.id);
+  });
+
+  const delBtn = document.createElement("button");
+  delBtn.type = "button";
+  delBtn.className = "gallery-card-delete";
+  delBtn.textContent = "Delete";
+  delBtn.title = "Remove slide from library";
+  delBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    deleteOneSlide(s.id);
+  });
+
+  const thumb = document.createElement("img");
+  thumb.className = "gallery-card-thumb";
+  thumb.src = window.slidesApi.getThumbnailUrl(s.id);
+  thumb.alt = filenameFromPath(s.original_path);
+  thumb.loading = "lazy";
+  thumb.onerror = () => {
+    thumb.src =
+      "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Crect fill='%23333' width='200' height='200'/%3E%3Ctext fill='%23999' x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle'%3ENo preview%3C/text%3E%3C/svg%3E";
+  };
+
+  const info = document.createElement("div");
+  info.className = "gallery-card-info";
+  const label = document.createElement("div");
+  label.className = "gallery-card-name";
+  label.textContent = filenameFromPath(s.original_path);
+  const meta = document.createElement("div");
+  meta.className = "gallery-card-date";
+  meta.textContent = formatDate(s.created_at);
+  const status = document.createElement("div");
+  const result = s.inference_result || "unchecked";
+  status.className = `gallery-card-status gallery-card-status--${result}`;
+  status.textContent =
+    result === "positive" ? "Positive" : result === "negative" ? "Negative" : "Unchecked";
+  info.appendChild(label);
+  info.appendChild(meta);
+  info.appendChild(status);
+
+  card.appendChild(cb);
+  card.appendChild(favBtn);
+  card.appendChild(delBtn);
+  card.appendChild(thumb);
+  card.appendChild(info);
+
+  card.addEventListener("click", () => {
+    if (selectionMode) {
+      cb.checked = !cb.checked;
+      if (cb.checked) selectedIds.add(s.id);
+      else selectedIds.delete(s.id);
+      updateSelectionUi();
+      return;
+    }
+    window.showViewer(s.id);
+  });
+
+  return card;
+}
+
 function renderCards() {
   if (!galleryGrid || !galleryEmpty) return;
   const slides = getFilteredSlides();
@@ -113,85 +262,50 @@ function renderCards() {
 
   galleryEmpty.style.display = "none";
   const fav = getFavorites();
-
+  const groups = new Map();
   for (const s of slides) {
-    const card = document.createElement("div");
-    card.className = "gallery-card" + (selectionMode ? " gallery-card--selectable" : "");
-    card.dataset.slideId = String(s.id);
-
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.className = "gallery-card-select";
-    cb.checked = selectedIds.has(s.id);
-    cb.title = "Select slide";
-    cb.addEventListener("click", (e) => e.stopPropagation());
-    cb.addEventListener("change", () => {
-      if (cb.checked) selectedIds.add(s.id);
-      else selectedIds.delete(s.id);
-      updateSelectionUi();
-    });
-
-    const favBtn = document.createElement("button");
-    favBtn.type = "button";
-    favBtn.className = "gallery-card-fav";
-    favBtn.setAttribute("aria-pressed", fav.has(s.id) ? "true" : "false");
-    favBtn.title = fav.has(s.id) ? "Remove from favorites" : "Add to favorites";
-    favBtn.textContent = fav.has(s.id) ? "★" : "☆";
-    favBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      toggleFavorite(s.id);
-    });
-
-    const delBtn = document.createElement("button");
-    delBtn.type = "button";
-    delBtn.className = "gallery-card-delete";
-    delBtn.textContent = "Delete";
-    delBtn.title = "Remove slide from library";
-    delBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      deleteOneSlide(s.id);
-    });
-
-    const thumb = document.createElement("img");
-    thumb.className = "gallery-card-thumb";
-    thumb.src = window.slidesApi.getThumbnailUrl(s.id);
-    thumb.alt = filenameFromPath(s.original_path);
-    thumb.loading = "lazy";
-    thumb.onerror = () => {
-      thumb.src =
-        "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Crect fill='%23333' width='200' height='200'/%3E%3Ctext fill='%23999' x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle'%3ENo preview%3C/text%3E%3C/svg%3E";
-    };
-
-    const info = document.createElement("div");
-    info.className = "gallery-card-info";
-    const label = document.createElement("div");
-    label.className = "gallery-card-name";
-    label.textContent = filenameFromPath(s.original_path);
-    const meta = document.createElement("div");
-    meta.className = "gallery-card-date";
-    meta.textContent = formatDate(s.created_at);
-    info.appendChild(label);
-    info.appendChild(meta);
-
-    card.appendChild(cb);
-    card.appendChild(favBtn);
-    card.appendChild(delBtn);
-    card.appendChild(thumb);
-    card.appendChild(info);
-
-    card.addEventListener("click", () => {
-      if (selectionMode) {
-        cb.checked = !cb.checked;
-        if (cb.checked) selectedIds.add(s.id);
-        else selectedIds.delete(s.id);
-        updateSelectionUi();
-        return;
-      }
-      window.showViewer(s.id);
-    });
-
-    galleryGrid.appendChild(card);
+    const key = s.folder_key || "uncategorized";
+    if (!groups.has(key)) {
+      groups.set(key, { label: s.folder_label || "Uncategorized", slides: [] });
+    }
+    groups.get(key).slides.push(s);
   }
+
+  const collapsed = getCollapsedFolders();
+  const orderedGroups = [...groups.entries()].map(([key, group]) => ({ key, ...group }));
+
+  for (const group of orderedGroups) {
+    const wrapper = document.createElement("section");
+    wrapper.className = "gallery-folder-group";
+    if (collapsed.has(group.key)) wrapper.classList.add("is-collapsed");
+    const header = document.createElement("div");
+    header.className = "gallery-folder-header";
+    const toggleBtn = document.createElement("button");
+    toggleBtn.type = "button";
+    toggleBtn.className = "gallery-folder-toggle";
+    const isCollapsed = wrapper.classList.contains("is-collapsed");
+    toggleBtn.textContent = `${isCollapsed ? "▸" : "▾"} ${group.label} (${group.slides.length})`;
+    toggleBtn.addEventListener("click", () => {
+      wrapper.classList.toggle("is-collapsed");
+      const nowCollapsed = wrapper.classList.contains("is-collapsed");
+      const next = getCollapsedFolders();
+      if (nowCollapsed) next.add(group.key);
+      else next.delete(group.key);
+      saveCollapsedFolders(next);
+      toggleBtn.textContent = `${nowCollapsed ? "▸" : "▾"} ${group.label} (${group.slides.length})`;
+      updateCollapseToggleButton(orderedGroups);
+    });
+    header.appendChild(toggleBtn);
+    const grid = document.createElement("div");
+    grid.className = "gallery-grid";
+    for (const s of group.slides) {
+      grid.appendChild(createSlideCard(s, fav));
+    }
+    wrapper.appendChild(header);
+    wrapper.appendChild(grid);
+    galleryGrid.appendChild(wrapper);
+  }
+  updateCollapseToggleButton(orderedGroups);
 }
 
 function updateSelectionUi() {
@@ -260,6 +374,7 @@ async function loadGalleryData() {
     const data = await window.slidesApi.listSlides();
     if (requestId !== galleryLoadSeq) return;
     allSlides = data.slides || [];
+    refreshFolderFilterOptions();
     renderCards();
   } catch (err) {
     if (requestId !== galleryLoadSeq) return;
@@ -279,6 +394,24 @@ window.galleryGetOrderedSlideIds = () => getFilteredSlides().map((s) => s.id);
 
 function initGallery() {
   btnGalleryRefresh?.addEventListener("click", () => loadGalleryData());
+  btnGalleryCollapseToggle?.addEventListener("click", () => {
+    const groups = getFilteredSlides().reduce((acc, s) => {
+      const key = s.folder_key || "uncategorized";
+      if (!acc.includes(key)) acc.push(key);
+      return acc;
+    }, []);
+    if (!groups.length) return;
+    const collapsed = getCollapsedFolders();
+    const allCollapsed = groups.every((k) => collapsed.has(k));
+    const next = getCollapsedFolders();
+    if (allCollapsed) {
+      for (const key of groups) next.delete(key);
+    } else {
+      for (const key of groups) next.add(key);
+    }
+    saveCollapsedFolders(next);
+    renderCards();
+  });
   btnGallerySelect?.addEventListener("click", () => {
     selectionMode = !selectionMode;
     if (!selectionMode) selectedIds.clear();
@@ -288,6 +421,8 @@ function initGallery() {
   btnGalleryDeleteSelected?.addEventListener("click", deleteSelectedSlides);
   gallerySearch?.addEventListener("input", () => renderCards());
   gallerySort?.addEventListener("change", () => renderCards());
+  galleryInferenceFilter?.addEventListener("change", () => renderCards());
+  galleryFolderFilter?.addEventListener("change", () => renderCards());
   galleryFavoritesOnly?.addEventListener("change", () => renderCards());
 
   updateSelectionUi();

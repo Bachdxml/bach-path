@@ -73,8 +73,30 @@
               <option value="name-asc">Name A–Z</option>
               <option value="name-desc">Name Z–A</option>
             </select>
+            <select
+              id="gallery-inference-filter"
+              class="gallery-sort"
+              title="Filter by inference result"
+              aria-label="Filter by inference result"
+            >
+              <option value="all">All results</option>
+              <option value="positive">Positive</option>
+              <option value="negative">Negative</option>
+              <option value="unchecked">Unchecked</option>
+            </select>
+            <select
+              id="gallery-folder-filter"
+              class="gallery-sort"
+              title="Filter by folder"
+              aria-label="Filter by folder"
+            >
+              <option value="all">All folders</option>
+            </select>
             <button type="button" class="btn btn-secondary btn-sm" id="btn-gallery-refresh">
               Refresh
+            </button>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-gallery-collapse-toggle">
+              Collapse all
             </button>
             <label class="toolbar-toggle">
               <input type="checkbox" id="gallery-favorites-only" />

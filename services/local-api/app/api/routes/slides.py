@@ -1,6 +1,7 @@
 from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from pathlib import Path
 import logging
 import shutil
@@ -9,6 +10,8 @@ from app.api.deps import get_db
 from app.schemas.slides import SlideImportRequest, SlideImportResponse, SlideListResponse, SlideListItem, SlideMetadataResponse
 from app.models.slide import Slide
 from app.models.inference_run import InferenceRun
+from app.models.region import Region
+from app.models.enums import InferenceStatus
 from app.slides.storage import copy_into_managed_storage
 from app.slides.metadata import read_openslide_metadata, read_raster_metadata, RASTER_EXTENSIONS
 from app.slides.deepzoom import deepzoom_paths, ensure_deepzoom, has_deepzoom
@@ -110,16 +113,65 @@ def delete_slide(slide_id: int, request: Request, db: Session = Depends(get_db))
 @router.get("", response_model=SlideListResponse)
 def list_slides(db: Session = Depends(get_db)):
     slides = db.query(Slide).order_by(Slide.created_at.desc()).all()
-    return SlideListResponse(
-        slides=[
+    slide_ids = [s.id for s in slides]
+    latest_run_by_slide: dict[int, InferenceRun] = {}
+    positive_count_by_run: dict[int, int] = {}
+
+    if slide_ids:
+        runs = (
+            db.query(InferenceRun)
+            .filter(
+                InferenceRun.slide_id.in_(slide_ids),
+                InferenceRun.status == InferenceStatus.succeeded.value,
+            )
+            .order_by(InferenceRun.slide_id.asc(), InferenceRun.created_at.desc())
+            .all()
+        )
+        for run in runs:
+            latest_run_by_slide.setdefault(run.slide_id, run)
+
+        run_ids = [r.id for r in latest_run_by_slide.values()]
+        if run_ids:
+            rows = (
+                db.query(Region.inference_run_id, func.count(Region.id))
+                .filter(
+                    Region.inference_run_id.in_(run_ids),
+                    Region.label == "fungus_positive",
+                )
+                .group_by(Region.inference_run_id)
+                .all()
+            )
+            positive_count_by_run = {run_id: count for run_id, count in rows}
+
+    def _inference_result(slide_id: int) -> str:
+        run = latest_run_by_slide.get(slide_id)
+        if not run:
+            return "unchecked"
+        return "positive" if positive_count_by_run.get(run.id, 0) > 0 else "negative"
+
+    def _folder_info(original_path: str | None) -> tuple[str, str]:
+        if not original_path:
+            return "Uncategorized", "uncategorized"
+        p = Path(original_path)
+        parent = p.parent
+        label = parent.name or "(root)"
+        key = str(parent)
+        return label, key
+
+    items: list[SlideListItem] = []
+    for s in slides:
+        folder_label, folder_key = _folder_info(s.original_path)
+        items.append(
             SlideListItem(
                 id=s.id,
                 original_path=s.original_path,
                 created_at=s.created_at.isoformat() if s.created_at else "",
+                inference_result=_inference_result(s.id),
+                folder_label=folder_label,
+                folder_key=folder_key,
             )
-            for s in slides
-        ]
-    )
+        )
+    return SlideListResponse(slides=items)
 
 
 @router.post("/import", response_model=SlideImportResponse)

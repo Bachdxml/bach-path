@@ -193,10 +193,11 @@ body {
   gap: 16px;
 }
 
-#tab-gallery .gallery-grid {
+#gallery-grid {
   padding: 16px;
   flex: 1;
   overflow: auto;
+  display: block;
 }
 
 .gallery-grid {
@@ -209,6 +210,37 @@ body {
   gap: 16px;
   width: 100%;
   min-height: 0;
+}
+
+.gallery-folder-group {
+  width: 100%;
+}
+
+.gallery-folder-header {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 10px;
+  background: var(--surface);
+}
+
+.gallery-folder-toggle {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  padding: 8px 10px;
+}
+
+.gallery-folder-toggle:hover {
+  color: var(--text);
+}
+
+.gallery-folder-group.is-collapsed .gallery-grid {
+  display: none;
 }
 
 .gallery-card {
@@ -254,6 +286,34 @@ body {
   font-size: 11px;
   color: var(--text-secondary);
   margin-top: 4px;
+}
+
+.gallery-card-status {
+  margin-top: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+
+.gallery-card-status--positive {
+  color: #ffd5cf;
+  background: rgba(231, 76, 60, 0.25);
+  border-color: rgba(231, 76, 60, 0.55);
+}
+
+.gallery-card-status--negative {
+  color: #cdf5d0;
+  background: rgba(39, 174, 96, 0.25);
+  border-color: rgba(39, 174, 96, 0.55);
+}
+
+.gallery-card-status--unchecked {
+  color: var(--text-secondary);
+  background: rgba(127, 127, 127, 0.18);
 }
 
 /* Gallery empty state is toggled in JS from list load; viewer empty is default until a slide opens */
