@@ -10,6 +10,7 @@ import argparse
 import sys
 import platform
 import signal
+import time
 from pathlib import Path
 
 # scripts/ is not the package root; ensure wsi-fungal-segmentation is on sys.path
@@ -37,6 +38,9 @@ from src import (
     compute_all_metrics,
     make_stratified_sampler,
 )
+
+def log(message: str = "") -> None:
+    print(message, flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -85,9 +89,12 @@ def train_one_epoch(model, loader, criterion, optimizer, device,
         processed_batches += 1
 
         if batch_idx % log_interval == 0:
-            print(f"  [Epoch {epoch_num} | Batch {batch_idx+1}/{n_batches}] "
-                  f"loss={total.item():.4f}  dice={m['dice']:.4f}  "
-                  f"iou={m['iou']:.4f}")
+            pct = ((batch_idx + 1) / max(1, n_batches)) * 100.0
+            log(
+                f"  [Epoch {epoch_num} | Batch {batch_idx+1}/{n_batches} | {pct:5.1f}%] "
+                f"loss={total.item():.4f}  dice={m['dice']:.4f}  "
+                f"iou={m['iou']:.4f}"
+            )
 
     denom = max(1, processed_batches)
     return {
@@ -97,7 +104,7 @@ def train_one_epoch(model, loader, criterion, optimizer, device,
         "stopped_early": processed_batches < n_batches,
     }
 
-def evaluate(model, loader, criterion, device):
+def evaluate(model, loader, criterion, device, epoch_num: int | None = None):
     """
     Runs full validation pass.
     Expects loader to yield (imgs, masks, density_labels).
@@ -114,9 +121,11 @@ def evaluate(model, loader, criterion, device):
     running_precision = 0.0
     running_recall    = 0.0
     n_batches         = len(loader)
+    log_interval      = max(1, n_batches // 10)
+    started_at        = time.time()
 
     with torch.no_grad():
-        for imgs, masks, density_labels in loader:
+        for batch_idx, (imgs, masks, density_labels) in enumerate(loader):
             imgs           = imgs.to(device,  non_blocking=True)
             masks          = masks.to(device, non_blocking=True)
             density_labels = density_labels.to(device, non_blocking=True)
@@ -131,6 +140,15 @@ def evaluate(model, loader, criterion, device):
             running_iou       += m['iou']
             running_precision += m['precision']
             running_recall    += m['recall']
+
+            if batch_idx % log_interval == 0:
+                pct = ((batch_idx + 1) / max(1, n_batches)) * 100.0
+                elapsed = time.time() - started_at
+                epoch_part = f"Epoch {epoch_num} | " if epoch_num is not None else ""
+                log(
+                    f"  [Val {epoch_part}Batch {batch_idx+1}/{n_batches} | {pct:5.1f}% | "
+                    f"{elapsed:5.1f}s] loss={total.item():.4f} dice={m['dice']:.4f}"
+                )
 
     return {
         "loss":      running_loss      / n_batches,
@@ -182,7 +200,7 @@ def _run_training(cfg: dict, progress_file: str | None = None):
     train_wsis = {p.wsi_id for p in train_pairs}
     val_wsis   = {p.wsi_id for p in val_pairs}
     assert not (train_wsis & val_wsis), "WSI leakage detected!"
-    print("✅ No WSI leakage")
+    log("✅ No WSI leakage")
 
     # ---- Loaders ----
     img_size   = cfg["data"]["img_size"]
@@ -195,7 +213,7 @@ def _run_training(cfg: dict, progress_file: str | None = None):
     # Desktop training on macOS/CPU can be killed by OS memory pressure (exit -9).
     # Use a conservative batch size for large tiles when CUDA is unavailable.
     if not has_cuda and img_size >= 512 and batch_size > 1:
-        print(
+        log(
             f"⚠️  Reducing batch size from {batch_size} to 1 for stability "
             f"(device={'mps' if has_mps else 'cpu'}, img_size={img_size}, os={platform.system()})."
         )
@@ -212,14 +230,14 @@ def _run_training(cfg: dict, progress_file: str | None = None):
                               num_workers=n_workers, pin_memory=pin) \
                    if val_ds else None
 
-    print(f"Train: {len(train_ds)} tiles  |  Val: {len(val_ds) if val_ds else 0} tiles")
+    log(f"Train: {len(train_ds)} tiles  |  Val: {len(val_ds) if val_ds else 0} tiles")
     if has_cuda:
         device = torch.device("cuda")
     elif has_mps:
         device = torch.device("mps")
     else:
         device = torch.device("cpu")
-    print(f"Device: {device}")
+    log(f"Device: {device}")
 
     model     = ResidualAttentionUNet(**cfg["model"]).to(device)
     criterion = CombinedLoss(loss_cfg=cfg["loss"])
@@ -227,7 +245,7 @@ def _run_training(cfg: dict, progress_file: str | None = None):
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
     optimizer, **cfg["scheduler"]
     )
-    print(f"Model params: {sum(p.numel() for p in model.parameters()):,}")
+    log(f"Model params: {sum(p.numel() for p in model.parameters()):,}")
 
     t_cfg           = cfg["training"]
     checkpoint_path = t_cfg["checkpoint_path"]
@@ -266,25 +284,25 @@ def _run_training(cfg: dict, progress_file: str | None = None):
 
     def handle_stop_signal(signum, frame):
         stop_requested["value"] = True
-        print(f"\n⚠️  Stop requested (signal {signum}). Will save checkpoint and exit after current step.")
+        log(f"\n⚠️  Stop requested (signal {signum}). Will save checkpoint and exit after current step.")
 
     prev_sigterm = signal.getsignal(signal.SIGTERM)
     prev_sigint = signal.getsignal(signal.SIGINT)
     signal.signal(signal.SIGTERM, handle_stop_signal)
     signal.signal(signal.SIGINT, handle_stop_signal)
 
-    print("\n" + "=" * 60)
-    print("Starting Training")
-    print("=" * 60)
+    log("\n" + "=" * 60)
+    log("Starting Training")
+    log("=" * 60)
     write_progress("running", epoch=0)
 
     epoch = 0
     try:
         for epoch in range(1, t_cfg["epochs"] + 1):
             current_lr = optimizer.param_groups[0]["lr"]
-            print(f"\n{'='*60}")
-            print(f"Epoch {epoch}/{t_cfg['epochs']}   |   LR = {current_lr:.2e}")
-            print("=" * 60)
+            log(f"\n{'='*60}")
+            log(f"Epoch {epoch}/{t_cfg['epochs']}   |   LR = {current_lr:.2e}")
+            log("=" * 60)
 
             train_m = train_one_epoch(
                 model, train_loader, criterion, optimizer, device,
@@ -292,7 +310,13 @@ def _run_training(cfg: dict, progress_file: str | None = None):
                 should_stop=lambda: stop_requested["value"],
             )
             gc.collect()
-            val_m = evaluate(model, val_loader, criterion, device) if not stop_requested["value"] else None
+            if not stop_requested["value"] and val_loader is not None:
+                log(f"  [Epoch {epoch}] Starting validation...")
+            val_m = (
+                evaluate(model, val_loader, criterion, device, epoch_num=epoch)
+                if not stop_requested["value"]
+                else None
+            )
             gc.collect()
 
             sched_metric = val_m["dice"] if val_m else train_m["dice"]
@@ -314,11 +338,11 @@ def _run_training(cfg: dict, progress_file: str | None = None):
                         val_dice=val_m["dice"] if val_m else None,
                         best_dice=best_val_dice)
 
-            print(f"\nEpoch {epoch} Summary:")
-            print(f"  Train → loss={train_m['loss']:.4f}  dice={train_m['dice']:.4f}  iou={train_m['iou']:.4f}")
+            log(f"\nEpoch {epoch} Summary:")
+            log(f"  Train → loss={train_m['loss']:.4f}  dice={train_m['dice']:.4f}  iou={train_m['iou']:.4f}")
             if val_m:
-                print(f"  Val   → loss={val_m['loss']:.4f}  dice={val_m['dice']:.4f}  iou={val_m['iou']:.4f}")
-                print(f"           precision={val_m['precision']:.4f}  recall={val_m['recall']:.4f}")
+                log(f"  Val   → loss={val_m['loss']:.4f}  dice={val_m['dice']:.4f}  iou={val_m['iou']:.4f}")
+                log(f"           precision={val_m['precision']:.4f}  recall={val_m['recall']:.4f}")
 
             monitor_dice = val_m["dice"] if val_m else train_m["dice"]
             if monitor_dice > best_val_dice:
@@ -333,17 +357,17 @@ def _run_training(cfg: dict, progress_file: str | None = None):
                     "history":              history,
                     "cfg": cfg,
                 }, checkpoint_path)
-                print(f"  ✅  New best dice={best_val_dice:.4f} — checkpoint saved.")
+                log(f"  ✅  New best dice={best_val_dice:.4f} — checkpoint saved.")
             else:
                 no_improve_count += 1
-                print(f"  ⏳  No improvement ({no_improve_count}/{t_cfg['early_stop_patience']}). Best={best_val_dice:.4f}")
+                log(f"  ⏳  No improvement ({no_improve_count}/{t_cfg['early_stop_patience']}). Best={best_val_dice:.4f}")
 
             if stop_requested["value"]:
-                print(f"\n🛑 Stop requested by user at epoch {epoch}.")
+                log(f"\n🛑 Stop requested by user at epoch {epoch}.")
                 break
 
             if no_improve_count >= t_cfg["early_stop_patience"]:
-                print(f"\n🛑 Early stopping at epoch {epoch}.")
+                log(f"\n🛑 Early stopping at epoch {epoch}.")
                 break
 
         if stop_requested["value"]:
@@ -358,17 +382,17 @@ def _run_training(cfg: dict, progress_file: str | None = None):
                 "cfg": cfg,
                 "stopped_by_user":      True,
             }, stopped_checkpoint)
-            print("\n" + "=" * 60)
-            print(f"Training stopped by user. Saved checkpoint: {stopped_checkpoint}")
-            print("=" * 60)
+            log("\n" + "=" * 60)
+            log(f"Training stopped by user. Saved checkpoint: {stopped_checkpoint}")
+            log("=" * 60)
             write_progress("stopped", epoch=epoch, best_dice=best_val_dice,
                         checkpoint_path=str(stopped_checkpoint))
             return history
 
-        print("\n" + "=" * 60)
-        print(f"Training complete. Best dice: {best_val_dice:.4f}")
-        print(f"Checkpoint: {checkpoint_path}")
-        print("=" * 60)
+        log("\n" + "=" * 60)
+        log(f"Training complete. Best dice: {best_val_dice:.4f}")
+        log(f"Checkpoint: {checkpoint_path}")
+        log("=" * 60)
         write_progress("succeeded", epoch=epoch, best_dice=best_val_dice,
                     checkpoint_path=str(checkpoint_path))
         return history
