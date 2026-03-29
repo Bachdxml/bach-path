@@ -1,4 +1,5 @@
 from __future__ import annotations
+import os
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 
@@ -8,6 +9,16 @@ from app.api.errors import register_exception_handlers
 from app.logging_config import configure_logging
 from app.db.init import init_database
 from fastapi.middleware.cors import CORSMiddleware
+
+
+def _cors_origins() -> list[str]:
+    raw = os.environ.get("APP_CORS_ORIGINS")
+    if raw:
+        parsed = [v.strip() for v in raw.split(",") if v.strip()]
+        if parsed:
+            return parsed
+    # Electron desktop (file:// / null origin) + localhost dev defaults.
+    return ["null", "http://127.0.0.1", "http://localhost"]
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -29,8 +40,8 @@ def create_app() -> FastAPI:
     app.include_router(api_router)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],   # dev only
-        allow_credentials=True,
+        allow_origins=_cors_origins(),
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )

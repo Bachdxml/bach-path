@@ -1,3 +1,7 @@
+import numpy as np
+import torch.nn.functional as F
+
+
 def overlay_mask(image_tensor, mask_tensor, color=[1,0,0], alpha=0.4, bg_tint=None, bg_alpha=0.2):
     """
     Overlay a binary mask on an image.
@@ -44,28 +48,3 @@ def overlay_mask(image_tensor, mask_tensor, color=[1,0,0], alpha=0.4, bg_tint=No
             )
     
     return overlay
-
-# Visualize with overlays
-for i in range(min(2, imgs.size(0))):
-    img = imgs[i]
-    mask_gt = masks[i,0]
-    mask_pred = preds_bin[i,0]
-    
-    overlay_gt = overlay_mask(img, mask_gt, color=[0,1,0], alpha=0.4)    # Green
-    overlay_pred = overlay_mask(img, mask_pred, color=[1,0,0], alpha=0.4, 
-                                bg_tint=[0,0,1], bg_alpha=0.2)  # Red with blue background
-    
-    plt.figure(figsize=(12, 5))
-    
-    plt.subplot(1, 2, 1)
-    plt.imshow(overlay_gt)
-    plt.title("Ground Truth Overlay (Green)")
-    plt.axis('off')
-    
-    plt.subplot(1, 2, 2)
-    plt.imshow(overlay_pred)
-    plt.title("Prediction Overlay (Red on Blue)")
-    plt.axis('off')
-    
-    plt.tight_layout()
-    plt.show()

@@ -136,9 +136,12 @@ function startApi() {
     console.error("API stderr:", data.toString());
   });
 
-  return waitForHealth(port, host).then(() => {
-    return { port, host };
-  });
+  return waitForHealth(port, host)
+    .then(() => ({ port, host }))
+    .catch((err) => {
+      stopApi();
+      throw err;
+    });
 }
 
 function stopApi() {
@@ -165,19 +168,27 @@ function createWindow(apiReady) {
   });
 }
 
-function recursivelyFindWsiFiles(dir) {
+async function recursivelyFindWsiFiles(dir) {
   const results = [];
-  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return results;
-
-  const entries = fs.readdirSync(dir, { withFileTypes: true });
-  for (const entry of entries) {
-    const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      results.push(...recursivelyFindWsiFiles(fullPath));
-    } else if (entry.isFile()) {
-      const ext = path.extname(entry.name).toLowerCase();
-      if (WSI_EXTENSIONS.has(ext)) {
-        results.push(fullPath);
+  const stack = [dir];
+  while (stack.length) {
+    const nextDir = stack.pop();
+    if (!nextDir) continue;
+    let entries = [];
+    try {
+      entries = await fs.promises.readdir(nextDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(nextDir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(fullPath);
+      } else if (entry.isFile()) {
+        const ext = path.extname(entry.name).toLowerCase();
+        if (WSI_EXTENSIONS.has(ext)) {
+          results.push(fullPath);
+        }
       }
     }
   }

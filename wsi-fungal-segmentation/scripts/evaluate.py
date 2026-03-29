@@ -144,6 +144,9 @@ def main(checkpoint_path: str, config_path: str = "configs/default.yaml",
     model.eval()
     running = {"loss": 0, "dice": 0, "iou": 0, "precision": 0, "recall": 0}
     n = len(val_loader)
+    if n == 0:
+        print("Validation split is empty; skipping metric computation and visualization.")
+        return
 
     with torch.no_grad():
         for imgs, masks, density_labels in val_loader:

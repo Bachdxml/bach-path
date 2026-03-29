@@ -325,6 +325,10 @@ body {
   overflow: hidden;
 }
 
+.viewer-metadata-aside[hidden] {
+  display: none !important;
+}
+
 .viewer-metadata-header {
   display: flex;
   align-items: center;
@@ -963,6 +967,10 @@ body {
   gap: 2px;
   margin-left: auto;
   min-width: 120px;
+}
+
+.viewer-scale-wrap[hidden] {
+  display: none !important;
 }
 
 .viewer-scale-inner {

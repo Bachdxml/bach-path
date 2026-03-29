@@ -76,27 +76,33 @@ def delete_slide(slide_id: int, request: Request, db: Session = Depends(get_db))
     settings = request.app.state.settings
 
     runs = db.query(InferenceRun).filter(InferenceRun.slide_id == slide_id).all()
-    for run in runs:
-        json_path = settings.inference_runs_dir / f"{run.id}.json"
+    run_json_paths = [settings.inference_runs_dir / f"{run.id}.json" for run in runs]
+    slide_path = Path(slide.stored_path)
+    cache_slide = settings.tiles_cache_dir / str(slide_id)
+
+    db.delete(slide)
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    for json_path in run_json_paths:
         if json_path.is_file():
             try:
                 json_path.unlink()
             except OSError as e:
                 logger.warning("Could not delete inference output %s: %s", json_path, e)
 
-    slide_path = Path(slide.stored_path)
     if slide_path.is_file():
         try:
             slide_path.unlink()
         except OSError as e:
             logger.warning("Could not delete slide file %s: %s", slide_path, e)
 
-    cache_slide = settings.tiles_cache_dir / str(slide_id)
     if cache_slide.exists():
         shutil.rmtree(cache_slide, ignore_errors=True)
 
-    db.delete(slide)
-    db.commit()
     return {"ok": True, "id": slide_id}
 
 

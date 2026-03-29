@@ -13,6 +13,8 @@ router = APIRouter(prefix="/training", tags=["training"])
 
 _training_process = None
 _training_progress_path: Path | None = None
+_training_starting = False
+_training_lock = threading.Lock()
 
 
 def _get_train_script_path() -> Path:
@@ -55,7 +57,7 @@ class TrainingStatusResponse(BaseModel):
 
 
 def _run_training_task(export_root: str, progress_path: Path):
-    global _training_process
+    global _training_process, _training_progress_path, _training_starting
     script_path = _get_train_script_path()
     python_path = _get_training_python()
     cfg_path = script_path.parent.parent / "configs" / "default.yaml"
@@ -87,6 +89,7 @@ def _run_training_task(export_root: str, progress_path: Path):
             text=True,
         )
         _training_process = proc
+        _training_starting = False
         try:
             proc.wait(timeout=86400)  # 24h max
         except subprocess.TimeoutExpired:
@@ -152,6 +155,7 @@ def _run_training_task(export_root: str, progress_path: Path):
             json.dump({"status": "failed", "error_message": str(e)[:2000]}, f, indent=2)
     finally:
         _training_process = None
+        _training_starting = False
 
 
 @router.post("/start", response_model=TrainingStatusResponse)
@@ -159,9 +163,11 @@ def start_training(
     request: Request,
     payload: TrainingStartRequest,
 ):
-    global _training_process
-    if _training_process is not None and _training_process.poll() is None:
-        raise AppError(ErrorCode.CONFLICT, "Training already in progress")
+    global _training_process, _training_starting
+    with _training_lock:
+        if _training_starting or (_training_process is not None and _training_process.poll() is None):
+            raise AppError(ErrorCode.CONFLICT, "Training already in progress")
+        _training_starting = True
 
     export_root = Path(payload.export_root)
     if not export_root.exists():
@@ -182,7 +188,12 @@ def start_training(
         args=(str(export_root), progress_path),
         daemon=True,
     )
-    thread.start()
+    try:
+        thread.start()
+    except Exception:
+        with _training_lock:
+            _training_starting = False
+        raise
 
     return TrainingStatusResponse(status="running", epoch=0)
 
@@ -216,7 +227,9 @@ def get_training_status(request: Request):
 
 @router.post("/stop", response_model=TrainingStatusResponse)
 def stop_training(request: Request):
-    global _training_process
+    global _training_process, _training_starting
+    if _training_starting and (_training_process is None or _training_process.poll() is not None):
+        raise AppError(ErrorCode.CONFLICT, "Training is still starting; try again in a moment")
     if _training_process is None or _training_process.poll() is not None:
         raise AppError(ErrorCode.CONFLICT, "No training process is currently running")
 

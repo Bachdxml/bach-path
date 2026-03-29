@@ -25,7 +25,6 @@ _project_root = _script_dir.parent
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
-import openslide
 from src.model import ResidualAttentionUNet
 
 # Formats OpenSlide cannot open — run tile inference from a raster in memory.
@@ -81,12 +80,31 @@ def main():
     if not checkpoint_path.exists():
         print(f"Error: Checkpoint not found: {checkpoint_path}", file=sys.stderr)
         return EXIT_ARGS
+    if args.tile_size <= 0:
+        print("Error: --tile-size must be > 0", file=sys.stderr)
+        return EXIT_ARGS
+    if args.stride <= 0:
+        print("Error: --stride must be > 0", file=sys.stderr)
+        return EXIT_ARGS
+    if args.batch_size <= 0:
+        print("Error: --batch-size must be > 0", file=sys.stderr)
+        return EXIT_ARGS
 
     # Load model
     try:
         device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-        model = ResidualAttentionUNet(in_ch=3, out_ch=1, num_density_classes=4, dropout_p=0.3)
-        ckpt = torch.load(checkpoint_path, map_location=device, weights_only=True)
+        try:
+            ckpt = torch.load(checkpoint_path, map_location=device, weights_only=True)
+        except TypeError:
+            ckpt = torch.load(checkpoint_path, map_location=device)
+
+        model_kwargs = {"in_ch": 3, "out_ch": 1, "num_density_classes": 4, "dropout_p": 0.3}
+        ckpt_cfg = ckpt.get("cfg") if isinstance(ckpt, dict) else None
+        if isinstance(ckpt_cfg, dict):
+            ckpt_model_cfg = ckpt_cfg.get("model")
+            if isinstance(ckpt_model_cfg, dict):
+                model_kwargs.update(ckpt_model_cfg)
+        model = ResidualAttentionUNet(**model_kwargs)
         if "model_state_dict" in ckpt:
             model.load_state_dict(ckpt["model_state_dict"])
         else:
@@ -178,6 +196,11 @@ def main():
 
     else:
         # --- OpenSlide WSI ---
+        try:
+            import openslide
+        except Exception as e:
+            print(f"Error importing OpenSlide: {e}", file=sys.stderr)
+            return EXIT_SLIDE
         try:
             slide = openslide.OpenSlide(str(slide_path))
         except Exception as e:

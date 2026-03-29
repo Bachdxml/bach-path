@@ -21,6 +21,8 @@ let currentSlideId = null;
 let currentMpp = null;
 let currentRunId = null;
 let lastRegions = [];
+let viewerRequestSeq = 0;
+let activeInferencePollToken = 0;
 
 function setInferenceStatus(text) {
   if (inferenceStatus) inferenceStatus.textContent = text;
@@ -212,6 +214,8 @@ function applyMppFromMeta(meta) {
 }
 
 async function showViewer(slideId) {
+  const requestId = ++viewerRequestSeq;
+  activeInferencePollToken += 1; // cancel any in-flight inference poll from another slide
   currentSlideId = slideId;
   currentMpp = null;
   const tabImport = document.getElementById("tab-import");
@@ -235,6 +239,7 @@ async function showViewer(slideId) {
   let meta = null;
   try {
     meta = await window.slidesApi.getSlideMetadata(slideId);
+    if (requestId !== viewerRequestSeq || currentSlideId !== slideId) return;
     applyMppFromMeta(meta);
     renderMetadataPanel(meta);
     showMetadataPanel(true);
@@ -256,6 +261,7 @@ async function showViewer(slideId) {
 
     try {
       const dziCheck = await fetch(dziUrl, { method: "HEAD" });
+      if (requestId !== viewerRequestSeq || currentSlideId !== slideId) return;
       if (dziCheck.ok) {
         tileSource = dziUrl;
       }
@@ -264,6 +270,7 @@ async function showViewer(slideId) {
     if (!tileSource) {
       if (!meta) {
         meta = await window.slidesApi.getSlideMetadata(slideId);
+        if (requestId !== viewerRequestSeq || currentSlideId !== slideId) return;
         applyMppFromMeta(meta);
         renderMetadataPanel(meta);
       }
@@ -318,6 +325,7 @@ async function showViewer(slideId) {
     });
 
     viewer.addHandler("open", () => {
+      if (requestId !== viewerRequestSeq || currentSlideId !== slideId) return;
       viewer.viewport.goHome(true);
       updateScaleBar();
       populateRunSelector(slideId);
@@ -404,7 +412,9 @@ function exportInferenceRegionsJson() {
 }
 
 async function handleRunInference() {
-  if (!currentSlideId) return;
+  if (!currentSlideId || runInferenceBtn.disabled) return;
+  const runSlideId = currentSlideId;
+  const pollToken = ++activeInferencePollToken;
   runInferenceBtn.disabled = true;
   const selectedModel =
     typeof window.getSelectedInferenceModel === "function"
@@ -417,11 +427,19 @@ async function handleRunInference() {
     setInferenceStatus("Running...");
 
     const poll = async () => {
+      if (pollToken !== activeInferencePollToken || runSlideId !== currentSlideId) {
+        runInferenceBtn.disabled = false;
+        return;
+      }
       const r = await window.slidesApi.getInferenceRun(run.id);
+      if (pollToken !== activeInferencePollToken || runSlideId !== currentSlideId) {
+        runInferenceBtn.disabled = false;
+        return;
+      }
       if (r.status === "succeeded") {
         setInferenceStatus(`Done: ${r.summary?.fungus_positive ?? 0} positive`);
         runInferenceBtn.disabled = false;
-        await populateRunSelector(currentSlideId);
+        await populateRunSelector(runSlideId);
         return;
       }
       if (r.status === "failed") {
@@ -429,9 +447,11 @@ async function handleRunInference() {
         runInferenceBtn.disabled = false;
         return;
       }
-      setTimeout(poll, 2000);
+      setTimeout(() => {
+        void poll();
+      }, 2000);
     };
-    poll();
+    await poll();
   } catch (err) {
     setInferenceStatus(`Error: ${err.message}`);
     runInferenceBtn.disabled = false;
@@ -442,6 +462,7 @@ window.showViewer = showViewer;
 
 if (viewerBack) {
   viewerBack.addEventListener("click", () => {
+    activeInferencePollToken += 1;
     document.getElementById("tab-viewer").classList.remove("active");
     document.getElementById("tab-gallery").classList.add("active");
     document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
@@ -463,6 +484,8 @@ if (viewerBack) {
     }
     if (viewerMetaContent) viewerMetaContent.innerHTML = "";
     showMetadataPanel(false);
+    runInferenceBtn.disabled = false;
+    setInferenceStatus("");
   });
 }
 

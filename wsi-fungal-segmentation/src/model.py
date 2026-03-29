@@ -175,10 +175,20 @@ class ResidualAttentionUNet(nn.Module):
         return self.out(d1), density_logits, self.aux_head3(d3), self.aux_head2(d2)
     
     def mc_forward(self, x, n_passes=15):
-        self.train()  # enables dropout
+        was_training = self.training
+        bn_states = [
+            (m, m.training)
+            for m in self.modules()
+            if isinstance(m, nn.modules.batchnorm._BatchNorm)
+        ]
+        self.train()  # keep dropout active for Monte Carlo passes
+        for module, _ in bn_states:
+            module.eval()  # avoid mutating BatchNorm running stats during inference
         with torch.no_grad():
             passes = torch.stack([self.forward(x)[0] for _ in range(n_passes)])
-        self.eval()
+        self.train(was_training)
+        for module, state in bn_states:
+            module.train(state)
         probs = torch.sigmoid(passes)
         return probs.mean(0), probs.var(0)  # mean prediction, uncertainty map
 
