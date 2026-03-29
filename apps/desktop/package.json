@@ -7,6 +7,8 @@
     "start": "electron .",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
+    "dist:win:exe": "electron-builder --win dir --x64",
+    "dist:win": "electron-builder --win nsis portable --x64",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "build": {
@@ -35,7 +37,8 @@
       "category": "public.app-category.utilities"
     },
     "win": {
-      "target": ["nsis"]
+      "signAndEditExecutable": false,
+      "target": ["nsis", "portable"]
     },
     "linux": {
       "target": ["AppImage"]
