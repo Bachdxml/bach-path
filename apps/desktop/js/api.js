@@ -47,9 +47,10 @@ function getTileUrl(slideId, level, x, y) {
   return `${apiBase}/slides/${slideId}/tiles/${level}/${x}/${y}.jpg`;
 }
 
-async function runInference(slideId, modelFile = null) {
+async function runInference(slideId, modelFile = null, threshold = null) {
   const payload = {};
   if (modelFile) payload.model_file = modelFile;
+  if (Number.isFinite(threshold)) payload.threshold = threshold;
   const res = await fetch(`${apiBase}/inference/slides/${slideId}/run`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

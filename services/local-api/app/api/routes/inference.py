@@ -183,7 +183,13 @@ def _get_inference_python() -> str:
     return "python"
 
 
-def _run_inference_task(run_id: int, slide_path: str, output_path: Path, checkpoint: Path):
+def _run_inference_task(
+    run_id: int,
+    slide_path: str,
+    output_path: Path,
+    checkpoint: Path,
+    threshold: float | None = None,
+):
     """Background task: run script, then load JSON and update DB."""
     from app.db.session import make_engine, make_session_factory
     from app.settings import load_settings
@@ -212,6 +218,8 @@ def _run_inference_task(run_id: int, slide_path: str, output_path: Path, checkpo
             "--model-name", run.model_name,
             "--model-version", run.model_version,
         ]
+        if threshold is not None:
+            cmd.extend(["--threshold", str(float(threshold))])
 
         result = subprocess.run(
             cmd,
@@ -324,6 +332,7 @@ def run_inference(
             str(slide_path),
             output_path,
             checkpoint,
+            payload.threshold,
         )
     except Exception as e:
         run.status = InferenceStatus.failed.value

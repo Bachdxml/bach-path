@@ -1,5 +1,5 @@
 from __future__ import annotations
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 
 
@@ -7,6 +7,7 @@ class InferenceRunCreate(BaseModel):
     model_name: str = "ResidualAttentionUNet"
     model_version: str = "1.0"
     model_file: str | None = None
+    threshold: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class InferenceRunResponse(BaseModel):

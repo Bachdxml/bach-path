@@ -33,3 +33,6 @@ logs/
 
 # Training data
 MASTERTILE/
+
+# Local planning docs
+PRODUCT_ROADMAP.md

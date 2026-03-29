@@ -93,6 +93,135 @@ body {
   flex-direction: column;
 }
 
+/* Home tab */
+#tab-home {
+  padding: 22px;
+  align-items: stretch;
+  justify-content: flex-start;
+}
+
+.home-shell {
+  max-width: 1300px;
+  width: 100%;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.home-hero {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at top right, rgba(91, 155, 213, 0.24), transparent 44%),
+    linear-gradient(165deg, var(--surface), color-mix(in srgb, var(--surface) 84%, var(--accent) 16%));
+  padding: 24px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
+  gap: 18px;
+}
+
+.home-kicker {
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.home-hero h1 {
+  margin: 8px 0 10px;
+  font-size: clamp(26px, 3.2vw, 38px);
+  line-height: 1.1;
+}
+
+.home-subtitle {
+  margin: 0;
+  max-width: 70ch;
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.home-actions {
+  margin-top: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.home-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  align-content: start;
+}
+
+.home-metric-card {
+  margin: 0;
+  background: color-mix(in srgb, var(--surface) 82%, black 18%);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+
+.home-metric-label {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.home-metric-value {
+  margin: 8px 0 0;
+  font-size: 28px;
+  font-weight: 700;
+}
+
+.home-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.home-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.home-panel h2 {
+  margin: 0 0 10px;
+  font-size: 16px;
+}
+
+.home-panel p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.home-list {
+  margin: 12px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.home-shortcuts {
+  margin-top: 12px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.home-footnote {
+  margin-top: 10px !important;
+  font-size: 12px !important;
+}
+
 /* Import tab */
 #tab-import {
   padding: 24px;
@@ -1085,6 +1214,12 @@ body {
   width: 88px;
 }
 
+.viewer-opacity-label span {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  margin-left: 4px;
+}
+
 .viewer-scale-wrap {
   display: flex;
   flex-direction: column;
@@ -1131,6 +1266,12 @@ body {
 }
 
 @media (max-width: 900px) {
+  .home-hero {
+    grid-template-columns: 1fr;
+  }
+  .home-grid {
+    grid-template-columns: 1fr;
+  }
   .viewer-overlay {
     grid-template-columns: 40px minmax(0, 1fr) 40px;
     padding: 6px;

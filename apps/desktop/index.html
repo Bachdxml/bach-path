@@ -25,7 +25,8 @@
       </header>
 
       <nav class="tab-bar" aria-label="Main">
-        <button type="button" class="tab-btn active" data-tab="import">Import</button>
+        <button type="button" class="tab-btn active" data-tab="home">Home</button>
+        <button type="button" class="tab-btn" data-tab="import">Import</button>
         <button type="button" class="tab-btn" data-tab="gallery">Gallery</button>
         <button type="button" class="tab-btn" data-tab="training">Training</button>
         <button
@@ -39,7 +40,70 @@
       </nav>
 
       <main class="tab-content">
-        <section id="tab-import" class="tab-pane active">
+        <section id="tab-home" class="tab-pane active">
+          <div class="home-shell">
+            <section class="home-hero">
+              <div>
+                <p class="home-kicker">Pathology Workflow</p>
+                <h1>Clinical Slide Intelligence Workspace</h1>
+                <p class="home-subtitle">
+                  Import slides, run inference, review positive hotspots, and train improved models from one place.
+                </p>
+                <div class="home-actions">
+                  <button type="button" class="btn btn-primary home-action" data-target-tab="import">
+                    Import Slides
+                  </button>
+                  <button type="button" class="btn btn-secondary home-action" data-target-tab="gallery">
+                    Open Gallery
+                  </button>
+                  <button type="button" class="btn btn-secondary home-action" data-target-tab="training">
+                    Train Model
+                  </button>
+                </div>
+              </div>
+              <div class="home-metrics">
+                <article class="home-metric-card">
+                  <p class="home-metric-label">Slides</p>
+                  <p class="home-metric-value" id="home-metric-slides">—</p>
+                </article>
+                <article class="home-metric-card">
+                  <p class="home-metric-label">Positive</p>
+                  <p class="home-metric-value" id="home-metric-positive">—</p>
+                </article>
+                <article class="home-metric-card">
+                  <p class="home-metric-label">Models</p>
+                  <p class="home-metric-value" id="home-metric-models">—</p>
+                </article>
+              </div>
+            </section>
+
+            <section class="home-grid">
+              <article class="home-panel">
+                <h2>Pipeline Status</h2>
+                <p id="home-status-line">Checking API…</p>
+                <ul class="home-list">
+                  <li><strong>Import:</strong> Add WSI files from file picker or recursive folder scan.</li>
+                  <li><strong>Analyze:</strong> Run inference with selectable model and threshold controls.</li>
+                  <li><strong>Review:</strong> Inspect heatmap overlays for model-positive regions.</li>
+                </ul>
+              </article>
+              <article class="home-panel">
+                <h2>Quick Navigation</h2>
+                <div class="home-shortcuts">
+                  <button type="button" class="btn btn-secondary home-action" data-target-tab="gallery">
+                    Review Cases
+                  </button>
+                  <button type="button" class="btn btn-secondary home-action" data-target-tab="settings">
+                    System Settings
+                  </button>
+                </div>
+                <p class="home-footnote">Keyboard: `1` Home, `2` Import, `3` Gallery, `4` Training, `5` Settings.</p>
+              </article>
+            </section>
+          </div>
+        </section>
+
+        <section id="tab-import" class="tab-pane">
           <div class="drop-zone" id="drop-zone">
             <p class="drop-zone-text">Drag WSI files here or click to select</p>
             <p class="drop-zone-hint">Supports .svs, .tif, .tiff, .png</p>
@@ -151,6 +215,18 @@
                 <label class="viewer-toggle">
                   <input type="checkbox" id="viewer-show-negative" />
                   Show negative
+                </label>
+                <label class="viewer-opacity-label">
+                  Threshold
+                  <input
+                    type="range"
+                    id="viewer-inference-threshold"
+                    min="1"
+                    max="99"
+                    value="10"
+                    aria-label="Inference threshold"
+                  />
+                  <span id="viewer-inference-threshold-value">0.10</span>
                 </label>
                 <label class="viewer-opacity-label">
                   Overlay

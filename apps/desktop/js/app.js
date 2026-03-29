@@ -12,6 +12,10 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnHelpDismiss = document.getElementById("btn-help-dismiss");
   const helpNeverShow = document.getElementById("help-never-show");
   const toastHost = document.getElementById("toast-host");
+  const homeStatusLine = document.getElementById("home-status-line");
+  const homeMetricSlides = document.getElementById("home-metric-slides");
+  const homeMetricPositive = document.getElementById("home-metric-positive");
+  const homeMetricModels = document.getElementById("home-metric-models");
 
   const THEME_KEY = "uiTheme";
   const HELP_DISMISS_KEY = "helpWelcomeDismissed";
@@ -97,6 +101,7 @@ document.addEventListener("DOMContentLoaded", () => {
       setModelStatus("Loading models...");
       const data = await window.slidesApi.listInferenceModels();
       const models = data.models || [];
+      if (homeMetricModels) homeMetricModels.textContent = String(models.length);
       modelSelect.innerHTML = "";
       if (models.length === 0) {
         const opt = document.createElement("option");
@@ -121,6 +126,9 @@ document.addEventListener("DOMContentLoaded", () => {
       modelSelect.value = selected;
       localStorage.setItem("selectedInferenceModel", selected);
       setModelStatus(`Using model: ${selected}`);
+      window.dispatchEvent(
+        new CustomEvent("inference-model-changed", { detail: { modelId: selected } })
+      );
     } catch (err) {
       setModelStatus(`Failed to load models: ${err.message}`, true);
     }
@@ -131,9 +139,34 @@ document.addEventListener("DOMContentLoaded", () => {
     return modelSelect.value || null;
   };
 
+  async function refreshHomeMetrics() {
+    try {
+      const [slidesRes, modelsRes] = await Promise.all([
+        window.slidesApi.listSlides(),
+        window.slidesApi.listInferenceModels(),
+      ]);
+      const slides = slidesRes?.slides || [];
+      const positive = slides.filter((s) => s.inference_result === "positive").length;
+      if (homeMetricSlides) homeMetricSlides.textContent = String(slides.length);
+      if (homeMetricPositive) homeMetricPositive.textContent = String(positive);
+      if (homeMetricModels) homeMetricModels.textContent = String((modelsRes?.models || []).length);
+      if (homeStatusLine) {
+        homeStatusLine.textContent = "System online. Ready for import, inference, and review.";
+      }
+    } catch {
+      if (homeMetricSlides) homeMetricSlides.textContent = "—";
+      if (homeMetricPositive) homeMetricPositive.textContent = "—";
+      if (homeMetricModels) homeMetricModels.textContent = "—";
+      if (homeStatusLine) homeStatusLine.textContent = "Waiting for API connection…";
+    }
+  }
+
   function activateTab(tab) {
     tabBtns.forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
     tabPanes.forEach((p) => p.classList.toggle("active", p.id === "tab-" + tab));
+    if (tab === "home") {
+      refreshHomeMetrics();
+    }
     if (tab === "gallery" && typeof window.galleryRefresh === "function") {
       window.galleryRefresh();
     }
@@ -141,6 +174,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
   tabBtns.forEach((btn) => {
     btn.addEventListener("click", () => activateTab(btn.dataset.tab));
+  });
+
+  document.querySelectorAll(".home-action[data-target-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const target = btn.getAttribute("data-target-tab");
+      if (target) activateTab(target);
+    });
   });
 
   const offApiReady = window.electronAPI.onApiReady(({ port, host }) => {
@@ -153,6 +193,7 @@ document.addEventListener("DOMContentLoaded", () => {
       window.galleryRefresh();
     }
     loadModelOptions();
+    refreshHomeMetrics();
   });
   window.addEventListener("beforeunload", () => {
     if (typeof offApiReady === "function") offApiReady();
@@ -188,6 +229,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!modelSelect.value) return;
     localStorage.setItem("selectedInferenceModel", modelSelect.value);
     setModelStatus(`Using model: ${modelSelect.value}`);
+    window.dispatchEvent(
+      new CustomEvent("inference-model-changed", { detail: { modelId: modelSelect.value } })
+    );
   });
 
   refreshModelsBtn?.addEventListener("click", loadModelOptions);
@@ -235,7 +279,7 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    const map = { 1: "import", 2: "gallery", 3: "training", 4: "settings" };
+    const map = { 1: "home", 2: "import", 3: "gallery", 4: "training", 5: "settings" };
     if (map[e.key] && !e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
       activateTab(map[e.key]);

@@ -10,6 +10,8 @@ const runInferenceBtn = document.getElementById("viewer-run-inference");
 const inferenceStatus = document.getElementById("viewer-inference-status");
 const viewerRunSelect = document.getElementById("viewer-run-select");
 const viewerShowNegative = document.getElementById("viewer-show-negative");
+const viewerInferenceThreshold = document.getElementById("viewer-inference-threshold");
+const viewerInferenceThresholdValue = document.getElementById("viewer-inference-threshold-value");
 const viewerOverlayOpacity = document.getElementById("viewer-overlay-opacity");
 const viewerScaleWrap = document.getElementById("viewer-scale-wrap");
 const viewerScaleBar = document.getElementById("viewer-scale-bar");
@@ -37,6 +39,46 @@ let currentSlideHeight = null;
 let viewerRequestSeq = 0;
 let activeInferencePollToken = 0;
 let viewerSlideOrder = [];
+const INFERENCE_THRESHOLD_KEY = "inferenceThresholdByModel";
+
+function getThresholdMap() {
+  try {
+    const raw = localStorage.getItem(INFERENCE_THRESHOLD_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveThresholdMap(map) {
+  localStorage.setItem(INFERENCE_THRESHOLD_KEY, JSON.stringify(map));
+}
+
+function getSelectedModelId() {
+  return typeof window.getSelectedInferenceModel === "function"
+    ? window.getSelectedInferenceModel()
+    : null;
+}
+
+function getCurrentThreshold() {
+  const sliderVal = parseInt(viewerInferenceThreshold?.value || "10", 10);
+  return Math.max(0.01, Math.min(0.99, sliderVal / 100));
+}
+
+function syncThresholdLabel() {
+  if (!viewerInferenceThresholdValue) return;
+  viewerInferenceThresholdValue.textContent = getCurrentThreshold().toFixed(2);
+}
+
+function loadThresholdForModel(modelId) {
+  if (!viewerInferenceThreshold) return;
+  const map = getThresholdMap();
+  const saved = modelId ? map[modelId] : null;
+  const t = Number.isFinite(saved) ? saved : 0.1;
+  viewerInferenceThreshold.value = String(Math.round(Math.max(0.01, Math.min(0.99, t)) * 100));
+  syncThresholdLabel();
+}
 
 function isViewerOpen() {
   return !!viewerOverlay && !viewerOverlay.hidden;
@@ -543,6 +585,24 @@ viewerOverlayOpacity?.addEventListener("input", () => {
   addRegionOverlays(lastRegions, viewerShowNegative?.checked || false);
 });
 
+viewerInferenceThreshold?.addEventListener("input", () => {
+  syncThresholdLabel();
+});
+
+viewerInferenceThreshold?.addEventListener("change", () => {
+  syncThresholdLabel();
+  const modelId = getSelectedModelId();
+  if (!modelId) return;
+  const map = getThresholdMap();
+  map[modelId] = getCurrentThreshold();
+  saveThresholdMap(map);
+});
+
+window.addEventListener("inference-model-changed", (e) => {
+  const modelId = e?.detail?.modelId || getSelectedModelId();
+  loadThresholdForModel(modelId);
+});
+
 async function exportViewerViewport() {
   if (!viewerContainer || !currentSlideId) return;
   const api = window.electronAPI;
@@ -601,10 +661,11 @@ async function handleRunInference() {
     typeof window.getSelectedInferenceModel === "function"
       ? window.getSelectedInferenceModel()
       : null;
+  const threshold = getCurrentThreshold();
   setInferenceStatus(selectedModel ? `Starting... (${selectedModel})` : "Starting...");
 
   try {
-    const run = await window.slidesApi.runInference(currentSlideId, selectedModel);
+    const run = await window.slidesApi.runInference(currentSlideId, selectedModel, threshold);
     setInferenceStatus("Running...");
 
     const poll = async () => {
@@ -667,6 +728,7 @@ if (runInferenceBtn) {
 
 btnViewerExportView?.addEventListener("click", () => exportViewerViewport());
 btnViewerExportRegions?.addEventListener("click", () => exportInferenceRegionsJson());
+loadThresholdForModel(getSelectedModelId());
 
 document.addEventListener("keydown", (e) => {
   const t = e.target;
