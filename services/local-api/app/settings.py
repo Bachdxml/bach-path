@@ -6,6 +6,7 @@ from pathlib import Path
 class Settings(BaseModel):
     app_data_dir: Path
     log_dir: Path
+    log_level: str
     slides_dir: Path
     inference_runs_dir: Path
     training_runs_dir: Path
@@ -20,7 +21,9 @@ def load_settings() -> Settings:
 
     app_data_dir = Path(data_dir).resolve()
 
-    log_dir = app_data_dir / "logs"
+    log_dir_raw = os.environ.get("APP_LOG_DIR")
+    log_dir = Path(log_dir_raw).resolve() if log_dir_raw else (app_data_dir / "logs")
+    log_level = (os.environ.get("APP_LOG_LEVEL") or "INFO").upper()
     slides_dir = app_data_dir / "slides"
     inference_runs_dir = app_data_dir / "inference_runs"
     training_runs_dir = app_data_dir / "training_runs"
@@ -30,6 +33,7 @@ def load_settings() -> Settings:
     return Settings(
         app_data_dir=app_data_dir,
         log_dir=log_dir,
+        log_level=log_level,
         slides_dir=slides_dir,
         inference_runs_dir=inference_runs_dir,
         training_runs_dir=training_runs_dir,

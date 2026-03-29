@@ -25,7 +25,7 @@ async def lifespan(app: FastAPI):
     settings: Settings = load_settings()
     app.state.settings = settings
 
-    configure_logging(settings.log_dir)
+    configure_logging(settings.log_dir, settings.log_level)
     init_database(settings)
 
     yield

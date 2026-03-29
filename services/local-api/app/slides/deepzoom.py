@@ -39,7 +39,7 @@ def ensure_deepzoom(slide_path: Path, cache_root: Path, slide_id: int, tile_size
 
     # Regenerate from scratch when output is partial/corrupt.
     if paths.prefix.parent.exists():
-        shutil.rmtree(paths.prefix.parent, ignore_errors=True)
+        shutil.rmtree(paths.prefix.parent)
     paths.prefix.parent.mkdir(parents=True, exist_ok=True)
 
     import pyvips  # lazy import: keeps API boot fast if unavailable

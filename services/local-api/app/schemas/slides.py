@@ -1,9 +1,17 @@
 from __future__ import annotations
-from pydantic import BaseModel, Field
+from pathlib import Path
+from pydantic import BaseModel, Field, field_validator
 
 class SlideImportRequest(BaseModel):
     file_path: str = Field(..., description="Absolute path to an SVS file accessible to the local machine")
     compute_sha256: bool = False
+
+    @field_validator("file_path")
+    @classmethod
+    def validate_absolute_path(cls, value: str) -> str:
+        if not Path(value).is_absolute():
+            raise ValueError("file_path must be an absolute path")
+        return value
 
 class SlideImportResponse(BaseModel):
     slide_id: int

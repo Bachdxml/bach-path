@@ -8,6 +8,7 @@ const importProgress = document.getElementById("import-progress");
 const WSI_EXTENSIONS = [".svs", ".tif", ".tiff", ".png"];
 
 let importCancelled = false;
+let importInProgress = false;
 
 function getPathsFromFiles(files) {
   const paths = [];
@@ -41,24 +42,33 @@ cancelBtn?.addEventListener("click", () => {
 
 async function importPaths(paths) {
   if (!paths.length) return;
+  if (importInProgress) {
+    setStatus("Import already running. Wait for completion or cancel first.", true);
+    return;
+  }
+  importInProgress = true;
   importCancelled = false;
   setImporting(true);
   setProgress(0, paths.length);
   let success = 0;
   let failed = 0;
-  for (let i = 0; i < paths.length; i++) {
-    if (importCancelled) break;
-    setProgress(i + 1, paths.length);
-    try {
-      await window.slidesApi.importSlide(paths[i]);
-      success++;
-    } catch (err) {
-      failed++;
-      console.error("Import failed:", paths[i], err);
+  try {
+    for (let i = 0; i < paths.length; i++) {
+      if (importCancelled) break;
+      setProgress(i + 1, paths.length);
+      try {
+        await window.slidesApi.importSlide(paths[i]);
+        success++;
+      } catch (err) {
+        failed++;
+        console.error("Import failed:", paths[i], err);
+      }
     }
+  } finally {
+    importInProgress = false;
+    setProgress(0, 0);
+    setImporting(false);
   }
-  setProgress(0, 0);
-  setImporting(false);
 
   if (importCancelled) {
     setStatus(`Import stopped. ${success} slide(s) imported before cancel.`, failed > 0);

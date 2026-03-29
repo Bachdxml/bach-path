@@ -12,6 +12,7 @@ const FAV_KEY = "galleryFavoriteIds";
 let allSlides = [];
 let selectionMode = false;
 const selectedIds = new Set();
+let galleryLoadSeq = 0;
 
 function filenameFromPath(p) {
   if (!p) return "Unknown";
@@ -252,13 +253,16 @@ async function deleteSelectedSlides() {
 
 async function loadGalleryData() {
   if (!galleryGrid || !galleryEmpty) return;
+  const requestId = ++galleryLoadSeq;
   galleryEmpty.style.display = "none";
   showSkeletons();
   try {
     const data = await window.slidesApi.listSlides();
+    if (requestId !== galleryLoadSeq) return;
     allSlides = data.slides || [];
     renderCards();
   } catch (err) {
+    if (requestId !== galleryLoadSeq) return;
     galleryGrid.innerHTML = "";
     galleryEmpty.textContent = "Failed to load slides. Is the API running?";
     galleryEmpty.style.display = "block";

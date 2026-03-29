@@ -101,6 +101,10 @@ def main() -> None:
 
     os.environ["APP_DATA_DIR"] = str(data_dir)
     os.environ["APP_LOG_DIR"] = str(log_dir)
+    os.environ["APP_LOG_LEVEL"] = args.log_level.upper()
+    if args.host not in {"127.0.0.1", "localhost", "::1"}:
+        print("Host must be loopback (127.0.0.1, localhost, or ::1).")
+        sys.exit(1)
 
     setup_logging(log_dir, args.log_level)
     install_signal_handlers()

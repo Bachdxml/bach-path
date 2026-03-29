@@ -245,9 +245,24 @@ def _run_training(cfg: dict, progress_file: str | None = None):
     def write_progress(status: str, epoch: int = 0, **kwargs):
         if progress_file:
             import json
+            import os
+            import tempfile
             data = {"status": status, "epoch": epoch, **kwargs}
-            with open(progress_file, "w") as f:
-                json.dump(data, f, indent=2)
+            progress_path = Path(progress_file)
+            progress_path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=progress_path.parent,
+                prefix=f"{progress_path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as tmp_file:
+                json.dump(data, tmp_file, indent=2)
+                tmp_file.flush()
+                os.fsync(tmp_file.fileno())
+                tmp_path = Path(tmp_file.name)
+            os.replace(tmp_path, progress_path)
 
     def handle_stop_signal(signum, frame):
         stop_requested["value"] = True
