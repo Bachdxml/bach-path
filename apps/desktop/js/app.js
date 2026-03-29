@@ -221,7 +221,7 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    const map = { 1: "import", 2: "gallery", 3: "viewer", 4: "training", 5: "settings" };
+    const map = { 1: "import", 2: "gallery", 3: "training", 4: "settings" };
     if (map[e.key] && !e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
       activateTab(map[e.key]);
@@ -232,9 +232,6 @@ document.addEventListener("DOMContentLoaded", () => {
       if (k === "g") {
         e.preventDefault();
         activateTab("gallery");
-      } else if (k === "v") {
-        e.preventDefault();
-        activateTab("viewer");
       } else if (k === "i") {
         e.preventDefault();
         activateTab("import");

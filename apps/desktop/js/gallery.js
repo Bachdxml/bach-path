@@ -275,6 +275,7 @@ function loadGallery() {
 }
 
 window.galleryRefresh = loadGallery;
+window.galleryGetOrderedSlideIds = () => getFilteredSlides().map((s) => s.id);
 
 function initGallery() {
   btnGalleryRefresh?.addEventListener("click", () => loadGalleryData());

@@ -1,4 +1,9 @@
 const viewerContainer = document.getElementById("viewer-container");
+const viewerOverlay = document.getElementById("tab-viewer");
+const viewerOverlayBackdrop = document.getElementById("viewer-overlay-backdrop");
+const viewerOverlayShell = document.getElementById("viewer-overlay-shell");
+const viewerPrevSlideBtn = document.getElementById("viewer-prev-slide");
+const viewerNextSlideBtn = document.getElementById("viewer-next-slide");
 const viewerBack = document.getElementById("viewer-back");
 const viewerEmpty = document.getElementById("viewer-empty");
 const runInferenceBtn = document.getElementById("viewer-run-inference");
@@ -23,6 +28,63 @@ let currentRunId = null;
 let lastRegions = [];
 let viewerRequestSeq = 0;
 let activeInferencePollToken = 0;
+let viewerSlideOrder = [];
+
+function isViewerOpen() {
+  return !!viewerOverlay && !viewerOverlay.hidden;
+}
+
+function getViewerSlideOrder() {
+  if (typeof window.galleryGetOrderedSlideIds !== "function") {
+    return currentSlideId ? [currentSlideId] : [];
+  }
+  const ids = window.galleryGetOrderedSlideIds().filter((id) => Number.isFinite(id));
+  if (currentSlideId && !ids.includes(currentSlideId)) {
+    ids.unshift(currentSlideId);
+  }
+  return ids;
+}
+
+function updateViewerNavButtons() {
+  const idx = viewerSlideOrder.indexOf(currentSlideId);
+  const hasPrev = idx > 0;
+  const hasNext = idx >= 0 && idx < viewerSlideOrder.length - 1;
+  if (viewerPrevSlideBtn) viewerPrevSlideBtn.disabled = !hasPrev;
+  if (viewerNextSlideBtn) viewerNextSlideBtn.disabled = !hasNext;
+}
+
+async function navigateViewer(delta) {
+  if (!currentSlideId) return;
+  viewerSlideOrder = getViewerSlideOrder();
+  const idx = viewerSlideOrder.indexOf(currentSlideId);
+  if (idx < 0) return;
+  const nextId = viewerSlideOrder[idx + delta];
+  if (!nextId) return;
+  await showViewer(nextId);
+}
+
+function closeViewer() {
+  activeInferencePollToken += 1;
+  if (viewer) {
+    viewer.destroy();
+    viewer = null;
+  }
+  currentSlideId = null;
+  currentMpp = null;
+  lastRegions = [];
+  viewerContainer.innerHTML = "";
+  viewerContainer.style.display = "none";
+  viewerEmpty.style.display = "flex";
+  if (viewerRunSelect) {
+    viewerRunSelect.innerHTML = "";
+    viewerRunSelect.disabled = true;
+  }
+  if (viewerMetaContent) viewerMetaContent.innerHTML = "";
+  showMetadataPanel(false);
+  runInferenceBtn.disabled = false;
+  setInferenceStatus("");
+  if (viewerOverlay) viewerOverlay.hidden = true;
+}
 
 function setInferenceStatus(text) {
   if (inferenceStatus) inferenceStatus.textContent = text;
@@ -217,17 +279,10 @@ async function showViewer(slideId) {
   const requestId = ++viewerRequestSeq;
   activeInferencePollToken += 1; // cancel any in-flight inference poll from another slide
   currentSlideId = slideId;
+  viewerSlideOrder = getViewerSlideOrder();
+  updateViewerNavButtons();
+  if (viewerOverlay) viewerOverlay.hidden = false;
   currentMpp = null;
-  const tabImport = document.getElementById("tab-import");
-  const tabGallery = document.getElementById("tab-gallery");
-  const tabViewer = document.getElementById("tab-viewer");
-
-  tabImport.classList.remove("active");
-  tabGallery.classList.remove("active");
-  tabViewer.classList.add("active");
-
-  document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
-  document.querySelector('.tab-btn[data-tab="viewer"]').classList.add("active");
 
   viewerEmpty.style.display = "none";
   viewerContainer.innerHTML = "";
@@ -312,9 +367,12 @@ async function showViewer(slideId) {
       element: viewerContainer,
       tileSources: tileSource,
       prefixUrl: "node_modules/openseadragon/build/openseadragon/images/",
-      showNavigator: true,
-      navigatorPosition: "BOTTOM_RIGHT",
+      showNavigator: false,
       showNavigationControl: true,
+      gestureSettingsMouse: {
+        clickToZoom: false,
+        dblClickToZoom: false,
+      },
       constrainDuringPan: true,
       visibilityRatio: 1.0,
       wrapHorizontal: false,
@@ -333,6 +391,19 @@ async function showViewer(slideId) {
 
     viewer.addHandler("animation", updateScaleBar);
     viewer.addHandler("resize", updateScaleBar);
+    viewer.addHandler("canvas-click", (event) => {
+      if (!event.quick) return;
+      const homeZoom = viewer.viewport.getHomeZoom();
+      const currentZoom = viewer.viewport.getZoom();
+      const isZoomedIn = currentZoom > homeZoom * 1.05;
+      if (isZoomedIn) {
+        viewer.viewport.goHome(true);
+      } else {
+        const targetPoint = viewer.viewport.pointFromPixel(event.position);
+        viewer.viewport.zoomTo(homeZoom * 2.5, targetPoint, true);
+      }
+      event.preventDefaultAction = true;
+    });
   } catch (err) {
     viewerContainer.innerHTML = `<p class="viewer-error">Failed to load slide: ${escapeHtml(err.message)}</p>`;
     console.error(err);
@@ -462,32 +533,23 @@ window.showViewer = showViewer;
 
 if (viewerBack) {
   viewerBack.addEventListener("click", () => {
-    activeInferencePollToken += 1;
-    document.getElementById("tab-viewer").classList.remove("active");
-    document.getElementById("tab-gallery").classList.add("active");
-    document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
-    document.querySelector('.tab-btn[data-tab="gallery"]').classList.add("active");
-
-    if (viewer) {
-      viewer.destroy();
-      viewer = null;
-    }
-    currentSlideId = null;
-    currentMpp = null;
-    lastRegions = [];
-    viewerContainer.innerHTML = "";
-    viewerContainer.style.display = "none";
-    viewerEmpty.style.display = "flex";
-    if (viewerRunSelect) {
-      viewerRunSelect.innerHTML = "";
-      viewerRunSelect.disabled = true;
-    }
-    if (viewerMetaContent) viewerMetaContent.innerHTML = "";
-    showMetadataPanel(false);
-    runInferenceBtn.disabled = false;
-    setInferenceStatus("");
+    closeViewer();
   });
 }
+
+viewerOverlayBackdrop?.addEventListener("click", () => closeViewer());
+viewerOverlay?.addEventListener("click", (e) => {
+  if (e.target === viewerOverlay) closeViewer();
+});
+viewerOverlayShell?.addEventListener("click", (e) => {
+  e.stopPropagation();
+});
+viewerPrevSlideBtn?.addEventListener("click", () => {
+  void navigateViewer(-1);
+});
+viewerNextSlideBtn?.addEventListener("click", () => {
+  void navigateViewer(1);
+});
 
 if (runInferenceBtn) {
   runInferenceBtn.addEventListener("click", handleRunInference);
@@ -505,8 +567,12 @@ document.addEventListener("keydown", (e) => {
       t.tagName === "SELECT" ||
       t.isContentEditable);
   if (typing) return;
-  const tabViewer = document.getElementById("tab-viewer");
-  if (!tabViewer?.classList.contains("active")) return;
+  if (!isViewerOpen()) return;
+  if (e.key === "Escape") {
+    e.preventDefault();
+    closeViewer();
+    return;
+  }
   if (e.key === "r" || e.key === "R") {
     if (!e.ctrlKey && !e.metaKey && currentSlideId) {
       e.preventDefault();
@@ -518,5 +584,13 @@ document.addEventListener("keydown", (e) => {
       e.preventDefault();
       exportViewerViewport();
     }
+  }
+  if (e.key === "ArrowLeft") {
+    e.preventDefault();
+    void navigateViewer(-1);
+  }
+  if (e.key === "ArrowRight") {
+    e.preventDefault();
+    void navigateViewer(1);
   }
 });

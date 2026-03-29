@@ -27,7 +27,6 @@
       <nav class="tab-bar" aria-label="Main">
         <button type="button" class="tab-btn active" data-tab="import">Import</button>
         <button type="button" class="tab-btn" data-tab="gallery">Gallery</button>
-        <button type="button" class="tab-btn" data-tab="viewer">Viewer</button>
         <button type="button" class="tab-btn" data-tab="training">Training</button>
         <button
           type="button"
@@ -99,11 +98,16 @@
           </div>
         </section>
 
-        <section id="tab-viewer" class="tab-pane">
+        <section id="tab-viewer" class="viewer-overlay" hidden>
+          <div class="viewer-overlay-backdrop" id="viewer-overlay-backdrop"></div>
+          <button type="button" class="viewer-nav viewer-nav--prev" id="viewer-prev-slide" aria-label="Previous slide">
+            ‹
+          </button>
+          <div class="viewer-overlay-shell" id="viewer-overlay-shell" role="dialog" aria-modal="true" aria-label="Slide viewer">
           <div class="viewer-layout">
             <div class="viewer-main-column">
               <div class="viewer-toolbar">
-                <button type="button" class="btn btn-secondary" id="viewer-back">Back to Gallery</button>
+                <button type="button" class="btn btn-secondary" id="viewer-back">Close</button>
                 <button type="button" class="btn btn-secondary btn-sm" id="btn-viewer-slide-info">
                   Slide info
                 </button>
@@ -169,6 +173,10 @@
               <div class="viewer-meta-content" id="viewer-meta-content"></div>
             </aside>
           </div>
+          </div>
+          <button type="button" class="viewer-nav viewer-nav--next" id="viewer-next-slide" aria-label="Next slide">
+            ›
+          </button>
         </section>
 
         <section id="tab-training" class="tab-pane">
@@ -249,11 +257,11 @@
         <ol class="help-steps">
           <li><strong>Import</strong> — Add SVS/TIF/PNG slides via drag-and-drop or the file picker.</li>
           <li><strong>Gallery</strong> — Search, sort, star favorites, or select multiple slides to remove.</li>
-          <li><strong>Viewer</strong> — Pan and zoom; run inference and pick which run to overlay.</li>
+          <li><strong>Viewer overlay</strong> — Click a slide card to open; click outside to close.</li>
           <li><strong>Training</strong> — Point at a MASTERTILE-style folder and train; pick a checkpoint for inference.</li>
         </ol>
         <p class="help-shortcuts">
-          Shortcuts: <kbd>1</kbd>–<kbd>5</kbd> tabs · <kbd>G</kbd> gallery · <kbd>V</kbd> viewer ·
+          Shortcuts: <kbd>1</kbd>–<kbd>4</kbd> tabs · <kbd>G</kbd> gallery ·
           <kbd>I</kbd> import · <kbd>R</kbd> run inference (viewer) · <kbd>E</kbd> export view (viewer) ·
           <kbd>?</kbd> help
         </p>
