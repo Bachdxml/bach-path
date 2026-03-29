@@ -133,8 +133,11 @@ def print_stats(df, scores, labels, low_thresh, medium_thresh):
     print(f"  Negative tiles:  {int((~positive_mask).sum())}")
     print()
     print(f"  Raw coverage percentiles:")
-    for p in [25, 50, 75, 90, 95, 99]:
-        print(f"    p{p:>2}: {np.percentile(raw, p):.5f}")
+    if len(raw) == 0:
+        print("    No positive tiles found; percentiles unavailable.")
+    else:
+        for p in [25, 50, 75, 90, 95, 99]:
+            print(f"    p{p:>2}: {np.percentile(raw, p):.5f}")
     print()
     print(f"  Thresholds in use:")
     print(f"    low    ≥ {low_thresh:.5f}")

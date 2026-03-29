@@ -9,6 +9,7 @@ const WSI_EXTENSIONS = new Set([".svs", ".tif", ".tiff", ".png"]);
 
 let apiProcess = null;
 let mainWindow = null;
+let apiReadyState = { port: DEFAULT_PORT, host: "127.0.0.1" };
 
 function getConfigPath() {
   return path.join(app.getPath("userData"), "config.json");
@@ -49,10 +50,13 @@ function getApiScriptPath() {
 
 function getPythonPath() {
   const base = getApiBaseDir();
-  const venvPython = path.join(base, ".venv", "bin", "python");
+  const venvPython = path.join(base, ".venv", "bin", "python3");
+  const venvPythonAlt = path.join(base, ".venv", "bin", "python");
   const venvPythonWin = path.join(base, ".venv", "Scripts", "python.exe");
   if (fs.existsSync(venvPython)) return venvPython;
+  if (fs.existsSync(venvPythonAlt)) return venvPythonAlt;
   if (fs.existsSync(venvPythonWin)) return venvPythonWin;
+  if (app.isPackaged) return null;
   return "python";
 }
 
@@ -111,6 +115,11 @@ function startApi() {
   }
 
   const pythonPath = getPythonPath();
+  if (!pythonPath) {
+    return Promise.reject(
+      new Error("Bundled Python runtime not found. Reinstall the desktop app package.")
+    );
+  }
   // Homebrew OpenSlide: /opt/homebrew/opt/openslide/lib (Apple Silicon) or /usr/local/opt/openslide/lib (Intel)
   const homebrewLibPaths = [
     "/opt/homebrew/opt/openslide/lib",
@@ -196,18 +205,25 @@ async function recursivelyFindWsiFiles(dir) {
 }
 
 app.whenReady().then(async () => {
-  let apiReady = { port: DEFAULT_PORT, host: "127.0.0.1" };
   try {
-    apiReady = await startApi();
+    apiReadyState = await startApi();
   } catch (err) {
     console.error("Failed to start API:", err);
   }
-  createWindow(apiReady);
+  createWindow(apiReadyState);
 });
 
 app.on("window-all-closed", () => {
-  stopApi();
-  app.quit();
+  if (process.platform !== "darwin") {
+    stopApi();
+    app.quit();
+  }
+});
+
+app.on("activate", () => {
+  if (BrowserWindow.getAllWindows().length === 0) {
+    createWindow(apiReadyState);
+  }
 });
 
 app.on("before-quit", () => {

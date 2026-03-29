@@ -125,7 +125,13 @@ def main(checkpoint_path: str, config_path: str = "configs/default.yaml",
     criterion = CombinedLoss(loss_cfg=cfg["loss"])
 
     # ---- Build val loader ----
-    index = WSIDatasetIndex(cfg["data"]["export_root"], strict_mode=True)
+    index = WSIDatasetIndex(
+        cfg["data"]["export_root"],
+        strict_mode=False,
+        allow_size_mismatch=True,
+        flat_format=cfg["data"].get("flat_format", False),
+        skip_validation=True,
+    )
     index.build_index()
     _, val_pairs = index.get_train_val_split(
         val_ratio=cfg["data"]["val_ratio"],

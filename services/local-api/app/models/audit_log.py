@@ -7,7 +7,7 @@ class AuditLog(Base):
     __tablename__ = "audit_logs"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    actor_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    actor_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
 
     action: Mapped[str] = mapped_column(String(64), index=True)     # e.g., "slide.import"
     entity_type: Mapped[str] = mapped_column(String(64), index=True) # "slide", "inference_run"

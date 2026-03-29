@@ -40,8 +40,8 @@ class InfoResponse(BaseModel):
     python: str
     platform: str
     exe_path: str | None = None
-    app_data_dir: str
-    sqlite_path: str
+    app_data_dir: str | None = None
+    sqlite_path: str | None = None
     uptime_seconds: float
 
 
@@ -96,7 +96,7 @@ def ready(request: Request, db: Session = Depends(get_db)) -> ReadyResponse:
 
 
 @router.get("/info", response_model=InfoResponse)
-def info(request: Request) -> InfoResponse:
+def info(request: Request, verbose: bool = False) -> InfoResponse:
     settings = getattr(request.app.state, "settings", None)
     if settings is None:
         raise AppError(ErrorCode.INTERNAL, "Settings not initialized", http_status=500)
@@ -107,14 +107,15 @@ def info(request: Request) -> InfoResponse:
         # In PyInstaller builds, sys.executable points to the bundled exe
         exe_path = sys.executable
 
+    include_paths = verbose and os.environ.get("APP_HEALTH_INFO_VERBOSE") == "1"
     return InfoResponse(
         app_name="Pathology Local API",
         version=getattr(request.app, "version", "unknown"),
         frozen=frozen,
         python=sys.version.split()[0],
         platform=f"{platform.system()} {platform.release()} ({platform.machine()})",
-        exe_path=exe_path,
-        app_data_dir=str(settings.app_data_dir),
-        sqlite_path=str(settings.sqlite_path),
+        exe_path=exe_path if include_paths else None,
+        app_data_dir=str(settings.app_data_dir) if include_paths else None,
+        sqlite_path=str(settings.sqlite_path) if include_paths else None,
         uptime_seconds=time.monotonic() - _PROCESS_START,
     )

@@ -1,3 +1,9 @@
+import torch.nn as nn
+import torch.nn.functional as F
+
+from AsymmetricSimLoss import AsymmetricSimilarityLoss
+
+
 class CombinedLoss(nn.Module):
     """
     Combines segmentation loss and density classification loss.

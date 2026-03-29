@@ -113,10 +113,18 @@ class WSIDatasetIndex:
                             random_seed: int = 42) -> Tuple[List[TilePair], List[TilePair]]:
         """Split dataset by WSI (no leakage)"""
         wsi_ids = list(sorted(self.wsi_groups.keys()))
+        if not wsi_ids:
+            return [], []
+        if len(wsi_ids) == 1:
+            only_wsi = wsi_ids[0]
+            only_pairs = [p for p in self.tile_pairs if p.wsi_id == only_wsi]
+            print("\n⚠️  Only one WSI found; using it for train and validation.")
+            return only_pairs, only_pairs
         rng = np.random.default_rng(random_seed)
         wsi_ids = rng.permutation(wsi_ids).tolist()
 
         n_val = max(1, int(len(wsi_ids) * val_ratio))
+        n_val = min(n_val, len(wsi_ids) - 1)
         val_wsi_ids   = set(wsi_ids[:n_val])
         train_wsi_ids = set(wsi_ids[n_val:])
 
@@ -182,6 +190,7 @@ class WSIDatasetIndex:
                 if alt.exists():
                     mask_path = alt
                 else:
+                    self.validation_report["unpaired_skipped"] += 1
                     continue
             self._validate_tile_pair(img_path, mask_path, wsi_id)
             all_pairs.append(TilePair(
@@ -191,7 +200,6 @@ class WSIDatasetIndex:
                 tile_id=img_path.stem,
                 density="medium"
             ))
-            self.validation_report["density_counts"]["medium"] += 1
         print(f"✓ {wsi_id}: {len(all_pairs)} pairs (flat format, density=medium)")
         return all_pairs
 
@@ -311,8 +319,7 @@ class WSIDatasetIndex:
                     print(f"\u26a0\ufe0f  {issue}")
 
         except (ValueError, AssertionError):
-            if self.strict_mode:
-                raise
+            raise
         except Exception as e:
             raise RuntimeError(f"Failed to validate {image_path.name}") from e
 

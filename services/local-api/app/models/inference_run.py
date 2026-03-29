@@ -1,11 +1,17 @@
 from __future__ import annotations
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy import String, DateTime, func, Integer, ForeignKey, Text
+from sqlalchemy import String, DateTime, func, Integer, ForeignKey, Text, CheckConstraint
 from app.db.base import Base
 from app.models.enums import InferenceStatus
 
 class InferenceRun(Base):
     __tablename__ = "inference_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued','running','succeeded','failed','canceled')",
+            name="ck_inference_runs_status",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
