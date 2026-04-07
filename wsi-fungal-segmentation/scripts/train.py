@@ -324,7 +324,7 @@ def evaluate(
 def main_with_args(cfg_path: str = "configs/default.yaml",
                    export_root: str | None = None,
                    flat_format: bool | None = None,
-                   profile: str = "auto",
+                   profile: str = "none",
                    progress_file: str | None = None):
     with open(cfg_path) as f:
         cfg = yaml.safe_load(f)
@@ -332,8 +332,9 @@ def main_with_args(cfg_path: str = "configs/default.yaml",
         cfg["data"]["export_root"] = str(export_root)
     if flat_format is not None:
         cfg["data"]["flat_format"] = flat_format
-    selected_profile = apply_training_profile(cfg, profile=profile)
-    log(f"⚙️  Training profile: {selected_profile}")
+    if profile != "none":
+        selected_profile = apply_training_profile(cfg, profile=profile)
+        log(f"⚙️  Training profile: {selected_profile}")
     return _run_training(cfg, progress_file)
 
 
@@ -344,18 +345,13 @@ def _run_training(cfg: dict, progress_file: str | None = None):
     if not export_root.exists():
         raise FileNotFoundError(f"Export root not found: {export_root}")
     flat_format = cfg["data"].get("flat_format", False)
-    cpu_threads = int(cfg.get("training", {}).get("cpu_threads", 0))
-    if cpu_threads > 0:
-        torch.set_num_threads(cpu_threads)
-        log(f"⚙️  torch.set_num_threads({cpu_threads})")
-    _configure_sharing_strategy()
 
     index = WSIDatasetIndex(
         export_root,
-        strict_mode=False,
-        allow_size_mismatch=True,
+        strict_mode=True,
+        allow_size_mismatch=False,
         flat_format=flat_format,
-        skip_validation=True,
+        skip_validation=False,
     )
     index.build_index()
     index.save_index(Path("dataset_index.json"))
@@ -374,81 +370,37 @@ def _run_training(cfg: dict, progress_file: str | None = None):
     img_size   = cfg["data"]["img_size"]
     batch_size = cfg["loader"]["batch_size"]
     n_workers  = cfg["loader"]["num_workers"]
-    has_cuda = torch.cuda.is_available()
-    has_mps = bool(getattr(torch.backends, "mps", None)) and torch.backends.mps.is_available()
-    pin = has_cuda
-
-    # Desktop training on macOS/CPU can be killed by OS memory pressure (exit -9).
-    # Use a conservative batch size for large tiles when CUDA is unavailable.
-    if not has_cuda and img_size >= 512 and batch_size > 1:
-        log(
-            f"⚠️  Reducing batch size from {batch_size} to 1 for stability "
-            f"(device={'mps' if has_mps else 'cpu'}, img_size={img_size}, os={platform.system()})."
-        )
-        batch_size = 1
-
-    auto_workers = cfg["loader"].get("auto_num_workers", True)
-    if n_workers == 0 and auto_workers:
-        cpu_count = os.cpu_count() or 2
-        worker_cap = 8 if has_cuda else 4
-        n_workers = min(worker_cap, max(1, cpu_count - 1))
-        log(f"⚡ Auto-selected num_workers={n_workers} for faster data loading.")
-
-    if n_workers > 0 and not _torch_shm_manager_executable():
-        log("⚠️  torch_shm_manager is not executable; forcing num_workers=0.")
-        n_workers = 0
+    pin = torch.cuda.is_available()
 
     train_ds = AugmentedWSI_Dataset(train_pairs, img_size=img_size, augment=True)
     val_ds   = AugmentedWSI_Dataset(val_pairs,   img_size=img_size, augment=False) \
                if val_pairs else None
 
     train_sampler = make_stratified_sampler(train_pairs)
-    prefetch_factor = int(cfg["loader"].get("prefetch_factor", 2))
-    train_loader_kwargs = {
-        "batch_size": batch_size,
-        "sampler": train_sampler,
-        "num_workers": n_workers,
-        "pin_memory": pin,
-    }
-    val_loader_kwargs = {
-        "batch_size": batch_size,
-        "shuffle": False,
-        "num_workers": n_workers,
-        "pin_memory": pin,
-    }
-    if n_workers > 0:
-        train_loader_kwargs["persistent_workers"] = True
-        val_loader_kwargs["persistent_workers"] = True
-        train_loader_kwargs["prefetch_factor"] = max(2, prefetch_factor)
-        val_loader_kwargs["prefetch_factor"] = max(2, prefetch_factor)
-    train_loader = DataLoader(train_ds, **train_loader_kwargs)
-    val_loader = DataLoader(val_ds, **val_loader_kwargs) if val_ds else None
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=batch_size,
+        sampler=train_sampler,
+        num_workers=n_workers,
+        pin_memory=pin,
+    )
+    val_loader = (
+        DataLoader(
+            val_ds,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=n_workers,
+            pin_memory=pin,
+        )
+        if val_ds
+        else None
+    )
 
     log(f"Train: {len(train_ds)} tiles  |  Val: {len(val_ds) if val_ds else 0} tiles")
-    if has_cuda:
-        device = torch.device("cuda")
-    elif has_mps:
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log(f"Device: {device}")
 
     model     = ResidualAttentionUNet(**cfg["model"]).to(device)
-    use_channels_last = bool(cfg["training"].get("channels_last", True)) and device.type == "cuda"
-    if use_channels_last:
-        model = model.to(memory_format=torch.channels_last)
-    if device.type == "cuda":
-        if bool(cfg["training"].get("tf32", True)):
-            torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cudnn.allow_tf32 = True
-        torch.backends.cudnn.benchmark = True
-    compile_model = bool(cfg["training"].get("compile", False))
-    if compile_model and hasattr(torch, "compile"):
-        try:
-            model = torch.compile(model)
-            log("⚡ Enabled torch.compile for faster training.")
-        except Exception as e:
-            log(f"⚠️  torch.compile unavailable or failed; continuing without compile ({e}).")
     criterion = CombinedLoss(loss_cfg=cfg["loss"])
     optimizer = optim.AdamW(model.parameters(), **cfg["optimizer"])
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
@@ -468,17 +420,10 @@ def _run_training(cfg: dict, progress_file: str | None = None):
     best_val_dice    = -1.0
     no_improve_count = 0
     stop_requested = {"value": False}
-    amp_enabled = bool(cfg["training"].get("amp", True)) and device.type == "cuda"
-    amp_dtype_name = str(cfg["training"].get("amp_dtype", "auto")).lower()
-    if amp_dtype_name == "bfloat16":
-        amp_dtype = torch.bfloat16
-    elif amp_dtype_name == "float16":
-        amp_dtype = torch.float16
-    else:
-        amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-    scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
-    if amp_enabled:
-        log(f"⚡ AMP enabled ({str(amp_dtype).replace('torch.', '')}).")
+    amp_enabled = False
+    amp_dtype = torch.float16
+    scaler = None
+    use_channels_last = False
 
     def write_progress(status: str, epoch: int = 0, **kwargs):
         if progress_file:
@@ -668,8 +613,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--profile",
         choices=["auto", "cuda", "mac", "cpu", "none"],
-        default=os.environ.get("TRAINING_PROFILE", "auto"),
-        help="Performance profile: auto selects cuda on lab GPU, mac on Apple Silicon, otherwise cpu.",
+        default="none",
+        help="Optional performance profile override. Use 'none' for main-equivalent behavior.",
     )
     args = parser.parse_args()
     main_with_args(

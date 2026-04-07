@@ -18,16 +18,15 @@ class AsymmetricSimilarityLoss(nn.Module):
         negative        → balanced α/β       (all-background tiles)
     """
 
-    DENSITY_PARAMS = {
-        0: (0.5, 0.5),   # low      — balanced
-        1: (0.6, 0.4),   # medium   — mild recall bias
-        2: (0.7, 0.3),   # high     — recall-biased, penalise FN heavily
-        3: (0.5, 0.5),   # negative — balanced
-    }
+    _DENSITY_IDX = {"low": 0, "medium": 1, "high": 2, "negative": 3}
 
-    def __init__(self, smooth: float = 1e-6, **kwargs):
+    def __init__(self, density_params: dict, smooth: float = 1e-6):
         super().__init__()
         self.smooth = smooth
+        self.DENSITY_PARAMS = {
+            self._DENSITY_IDX[name]: tuple(ab)
+            for name, ab in density_params.items()
+        }
 
     def forward(self, logits: torch.Tensor,
                 targets: torch.Tensor,
@@ -74,12 +73,13 @@ class CombinedLoss(nn.Module):
     def __init__(self, loss_cfg: dict):
         super().__init__()
         self.seg_loss = AsymmetricSimilarityLoss(
+            density_params=loss_cfg["density_params"],
             smooth=loss_cfg.get("smooth", 1e-6),
         )
         self.density_loss = nn.CrossEntropyLoss()
-        self.density_weight = loss_cfg.get("density_weight", 0.3)
-        self.aux3_weight = loss_cfg.get("aux3_weight", 0.2)
-        self.aux2_weight = loss_cfg.get("aux2_weight", 0.1)
+        self.density_weight = loss_cfg["density_weight"]
+        self.aux3_weight = loss_cfg["aux3_weight"]
+        self.aux2_weight = loss_cfg["aux2_weight"]
 
     def forward(self, seg_logits, density_logits, targets, density_labels, aux3, aux2):
         l_seg = self.seg_loss(seg_logits, targets, density_labels)
