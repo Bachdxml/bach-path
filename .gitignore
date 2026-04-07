@@ -19,6 +19,14 @@ npm-debug.log*
 # Build outputs
 dist/
 out/
+build/
+*.pkg
+*.pyz
+*.toc
+*.spec
+
+# Local API packaged artifacts
+services/local-api/build/
 
 # OS junk
 .DS_Store
