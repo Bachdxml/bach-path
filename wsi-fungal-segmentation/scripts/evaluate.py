@@ -7,6 +7,7 @@ Usage:
 """
 
 import argparse
+from collections.abc import Mapping
 import sys
 from pathlib import Path
 
@@ -33,6 +34,37 @@ from src import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _safe_torch_load(source, *, map_location):
+    """Refuse to deserialize checkpoints unless PyTorch supports weights-only loading."""
+    try:
+        return torch.load(source, map_location=map_location, weights_only=True)
+    except TypeError as exc:
+        raise RuntimeError(
+            "This script requires torch.load(..., weights_only=True). "
+            "Upgrade PyTorch or re-export the checkpoint; refusing unsafe deserialization."
+        ) from exc
+
+
+def _is_tensor_state_dict(candidate: Mapping) -> bool:
+    return bool(candidate) and all(
+        isinstance(key, str) and isinstance(value, torch.Tensor)
+        for key, value in candidate.items()
+    )
+
+
+def _load_checkpoint(path: Path, device: torch.device) -> Mapping:
+    # Checkpoints cross a trust boundary; only accept the dict layout emitted by
+    # this project's training/export scripts and loaded in weights-only mode.
+    checkpoint = _safe_torch_load(path, map_location=device)
+    if not isinstance(checkpoint, Mapping):
+        raise ValueError("Checkpoint must be a mapping loaded in weights-only mode.")
+
+    state_dict = checkpoint.get("model_state_dict")
+    if not isinstance(state_dict, Mapping) or not _is_tensor_state_dict(state_dict):
+        raise ValueError("Checkpoint must contain a non-empty 'model_state_dict' tensor mapping.")
+
+    return checkpoint
 
 def denormalize(tensor):
     img = tensor.cpu().permute(1, 2, 0).numpy()
@@ -114,8 +146,11 @@ def main(checkpoint_path: str, config_path: str = "configs/default.yaml",
 
     # ---- Load checkpoint ----
     print(f"\nLoading checkpoint: {checkpoint_path}")
-    ckpt = torch.load(checkpoint_path, map_location=device)
-    print(f"  Epoch {ckpt['epoch']}  |  best dice = {ckpt['best_dice']:.4f}")
+    ckpt = _load_checkpoint(Path(checkpoint_path), device)
+    epoch = ckpt.get("epoch", "unknown")
+    best_dice = ckpt.get("best_dice")
+    best_dice_text = f"{best_dice:.4f}" if isinstance(best_dice, (int, float)) else "n/a"
+    print(f"  Epoch {epoch}  |  best dice = {best_dice_text}")
 
     img_size = ckpt.get("cfg", cfg)["data"]["img_size"]
 

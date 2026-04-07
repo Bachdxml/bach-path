@@ -18,6 +18,7 @@ Example:
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 import gzip
 import io
 import sys
@@ -28,6 +29,24 @@ import torch
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parent.parent
+
+
+def _safe_torch_load(source, *, map_location):
+    """Refuse to deserialize checkpoints unless PyTorch supports weights-only loading."""
+    try:
+        return torch.load(source, map_location=map_location, weights_only=True)
+    except TypeError as exc:
+        raise RuntimeError(
+            "This script requires torch.load(..., weights_only=True). "
+            "Upgrade PyTorch or re-export the checkpoint; refusing unsafe deserialization."
+        ) from exc
+
+
+def _is_tensor_state_dict(candidate: Mapping) -> bool:
+    return bool(candidate) and all(
+        isinstance(key, str) and isinstance(value, torch.Tensor)
+        for key, value in candidate.items()
+    )
 
 
 def main() -> int:
@@ -45,16 +64,23 @@ def main() -> int:
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        ckpt = torch.load(src, map_location="cpu", weights_only=True)
-    except TypeError:
-        ckpt = torch.load(src, map_location="cpu")
+        ckpt = _safe_torch_load(src, map_location="cpu")
+    except Exception as exc:
+        print(f"Failed to load checkpoint safely: {exc}", file=sys.stderr)
+        return 1
 
-    if not isinstance(ckpt, dict) or "model_state_dict" not in ckpt:
-        print("Expected a dict checkpoint with 'model_state_dict'.", file=sys.stderr)
+    # Export only accepts training checkpoints from this repo's pipeline.
+    if not isinstance(ckpt, Mapping):
+        print("Expected a mapping checkpoint loaded in weights-only mode.", file=sys.stderr)
+        return 1
+
+    state_dict = ckpt.get("model_state_dict")
+    if not isinstance(state_dict, Mapping) or not _is_tensor_state_dict(state_dict):
+        print("Expected a non-empty tensor 'model_state_dict' in the checkpoint.", file=sys.stderr)
         return 1
 
     deploy = {
-        "model_state_dict": ckpt["model_state_dict"],
+        "model_state_dict": state_dict,
         "cfg": ckpt.get("cfg"),
     }
 

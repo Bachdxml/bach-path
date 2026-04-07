@@ -9,11 +9,13 @@ Usage:
 """
 
 import argparse
+from collections.abc import Mapping
 import gzip
 import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Tuple
 
 import numpy as np
 import torch
@@ -42,19 +44,51 @@ EXIT_INFERENCE = 3
 EXIT_OUTPUT = 4
 
 
-def _load_checkpoint_dict(path: Path, device: torch.device) -> dict:
+def _safe_torch_load(source, *, map_location):
+    """Refuse to deserialize checkpoints unless PyTorch supports weights-only loading."""
+    try:
+        return torch.load(source, map_location=map_location, weights_only=True)
+    except TypeError as exc:
+        raise RuntimeError(
+            "This script requires torch.load(..., weights_only=True). "
+            "Upgrade PyTorch or re-export the checkpoint; refusing unsafe deserialization."
+        ) from exc
+
+
+def _is_tensor_state_dict(candidate: Mapping) -> bool:
+    return bool(candidate) and all(
+        isinstance(key, str) and isinstance(value, torch.Tensor)
+        for key, value in candidate.items()
+    )
+
+
+def _load_checkpoint_dict(path: Path, device: torch.device):
     """Load torch checkpoint from plain or gzip-compressed file (.pth.gz)."""
     name = path.name.lower()
     if path.suffix.lower() == ".gz" or name.endswith((".pth.gz", ".pt.gz")):
         with gzip.open(path, "rb") as f:
-            try:
-                return torch.load(f, map_location=device, weights_only=True)
-            except TypeError:
-                return torch.load(f, map_location=device)
-    try:
-        return torch.load(path, map_location=device, weights_only=True)
-    except TypeError:
-        return torch.load(path, map_location=device)
+            return _safe_torch_load(f, map_location=device)
+    return _safe_torch_load(path, map_location=device)
+
+
+def _extract_model_state_dict(checkpoint) -> Tuple[Mapping, dict]:
+    # Checkpoints cross a trust boundary, so only accept the minimal structures
+    # produced by this project's training/export pipeline.
+    if not isinstance(checkpoint, Mapping):
+        raise ValueError("Checkpoint must be a mapping loaded in weights-only mode.")
+
+    if "model_state_dict" in checkpoint:
+        state_dict = checkpoint["model_state_dict"]
+        if not isinstance(state_dict, Mapping) or not _is_tensor_state_dict(state_dict):
+            raise ValueError("Checkpoint 'model_state_dict' must be a non-empty tensor state dict.")
+        return state_dict, checkpoint
+
+    if _is_tensor_state_dict(checkpoint):
+        return checkpoint, {}
+
+    raise ValueError(
+        "Checkpoint must contain a 'model_state_dict' entry or be a plain tensor state dict."
+    )
 
 
 def preprocess_tile(pil_img: Image.Image, target_size: int = 512) -> torch.Tensor:
@@ -110,18 +144,16 @@ def main():
     try:
         device = torch.device(args.device if torch.cuda.is_available() else "cpu")
         ckpt = _load_checkpoint_dict(checkpoint_path, device)
+        state_dict, ckpt_meta = _extract_model_state_dict(ckpt)
 
         model_kwargs = {"in_ch": 3, "out_ch": 1, "num_density_classes": 4, "dropout_p": 0.3}
-        ckpt_cfg = ckpt.get("cfg") if isinstance(ckpt, dict) else None
+        ckpt_cfg = ckpt_meta.get("cfg") if isinstance(ckpt_meta, Mapping) else None
         if isinstance(ckpt_cfg, dict):
             ckpt_model_cfg = ckpt_cfg.get("model")
             if isinstance(ckpt_model_cfg, dict):
                 model_kwargs.update(ckpt_model_cfg)
         model = ResidualAttentionUNet(**model_kwargs)
-        if "model_state_dict" in ckpt:
-            model.load_state_dict(ckpt["model_state_dict"])
-        else:
-            model.load_state_dict(ckpt)
+        model.load_state_dict(state_dict)
         model.to(device)
         model.eval()
     except Exception as e:
