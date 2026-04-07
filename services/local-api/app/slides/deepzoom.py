@@ -1,9 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 import shutil
 import threading
+
+logger = logging.getLogger(__name__)
+
+# pyvips is optional at runtime; native libvips must be installed (e.g. macOS: brew install vips).
+_pyvips = None
+_pyvips_probe_done = False
+_missing_libvips_warned = False
 
 
 @dataclass(frozen=True)
@@ -46,6 +54,29 @@ def has_deepzoom(paths: DeepZoomPaths) -> bool:
     )
 
 
+def _get_pyvips():
+    """Return pyvips module if import + libvips load succeed; else None."""
+    global _pyvips, _pyvips_probe_done, _missing_libvips_warned
+    if _pyvips_probe_done:
+        return _pyvips
+    _pyvips_probe_done = True
+    try:
+        import pyvips
+
+        _pyvips = pyvips
+    except (ImportError, OSError, EnvironmentError) as e:
+        _pyvips = None
+        if not _missing_libvips_warned:
+            _missing_libvips_warned = True
+            logger.warning(
+                "pyvips/libvips is not usable (%s). Deep Zoom pre-caching is disabled; "
+                "the viewer will use on-demand tiles instead. On macOS install native libvips: "
+                "`brew install vips`, then restart the API.",
+                type(e).__name__,
+            )
+    return _pyvips
+
+
 def ensure_deepzoom(slide_path: Path, cache_root: Path, slide_id: int, tile_size: int = 256) -> DeepZoomPaths:
     paths = deepzoom_paths(cache_root, slide_id)
     with _lock_for_slide(slide_id):
@@ -57,7 +88,9 @@ def ensure_deepzoom(slide_path: Path, cache_root: Path, slide_id: int, tile_size
             shutil.rmtree(paths.prefix.parent, ignore_errors=True)
         paths.prefix.parent.mkdir(parents=True, exist_ok=True)
 
-        import pyvips  # lazy import: keeps API boot fast if unavailable
+        pyvips = _get_pyvips()
+        if pyvips is None:
+            return paths
 
         image = pyvips.Image.new_from_file(str(slide_path), access="sequential")
         image.dzsave(
