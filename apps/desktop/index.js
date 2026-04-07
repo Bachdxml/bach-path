@@ -227,8 +227,8 @@ function getApiBaseDir() {
   return path.join(__dirname, "..", "..", "services", "local-api");
 }
 
-function getApiScriptPath() {
-  return path.join(getApiBaseDir(), "run_api.py");
+function getApiAppDir() {
+  return path.join(getApiBaseDir(), "app");
 }
 
 function getPythonPath() {
@@ -293,10 +293,10 @@ function startApi() {
   fs.mkdirSync(dataDir, { recursive: true });
   fs.mkdirSync(logDir, { recursive: true });
 
-  const scriptPath = getApiScriptPath();
-  if (!fs.existsSync(scriptPath)) {
-    console.error("API script not found:", scriptPath);
-    return Promise.reject(new Error("API script not found"));
+  const apiAppDir = getApiAppDir();
+  if (!fs.existsSync(apiAppDir)) {
+    console.error("API app module not found:", apiAppDir);
+    return Promise.reject(new Error("API module not found"));
   }
 
   const pythonPath = getPythonPath();
@@ -316,12 +316,26 @@ function startApi() {
   const spawnEnv = { ...process.env };
   if (dyldPath) spawnEnv.DYLD_LIBRARY_PATH = dyldPath;
   if (apiKey) spawnEnv.APP_API_KEY = apiKey;
+  // Keep imports stable across execution contexts (dev vs packaged runtime).
+  const pythonPathEntries = [getApiBaseDir(), process.env.PYTHONPATH].filter(Boolean);
+  spawnEnv.PYTHONPATH = pythonPathEntries.join(path.delimiter);
 
   apiProcess = spawn(
     pythonPath,
-    [scriptPath, "--host", String(host), "--port", String(port), "--data-dir", dataDir, "--log-dir", logDir],
+    [
+      "-m",
+      "app.cli",
+      "--host",
+      String(host),
+      "--port",
+      String(port),
+      "--data-dir",
+      dataDir,
+      "--log-dir",
+      logDir,
+    ],
     {
-      cwd: path.dirname(scriptPath),
+      cwd: getApiBaseDir(),
       stdio: "pipe",
       env: spawnEnv,
     }

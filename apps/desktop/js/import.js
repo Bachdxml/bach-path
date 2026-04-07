@@ -52,6 +52,7 @@ async function importPaths(paths) {
   setProgress(0, paths.length);
   let success = 0;
   let failed = 0;
+  const failureReasons = new Map();
   try {
     for (let i = 0; i < paths.length; i++) {
       if (importCancelled) break;
@@ -61,6 +62,8 @@ async function importPaths(paths) {
         success++;
       } catch (err) {
         failed++;
+        const msg = (err && err.message ? err.message : "Unknown import error").trim();
+        failureReasons.set(msg, (failureReasons.get(msg) || 0) + 1);
         console.error("Import failed:", paths[i], err);
       }
     }
@@ -76,9 +79,11 @@ async function importPaths(paths) {
       window.appToast(`Import stopped. ${success} slide(s) added.`, "info", 5000);
     }
   } else if (failed > 0) {
-    setStatus(`Imported ${success} slide(s). ${failed} failed.`, true);
+    const topReason = [...failureReasons.entries()].sort((a, b) => b[1] - a[1])[0];
+    const reasonText = topReason ? ` Top error: ${topReason[0]} (${topReason[1]}).` : "";
+    setStatus(`Imported ${success} slide(s). ${failed} failed.${reasonText}`, true);
     if (typeof window.appToast === "function") {
-      window.appToast(`${failed} file(s) failed to import. See status below.`, "error", 6000);
+      window.appToast(`${failed} file(s) failed to import.${topReason ? ` ${topReason[0]}` : ""}`, "error", 6000);
     }
   } else {
     setStatus(`Imported ${success} slide(s) successfully.`);

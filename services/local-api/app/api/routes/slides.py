@@ -3,6 +3,7 @@ import hashlib
 import io
 import logging
 import shutil
+import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query, Request, Response
@@ -237,16 +238,29 @@ def import_slide(payload: SlideImportRequest, request: Request, db: Session = De
     db.add(slide)
     db.flush()  # assigns slide.id without committing yet
 
+    # Prefer deterministic id-based names, but recover if stale/orphan files already
+    # occupy that path (common after interrupted/manual cleanup scenarios).
     dest_filename = f"{slide.id}{src.suffix.lower()}"
-    try:
-        dest_path = copy_into_managed_storage(src, settings.slides_dir, dest_filename)
-    except PermissionError:
-        raise AppError(ErrorCode.SLIDE_PERMISSION, "Access denied when copying slide")
-    except FileExistsError:
+    dest_path = None
+    for attempt in range(4):
+        try:
+            dest_path = copy_into_managed_storage(src, settings.slides_dir, dest_filename)
+            break
+        except FileExistsError:
+            if attempt == 0:
+                logger.warning(
+                    "Managed storage collision for slide id=%s filename=%s; retrying with unique suffix",
+                    slide.id,
+                    dest_filename,
+                )
+            dest_filename = f"{slide.id}-{uuid.uuid4().hex[:8]}{src.suffix.lower()}"
+        except PermissionError:
+            raise AppError(ErrorCode.SLIDE_PERMISSION, "Access denied when copying slide")
+        except OSError:
+            logger.exception("Failed to copy slide from %s", src)
+            raise AppError(ErrorCode.IO_ERROR, "Failed to copy slide")
+    if dest_path is None:
         raise AppError(ErrorCode.CONFLICT, "Managed slide already exists")
-    except OSError:
-        logger.exception("Failed to copy slide from %s", src)
-        raise AppError(ErrorCode.IO_ERROR, "Failed to copy slide")
 
     slide.stored_filename = dest_filename
     slide.stored_path = str(dest_path)
