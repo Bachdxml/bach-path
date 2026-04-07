@@ -183,9 +183,12 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  const offApiReady = window.electronAPI.onApiReady(({ port, host }) => {
+  const offApiReady = window.electronAPI.onApiReady(({ port, host, apiKey }) => {
     const hostForUrl = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
     window.slidesApi.setApiBase(`http://${hostForUrl}:${port}`);
+    if (typeof window.slidesApi.setApiKey === "function") {
+      window.slidesApi.setApiKey(apiKey || null);
+    }
     if (healthTimer) clearInterval(healthTimer);
     pingApi();
     healthTimer = setInterval(pingApi, 10000);
@@ -205,6 +208,9 @@ document.addEventListener("DOMContentLoaded", () => {
     .then((config) => {
       const portInput = document.getElementById("api-port");
       if (portInput) portInput.value = config.apiPort ?? 8765;
+      if (typeof window.slidesApi.setApiKey === "function") {
+        window.slidesApi.setApiKey(config.apiKey || null);
+      }
     })
     .catch((err) => {
       toast(`Failed to load settings: ${err?.message || err}`, "error");

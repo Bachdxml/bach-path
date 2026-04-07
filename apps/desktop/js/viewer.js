@@ -427,6 +427,68 @@ function applyMppFromMeta(meta) {
   }
 }
 
+function parseDeepZoomDescriptor(xmlText) {
+  const doc = new DOMParser().parseFromString(xmlText, "application/xml");
+  if (doc.querySelector("parsererror")) {
+    throw new Error("Invalid DeepZoom descriptor");
+  }
+
+  const imageEl = doc.getElementsByTagName("Image")[0];
+  const sizeEl = doc.getElementsByTagName("Size")[0];
+  if (!imageEl || !sizeEl) {
+    throw new Error("Incomplete DeepZoom descriptor");
+  }
+
+  const width = parseInt(sizeEl.getAttribute("Width") || "0", 10);
+  const height = parseInt(sizeEl.getAttribute("Height") || "0", 10);
+  const tileSize = parseInt(imageEl.getAttribute("TileSize") || "256", 10);
+  const overlap = parseInt(imageEl.getAttribute("Overlap") || "0", 10);
+  const format = (imageEl.getAttribute("Format") || "jpg").trim() || "jpg";
+
+  if (!Number.isFinite(width) || width < 1 || !Number.isFinite(height) || height < 1) {
+    throw new Error("Invalid DeepZoom dimensions");
+  }
+
+  return {
+    width,
+    height,
+    tileSize: Number.isFinite(tileSize) && tileSize > 0 ? tileSize : 256,
+    overlap: Number.isFinite(overlap) && overlap >= 0 ? overlap : 0,
+    format,
+  };
+}
+
+function createDeepZoomTileSource(slideId, descriptor) {
+  const width = descriptor.width;
+  const height = descriptor.height;
+  const tileSize = descriptor.tileSize;
+  const overlap = descriptor.overlap;
+  const format = descriptor.format;
+  const maxLevel = Math.ceil(Math.log2(Math.max(width, height)));
+
+  return {
+    type: "custom",
+    width,
+    height,
+    tileSize,
+    tileOverlap: overlap,
+    minLevel: 0,
+    maxLevel,
+    getLevelScale: (level) => 1 / 2 ** (maxLevel - level),
+    getNumTiles: (level) => {
+      const scale = 1 / 2 ** (maxLevel - level);
+      const levelWidth = Math.max(1, Math.ceil(width * scale));
+      const levelHeight = Math.max(1, Math.ceil(height * scale));
+      return new OpenSeadragon.Point(
+        Math.max(1, Math.ceil(levelWidth / tileSize)),
+        Math.max(1, Math.ceil(levelHeight / tileSize))
+      );
+    },
+    getTileUrl: (level, x, y) =>
+      window.slidesApi.getDeepZoomTileUrl(slideId, level, x, y, format),
+  };
+}
+
 async function showViewer(slideId) {
   const requestId = ++viewerRequestSeq;
   activeInferencePollToken += 1; // cancel any in-flight inference poll from another slide
@@ -462,15 +524,16 @@ async function showViewer(slideId) {
   }
 
   try {
-    const apiBase = window.slidesApi.getApiBase();
-    const dziUrl = `${apiBase}/slides/${slideId}/deepzoom.dzi`;
+    const dziUrl = window.slidesApi.getDeepZoomDziUrl(slideId);
     let tileSource = null;
 
     try {
-      const dziCheck = await fetch(dziUrl, { method: "HEAD" });
+      const dziCheck = await fetch(dziUrl);
       if (requestId !== viewerRequestSeq || currentSlideId !== slideId) return;
       if (dziCheck.ok) {
-        tileSource = dziUrl;
+        const descriptor = parseDeepZoomDescriptor(await dziCheck.text());
+        if (requestId !== viewerRequestSeq || currentSlideId !== slideId) return;
+        tileSource = createDeepZoomTileSource(slideId, descriptor);
       }
     } catch (_) {}
 
@@ -508,10 +571,8 @@ async function showViewer(slideId) {
             Math.max(1, Math.ceil(h / 256))
           );
         },
-        getTileUrl: (level, x, y) => {
-          const openSlideLevel = osdToOpenSlideLevel(level);
-          return `${apiBase}/slides/${slideId}/tiles/${openSlideLevel}/${x}/${y}.jpg`;
-        },
+        getTileUrl: (level, x, y) =>
+          window.slidesApi.getTileUrl(slideId, osdToOpenSlideLevel(level), x, y),
       };
     }
 

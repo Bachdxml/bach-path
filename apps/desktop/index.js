@@ -3,10 +3,13 @@ const path = require("path");
 const fs = require("fs");
 const { spawn } = require("child_process");
 const http = require("http");
+const { fileURLToPath } = require("url");
 
 const APP_DISPLAY_NAME = "Bach Path";
 const DEFAULT_PORT = 8765;
 const WSI_EXTENSIONS = new Set([".svs", ".tif", ".tiff", ".png"]);
+const MAX_DROPPED_PATHS = 2048;
+const MAX_FILENAME_LENGTH = 255;
 
 let apiProcess = null;
 let mainWindow = null;
@@ -18,10 +21,187 @@ function getConfigPath() {
   return path.join(app.getPath("userData"), "config.json");
 }
 
+function getAppIndexPath() {
+  return path.join(__dirname, "index.html");
+}
+
+function isPlainObject(value) {
+  return value != null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.trim() !== "";
+}
+
+function parseTrustedFileUrl(urlString) {
+  if (!isNonEmptyString(urlString)) return null;
+  try {
+    const parsed = new URL(urlString);
+    if (parsed.protocol !== "file:") return null;
+    return path.resolve(fileURLToPath(parsed));
+  } catch {
+    return null;
+  }
+}
+
+function isAllowedAppUrl(urlString) {
+  const filePath = parseTrustedFileUrl(urlString);
+  return filePath === path.resolve(getAppIndexPath());
+}
+
+function isTrustedSenderFrame(frame) {
+  if (!frame) return false;
+  const frameUrl = frame.url || "";
+  const frameOrigin = frame.origin || "";
+  if (!isAllowedAppUrl(frameUrl)) return false;
+  return frameOrigin === "" || frameOrigin === "null" || frameOrigin === "file://";
+}
+
+function assertTrustedIpcSender(event) {
+  const frame = event.senderFrame;
+  const frameUrl = frame?.url || event.sender?.getURL?.() || "";
+  const senderIsMainWindow = event.sender === mainWindow?.webContents;
+  if (!senderIsMainWindow || !isTrustedSenderFrame({ url: frameUrl, origin: frame?.origin || "" })) {
+    throw new Error("Blocked untrusted IPC sender");
+  }
+}
+
+function handleTrusted(channel, handler) {
+  ipcMain.handle(channel, (event, ...args) => {
+    assertTrustedIpcSender(event);
+    return handler(event, ...args);
+  });
+}
+
+function normalizeApiHost(value) {
+  if (!isNonEmptyString(value)) return "127.0.0.1";
+  return value.trim();
+}
+
+function normalizeApiKey(value) {
+  if (!isNonEmptyString(value)) return undefined;
+  return value.trim();
+}
+
+function buildApiReadyState(config) {
+  const state = {
+    port: config.apiPort ?? DEFAULT_PORT,
+    host: normalizeApiHost(config.apiHost),
+  };
+  const apiKey = normalizeApiKey(config.apiKey);
+  if (apiKey) state.apiKey = apiKey;
+  return state;
+}
+
+function normalizeApiReadyPayload(data) {
+  if (!isPlainObject(data)) return buildApiReadyState(loadConfig());
+
+  const port =
+    Number.isInteger(data.port) ? data.port : Number.isInteger(data.apiPort) ? data.apiPort : DEFAULT_PORT;
+  const host = normalizeApiHost(data.host ?? data.apiHost);
+  const apiKey = normalizeApiKey(data.apiKey);
+  const payload = { port, host };
+  if (apiKey) payload.apiKey = apiKey;
+  return payload;
+}
+
+function validateConfigPayload(config) {
+  if (!isPlainObject(config)) {
+    throw new Error("Invalid config payload");
+  }
+
+  const nextConfig = loadConfig();
+
+  if (Object.prototype.hasOwnProperty.call(config, "apiPort")) {
+    const port = config.apiPort;
+    if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+      throw new Error("apiPort must be an integer between 1024 and 65535");
+    }
+    nextConfig.apiPort = port;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, "apiHost")) {
+    if (!isNonEmptyString(config.apiHost)) {
+      throw new Error("apiHost must be a non-empty string");
+    }
+    nextConfig.apiHost = normalizeApiHost(config.apiHost);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(config, "apiKey")) {
+    if (config.apiKey == null || config.apiKey === "") {
+      delete nextConfig.apiKey;
+    } else if (!isNonEmptyString(config.apiKey)) {
+      throw new Error("apiKey must be a non-empty string");
+    } else {
+      nextConfig.apiKey = config.apiKey.trim();
+    }
+  }
+
+  return nextConfig;
+}
+
+function validateDroppedPaths(pathStrings) {
+  if (!Array.isArray(pathStrings)) return [];
+  const validPaths = [];
+
+  for (const value of pathStrings.slice(0, MAX_DROPPED_PATHS)) {
+    if (!isNonEmptyString(value)) continue;
+    if (!path.isAbsolute(value)) continue;
+    const resolvedPath = path.resolve(value);
+    if (!WSI_EXTENSIONS.has(path.extname(resolvedPath).toLowerCase())) continue;
+    if (!fs.existsSync(resolvedPath)) continue;
+    validPaths.push(resolvedPath);
+  }
+
+  return validPaths;
+}
+
+function validateCapturePayload(payload) {
+  if (!isPlainObject(payload) || !isPlainObject(payload.rect)) {
+    return { ok: false, error: "invalid_payload" };
+  }
+
+  const { rect } = payload;
+  const keys = ["x", "y", "width", "height"];
+  if (!keys.every((key) => Number.isFinite(rect[key]) && Number.isInteger(rect[key]))) {
+    return { ok: false, error: "invalid_rect" };
+  }
+
+  if (rect.x < 0 || rect.y < 0 || rect.width < 1 || rect.height < 1) {
+    return { ok: false, error: "invalid_rect" };
+  }
+
+  const bounds = mainWindow?.getContentBounds?.();
+  if (
+    bounds &&
+    (rect.x + rect.width > bounds.width || rect.y + rect.height > bounds.height)
+  ) {
+    return { ok: false, error: "invalid_rect" };
+  }
+
+  let defaultFilename = "slide-view.png";
+  if (isNonEmptyString(payload.defaultFilename)) {
+    const baseName = path.basename(payload.defaultFilename.trim()).slice(0, MAX_FILENAME_LENGTH);
+    defaultFilename = baseName.toLowerCase().endsWith(".png") ? baseName : `${baseName}.png`;
+  }
+
+  return {
+    ok: true,
+    rect: {
+      x: rect.x,
+      y: rect.y,
+      width: rect.width,
+      height: rect.height,
+    },
+    defaultFilename,
+  };
+}
+
 function loadConfig() {
   try {
     const data = fs.readFileSync(getConfigPath(), "utf-8");
-    return JSON.parse(data);
+    const config = JSON.parse(data);
+    return isPlainObject(config) ? config : { apiPort: DEFAULT_PORT, apiHost: "127.0.0.1" };
   } catch {
     return { apiPort: DEFAULT_PORT, apiHost: "127.0.0.1" };
   }
@@ -105,7 +285,8 @@ function waitForHealth(port, host = "127.0.0.1", maxAttempts = 30) {
 function startApi() {
   const config = loadConfig();
   const port = config.apiPort ?? DEFAULT_PORT;
-  const host = config.apiHost ?? "127.0.0.1";
+  const host = normalizeApiHost(config.apiHost);
+  const apiKey = normalizeApiKey(config.apiKey);
 
   const dataDir = getApiDataDir();
   const logDir = getApiLogDir();
@@ -134,6 +315,7 @@ function startApi() {
   const dyldPath = [...homebrewLibPaths, process.env.DYLD_LIBRARY_PATH].filter(Boolean).join(path.delimiter);
   const spawnEnv = { ...process.env };
   if (dyldPath) spawnEnv.DYLD_LIBRARY_PATH = dyldPath;
+  if (apiKey) spawnEnv.APP_API_KEY = apiKey;
 
   apiProcess = spawn(
     pythonPath,
@@ -154,7 +336,7 @@ function startApi() {
   });
 
   return waitForHealth(port, host)
-    .then(() => ({ port, host }))
+    .then(() => buildApiReadyState({ ...config, apiPort: port, apiHost: host }))
     .catch((err) => {
       stopApi();
       throw err;
@@ -182,9 +364,16 @@ function createWindow(apiReady) {
     },
   });
 
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    if (!isAllowedAppUrl(url)) {
+      event.preventDefault();
+    }
+  });
+
   mainWindow.loadFile(path.join(__dirname, "index.html"));
   mainWindow.webContents.on("did-finish-load", () => {
-    mainWindow.webContents.send("api-ready", apiReady);
+    mainWindow.webContents.send("api-ready", normalizeApiReadyPayload(apiReady));
   });
 }
 
@@ -245,21 +434,17 @@ app.on("before-quit", () => {
   stopApi();
 });
 
-ipcMain.handle("get-config", () => loadConfig());
-ipcMain.handle("set-config", (_, config) => {
-  saveConfig(config);
+handleTrusted("get-config", () => loadConfig());
+handleTrusted("set-config", (_, config) => {
+  const nextConfig = validateConfigPayload(config);
+  saveConfig(nextConfig);
+  apiReadyState = buildApiReadyState(nextConfig);
   return loadConfig();
 });
 
-ipcMain.handle("get-dropped-file-paths", (_, pathStrings) => {
-  if (!Array.isArray(pathStrings)) return [];
-  return pathStrings.filter((p) => {
-    if (typeof p !== "string") return false;
-    return WSI_EXTENSIONS.has(path.extname(p).toLowerCase());
-  });
-});
+handleTrusted("get-dropped-file-paths", (_, pathStrings) => validateDroppedPaths(pathStrings));
 
-ipcMain.handle("select-folder", async () => {
+handleTrusted("select-folder", async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ["openDirectory"],
   });
@@ -267,7 +452,7 @@ ipcMain.handle("select-folder", async () => {
   return recursivelyFindWsiFiles(result.filePaths[0]);
 });
 
-ipcMain.handle("select-directory", async () => {
+handleTrusted("select-directory", async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ["openDirectory"],
   });
@@ -275,7 +460,7 @@ ipcMain.handle("select-directory", async () => {
   return result.filePaths[0];
 });
 
-ipcMain.handle("select-files", async () => {
+handleTrusted("select-files", async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ["openFile", "multiSelections"],
     filters: [
@@ -289,21 +474,12 @@ ipcMain.handle("select-files", async () => {
   );
 });
 
-ipcMain.handle("save-viewer-capture", async (_, payload) => {
+handleTrusted("save-viewer-capture", async (_, payload) => {
   if (!mainWindow?.webContents) return { ok: false, error: "no_window" };
-  const rect = payload?.rect;
-  const defaultFilename = payload?.defaultFilename || "slide-view.png";
-  if (
-    !rect ||
-    typeof rect.x !== "number" ||
-    typeof rect.y !== "number" ||
-    typeof rect.width !== "number" ||
-    typeof rect.height !== "number" ||
-    rect.width < 1 ||
-    rect.height < 1
-  ) {
-    return { ok: false, error: "invalid_rect" };
-  }
+  const validation = validateCapturePayload(payload);
+  if (!validation.ok) return validation;
+
+  const { rect, defaultFilename } = validation;
   try {
     const image = await mainWindow.webContents.capturePage(rect);
     const result = await dialog.showSaveDialog(mainWindow, {
