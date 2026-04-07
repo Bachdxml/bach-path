@@ -110,34 +110,8 @@ async function listInferenceModels() {
   return res.json();
 }
 
-async function startTraining(exportRoot) {
-  const res = await fetch(`${apiBase}/training/start`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ export_root: exportRoot }),
-  });
-  if (!res.ok) throw new Error(await parseErrorResponse(res));
-  return res.json();
-}
-
-async function getTrainingStatus() {
-  const res = await fetch(`${apiBase}/training/status`);
-  if (!res.ok) throw new Error(await parseErrorResponse(res));
-  return res.json();
-}
-
-async function stopTraining() {
-  const res = await fetch(`${apiBase}/training/stop`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({}),
-  });
-  if (!res.ok) throw new Error(await parseErrorResponse(res));
-  return res.json();
-}
-
-async function getTrainingLog(tail = 200) {
-  const res = await fetch(`${apiBase}/training/log?tail=${tail}`);
+async function getTrainingInfo() {
+  const res = await fetch(`${apiBase}/training/info`);
   if (!res.ok) throw new Error(await parseErrorResponse(res));
   return res.json();
 }
@@ -171,8 +145,5 @@ window.slidesApi = {
   getInferenceRegions,
   getSlideInferenceRuns,
   listInferenceModels,
-  startTraining,
-  getTrainingStatus,
-  stopTraining,
-  getTrainingLog,
+  getTrainingInfo,
 };

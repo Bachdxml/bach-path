@@ -2,7 +2,6 @@ from __future__ import annotations
 import json
 import subprocess
 import threading
-import shutil
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,7 +28,13 @@ from app.util.exceptions import AppError, ErrorCode
 
 router = APIRouter(prefix="/inference", tags=["inference"])
 _inference_executor = ThreadPoolExecutor(max_workers=2)
-_MODEL_EXTENSIONS = {".pth", ".pt", ".ckpt"}
+
+
+def _is_deployable_weight(p: Path) -> bool:
+    if not p.is_file():
+        return False
+    n = p.name.lower()
+    return n.endswith((".pth.gz", ".pt.gz"))
 
 
 def _folder_key_for_slide(original_path: str | None) -> str:
@@ -49,55 +54,24 @@ def _get_script_path() -> Path:
     return _get_project_root() / "wsi-fungal-segmentation" / "scripts" / "run_inference_api.py"
 
 
-def _get_legacy_checkpoint_path() -> Path:
-    return _get_project_root() / "wsi-fungal-segmentation" / "checkpoints" / "best_model.pth"
-
-
 def _get_models_dir() -> Path:
     models_dir = _get_project_root() / "wsi-fungal-segmentation" / "models"
     models_dir.mkdir(parents=True, exist_ok=True)
     return models_dir
 
 
-def _get_checkpoints_dir() -> Path:
-    checkpoints_dir = _get_project_root() / "wsi-fungal-segmentation" / "checkpoints"
-    checkpoints_dir.mkdir(parents=True, exist_ok=True)
-    return checkpoints_dir
-
-
 def _get_model_roots() -> list[tuple[str, Path]]:
     return [
         ("models", _get_models_dir().resolve()),
-        ("checkpoints", _get_checkpoints_dir().resolve()),
     ]
 
 
-def _bootstrap_default_model() -> None:
-    """
-    Seed models/default_model.pth from legacy checkpoints/best_model.pth
-    so existing users can immediately pick models from the new folder.
-    """
-    models_dir = _get_models_dir()
-    default_model = models_dir / "default_model.pth"
-    if default_model.exists():
-        return
-    legacy = _get_legacy_checkpoint_path()
-    if not legacy.exists():
-        return
-    try:
-        shutil.copy2(legacy, default_model)
-    except OSError:
-        # Non-fatal; listing can still fall back to legacy checkpoint.
-        return
-
-
 def _model_infos() -> list[InferenceModelInfo]:
-    _bootstrap_default_model()
     roots = _get_model_roots()
     files = []
     for prefix, root in roots:
         for p in root.rglob("*"):
-            if not p.is_file() or p.suffix.lower() not in _MODEL_EXTENSIONS:
+            if not _is_deployable_weight(p):
                 continue
             rel = p.relative_to(root).as_posix()
             stat = p.stat()
@@ -117,7 +91,7 @@ def _model_infos() -> list[InferenceModelInfo]:
 
 def _resolve_model_checkpoint(model_file: str | None) -> tuple[Path, str]:
     """
-    Resolve requested checkpoint from model id relative to models/ or checkpoints/.
+    Resolve requested checkpoint from model id relative to models/.
     Returns (path, model_id_for_display).
     """
     import os
@@ -155,24 +129,19 @@ def _resolve_model_checkpoint(model_file: str | None) -> tuple[Path, str]:
     if env_path:
         return Path(env_path).resolve(), "env:INFERENCE_CHECKPOINT"
 
-    # 2) default_model.pth in models folder, if present.
-    default_model = models_dir / "default_model.pth"
+    # 2) Prefer default deploy artifact if present.
+    default_model = models_dir / "deploy.pth.gz"
     if default_model.exists():
-        return default_model, "models/default_model.pth"
+        return default_model, "models/deploy.pth.gz"
 
     # 3) First discovered model file.
     if model_infos:
         first = model_infos[0]
         return Path(first.path), first.id
 
-    # 4) Backward-compat fallback to legacy location.
-    legacy = _get_legacy_checkpoint_path()
-    if legacy.exists():
-        return legacy, "legacy:checkpoints/best_model.pth"
-
     raise AppError(
         ErrorCode.IO_ERROR,
-        f"No model found. Add .pth files to {_get_models_dir()} or set INFERENCE_CHECKPOINT.",
+        f"No deploy model found. Add .pth.gz or .pt.gz weights to {_get_models_dir()} or set INFERENCE_CHECKPOINT.",
     )
 
 

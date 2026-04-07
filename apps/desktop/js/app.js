@@ -109,7 +109,7 @@ document.addEventListener("DOMContentLoaded", () => {
         opt.textContent = "No model files found";
         modelSelect.appendChild(opt);
         modelSelect.disabled = true;
-        setModelStatus("No models found in wsi-fungal-segmentation/models or checkpoints", true);
+        setModelStatus("No deployed models found in wsi-fungal-segmentation/models (.pth.gz / .pt.gz)", true);
         return;
       }
       modelSelect.disabled = false;
@@ -193,6 +193,7 @@ document.addEventListener("DOMContentLoaded", () => {
       window.galleryRefresh();
     }
     loadModelOptions();
+    if (typeof window.loadDeployInfo === "function") window.loadDeployInfo();
     refreshHomeMetrics();
   });
   window.addEventListener("beforeunload", () => {
@@ -279,7 +280,7 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    const map = { 1: "home", 2: "import", 3: "gallery", 4: "training", 5: "settings" };
+    const map = { 1: "home", 2: "import", 3: "gallery", 4: "models", 5: "settings" };
     if (map[e.key] && !e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
       activateTab(map[e.key]);

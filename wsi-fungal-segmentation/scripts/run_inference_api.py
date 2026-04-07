@@ -9,6 +9,7 @@ Usage:
 """
 
 import argparse
+import gzip
 import json
 import sys
 from datetime import datetime, timezone
@@ -39,6 +40,21 @@ EXIT_ARGS = 1
 EXIT_SLIDE = 2
 EXIT_INFERENCE = 3
 EXIT_OUTPUT = 4
+
+
+def _load_checkpoint_dict(path: Path, device: torch.device) -> dict:
+    """Load torch checkpoint from plain or gzip-compressed file (.pth.gz)."""
+    name = path.name.lower()
+    if path.suffix.lower() == ".gz" or name.endswith((".pth.gz", ".pt.gz")):
+        with gzip.open(path, "rb") as f:
+            try:
+                return torch.load(f, map_location=device, weights_only=True)
+            except TypeError:
+                return torch.load(f, map_location=device)
+    try:
+        return torch.load(path, map_location=device, weights_only=True)
+    except TypeError:
+        return torch.load(path, map_location=device)
 
 
 def preprocess_tile(pil_img: Image.Image, target_size: int = 512) -> torch.Tensor:
@@ -93,10 +109,7 @@ def main():
     # Load model
     try:
         device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-        try:
-            ckpt = torch.load(checkpoint_path, map_location=device, weights_only=True)
-        except TypeError:
-            ckpt = torch.load(checkpoint_path, map_location=device)
+        ckpt = _load_checkpoint_dict(checkpoint_path, device)
 
         model_kwargs = {"in_ch": 3, "out_ch": 1, "num_density_classes": 4, "dropout_p": 0.3}
         ckpt_cfg = ckpt.get("cfg") if isinstance(ckpt, dict) else None

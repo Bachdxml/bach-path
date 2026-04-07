@@ -44,9 +44,9 @@
             <span class="nav-icon">▦</span>
             <span class="nav-text">Gallery</span>
           </button>
-          <button type="button" class="tab-btn nav-item" data-tab="training">
+          <button type="button" class="tab-btn nav-item" data-tab="models">
             <span class="nav-icon">◉</span>
-            <span class="nav-text">Training</span>
+            <span class="nav-text">Models</span>
           </button>
           <div class="nav-spacer"></div>
           <button type="button" class="tab-btn nav-item" data-tab="settings">
@@ -60,7 +60,7 @@
             <div class="page-header">
               <h1 class="page-title">Clinical Slide Intelligence Workspace</h1>
               <p class="page-subtitle">
-                Import slides, run inference, review positive hotspots, and train improved models from one place.
+                Import slides, run inference with deployed weights, and review positive hotspots.
               </p>
             </div>
             <div class="page-body">
@@ -101,16 +101,16 @@
                       <strong>Open Gallery</strong>
                       <span>Browse and review slide cases</span>
                     </button>
-                    <button type="button" class="action-card home-action" data-target-tab="training">
-                      <strong>Train Model</strong>
-                      <span>Run segmentation model training</span>
+                    <button type="button" class="action-card home-action" data-target-tab="models">
+                      <strong>Models</strong>
+                      <span>Deploy inference weights and choose a checkpoint</span>
                     </button>
                     <button type="button" class="action-card home-action" data-target-tab="settings">
                       <strong>System Settings</strong>
                       <span>Configure API and appearance</span>
                     </button>
                   </div>
-                  <p class="home-footnote">Shortcuts: 1 Home, 2 Import, 3 Gallery, 4 Training, 5 Settings.</p>
+                  <p class="home-footnote">Shortcuts: 1 Home, 2 Import, 3 Gallery, 4 Models, 5 Settings.</p>
                 </article>
               </div>
             </div>
@@ -203,54 +203,58 @@
             <div class="gallery-empty" id="gallery-empty">No slides yet. Import slides from the Import tab.</div>
           </section>
 
-          <section id="tab-training" class="tab-pane">
+          <section id="tab-models" class="tab-pane">
             <div class="page-header">
-              <h1 class="page-title">Training</h1>
-              <p class="page-subtitle">Train and monitor segmentation models.</p>
+              <h1 class="page-title">Models</h1>
+              <p class="page-subtitle">
+                Train outside this app; deploy a gzip-compressed inference checkpoint into the models folder.
+              </p>
             </div>
             <div class="page-body">
               <div class="training-layout">
                 <div class="panel-card training-form">
                   <p class="training-hint">
-                    Use a folder structured like <strong>MASTERTILE</strong>: each slide is a subfolder
-                    containing density classes (<code>low</code>, <code>medium</code>, <code>high</code>,
-                    <code>negative</code>). Each density has <code>images/</code> and <code>masks/</code> with
-                    matching PNGs.
+                    Run training on a workstation or cluster using
+                    <code>wsi-fungal-segmentation/scripts/train.py</code> and
+                    <code>wsi-fungal-segmentation/configs/default.yaml</code> (same layout as on
+                    <code>main</code>). Export tiles with the QuPath script under
+                    <code>qu-path-scripts/</code> when building datasets.
                   </p>
-                  <p class="training-hint training-format">
-                    <code>MASTERTILE/slide.svs[...]/low/images/</code>,
-                    <code>.../medium/masks/</code>, etc.
+                  <p class="training-hint">
+                    Run these exact commands in Terminal to train and generate a deployable model file:
                   </p>
-                  <div class="form-group">
-                    <label>Training data folder (e.g. MASTERTILE)</label>
-                    <div class="training-folder-row">
-                      <input type="text" id="training-folder-path" readonly placeholder="Select a folder…" />
-                      <button type="button" class="btn btn-secondary" id="btn-select-training-folder">
-                        Select folder
-                      </button>
-                    </div>
+                  <div class="console-wrap" style="margin-top: 10px">
+                    <div class="console-header">Terminal commands (from repository root)</div>
+                    <pre class="training-log-output">cd wsi-fungal-segmentation
+pip install -r requirements.txt
+python scripts/train.py --config configs/default.yaml
+python scripts/export_deploy_weights.py --checkpoint checkpoints/best_model.pth --output checkpoints/deploy.pth.gz
+cp checkpoints/deploy.pth.gz models/deploy.pth.gz</pre>
                   </div>
+                  <p class="training-hint">
+                    Copy <code>deploy.pth.gz</code> (or any <code>.pth.gz</code> / <code>.pt.gz</code>) into
+                    <code>wsi-fungal-segmentation/models</code> next to the application, then refresh the list
+                    below.
+                  </p>
                   <div class="form-group">
-                    <label for="inference-model-select">Inference Model</label>
+                    <label for="inference-model-select">Inference model</label>
                     <div class="settings-row">
                       <select id="inference-model-select"></select>
                       <button type="button" class="btn btn-secondary" id="btn-refresh-models">Refresh</button>
                     </div>
                     <p class="settings-hint" id="inference-model-status">
-                      Models are loaded from wsi-fungal-segmentation/models
+                      Loads deployed gzip weights (.pth.gz / .pt.gz) from models/
                     </p>
                   </div>
-                  <div class="training-actions">
-                    <button type="button" class="btn btn-primary" id="btn-start-training">Start training</button>
-                    <button type="button" class="btn btn-danger" id="btn-stop-training" disabled>
-                      Stop training
-                    </button>
-                  </div>
-                  <div class="training-status" id="training-status"></div>
                 </div>
-                <div class="console-wrap">
-                  <div class="console-header">Training Console</div>
-                  <pre id="training-log-output" class="training-log-output" aria-live="polite"></pre>
+                <div class="panel-card training-side">
+                  <p class="training-hint">
+                    Paths and notes from the local API server.
+                  </p>
+                  <div class="console-wrap training-side-console">
+                    <div class="console-header">Paths on this system</div>
+                    <pre id="models-deploy-paths" class="training-log-output" aria-live="polite"></pre>
+                  </div>
                 </div>
               </div>
             </div>
@@ -395,7 +399,8 @@
           <li><strong>Gallery</strong> — Search, sort, star favorites, or select multiple slides to remove.</li>
           <li><strong>Viewer overlay</strong> — Click a slide card to open; click outside to close.</li>
           <li>
-            <strong>Training</strong> — Point at a MASTERTILE-style folder and train; pick a checkpoint for inference.
+            <strong>Models</strong> — Train elsewhere, copy a compressed <code>.pth.gz</code> into
+            <code>models/</code>, then pick it for inference.
           </li>
         </ol>
         <p class="help-shortcuts">
@@ -416,7 +421,7 @@
     <script src="js/import.js"></script>
     <script src="js/gallery.js"></script>
     <script src="js/viewer.js"></script>
-    <script src="js/training.js"></script>
+    <script src="js/models-tab.js"></script>
     <script src="js/app.js"></script>
   </body>
 </html>
