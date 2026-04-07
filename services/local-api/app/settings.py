@@ -1,7 +1,7 @@
 from __future__ import annotations
-from pydantic import BaseModel
 import os
 from pathlib import Path
+from pydantic import BaseModel
 
 class Settings(BaseModel):
     app_data_dir: Path
@@ -12,6 +12,24 @@ class Settings(BaseModel):
     training_runs_dir: Path
     tiles_cache_dir: Path
     sqlite_path: Path
+    api_key: str | None = None
+    import_allowed_roots: tuple[Path, ...] = ()
+
+
+def _parse_allowed_roots(raw: str | None) -> tuple[Path, ...]:
+    if not raw:
+        return ()
+
+    roots: list[Path] = []
+    for item in raw.split(","):
+        value = item.strip()
+        if not value:
+            continue
+        root = Path(value)
+        if not root.is_absolute():
+            raise RuntimeError("APP_IMPORT_ALLOWED_ROOTS entries must be absolute paths")
+        roots.append(root.resolve())
+    return tuple(roots)
 
 def load_settings() -> Settings:
     # Required for your CLI/launcher: set APP_DATA_DIR before starting local-api.exe
@@ -29,6 +47,8 @@ def load_settings() -> Settings:
     training_runs_dir = app_data_dir / "training_runs"
     tiles_cache_dir = app_data_dir / "tiles_cache"
     sqlite_path = app_data_dir / "app.db"
+    api_key = (os.environ.get("APP_API_KEY") or "").strip() or None
+    import_allowed_roots = _parse_allowed_roots(os.environ.get("APP_IMPORT_ALLOWED_ROOTS"))
 
     return Settings(
         app_data_dir=app_data_dir,
@@ -39,4 +59,6 @@ def load_settings() -> Settings:
         training_runs_dir=training_runs_dir,
         tiles_cache_dir=tiles_cache_dir,
         sqlite_path=sqlite_path,
+        api_key=api_key,
+        import_allowed_roots=import_allowed_roots,
     )

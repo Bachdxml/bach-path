@@ -1,27 +1,25 @@
 from __future__ import annotations
-from fastapi import APIRouter, Depends, Request
-from sqlalchemy.orm import Session
-from sqlalchemy import func
-from pathlib import Path
+import hashlib
+import io
 import logging
 import shutil
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi.responses import FileResponse
+from PIL import Image
+from sqlalchemy import func
+from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
-from app.schemas.slides import SlideImportRequest, SlideImportResponse, SlideListResponse, SlideListItem, SlideMetadataResponse
-from app.models.slide import Slide
+from app.models.enums import InferenceStatus
 from app.models.inference_run import InferenceRun
 from app.models.region import Region
-from app.models.enums import InferenceStatus
-from app.slides.storage import copy_into_managed_storage
-from app.slides.metadata import read_openslide_metadata, read_raster_metadata, RASTER_EXTENSIONS
+from app.models.slide import Slide
+from app.schemas.slides import SlideImportRequest, SlideImportResponse, SlideListItem, SlideListResponse, SlideMetadataResponse
 from app.slides.deepzoom import deepzoom_paths, ensure_deepzoom, has_deepzoom
-
-from fastapi import Response
-from fastapi.responses import FileResponse
-import io
-
-from PIL import Image
-
+from app.slides.metadata import RASTER_EXTENSIONS, read_openslide_metadata, read_raster_metadata
+from app.slides.storage import copy_into_managed_storage
 from app.util.exceptions import AppError, ErrorCode
 
 router = APIRouter(prefix="/slides", tags=["slides"])
@@ -30,6 +28,53 @@ logger = logging.getLogger(__name__)
 WSI_EXTENSIONS = {".svs", ".tif", ".tiff", ".png"}
 
 TILE_SIZE_DEFAULT = 256
+THUMBNAIL_SIZE_MIN = 32
+THUMBNAIL_SIZE_MAX = 2048
+
+
+def _display_original_path(original_path: str | None) -> str | None:
+    if not original_path:
+        return None
+    return Path(original_path).name or original_path
+
+
+def _folder_key(original_path: str | None) -> str:
+    if not original_path:
+        return "uncategorized"
+    parent = Path(original_path).parent
+    normalized = parent.resolve(strict=False).as_posix()
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+    return f"folder_{digest}"
+
+
+def _folder_info(original_path: str | None) -> tuple[str, str]:
+    if not original_path:
+        return "Uncategorized", "uncategorized"
+    parent = Path(original_path).parent
+    label = parent.name or "(root)"
+    return label, _folder_key(original_path)
+
+
+def _managed_slide_identifier(stored_filename: str) -> str:
+    return f"slides/{stored_filename}"
+
+
+def _ensure_import_allowed(src: Path, allowed_roots: tuple[Path, ...]) -> None:
+    if not allowed_roots:
+        return
+
+    resolved_src = src.resolve()
+    for root in allowed_roots:
+        try:
+            resolved_src.relative_to(root)
+            return
+        except ValueError:
+            continue
+    raise AppError(
+        ErrorCode.SLIDE_PERMISSION,
+        "Slide import path is not allowed",
+        http_status=403,
+    )
 
 
 def _raster_thumbnail_jpeg(slide_path: Path, size: int) -> bytes:
@@ -148,22 +193,13 @@ def list_slides(db: Session = Depends(get_db)):
             return "unchecked"
         return "positive" if positive_count_by_run.get(run.id, 0) > 0 else "negative"
 
-    def _folder_info(original_path: str | None) -> tuple[str, str]:
-        if not original_path:
-            return "Uncategorized", "uncategorized"
-        p = Path(original_path)
-        parent = p.parent
-        label = parent.name or "(root)"
-        key = str(parent)
-        return label, key
-
     items: list[SlideListItem] = []
     for s in slides:
         folder_label, folder_key = _folder_info(s.original_path)
         items.append(
             SlideListItem(
                 id=s.id,
-                original_path=s.original_path,
+                original_path=_display_original_path(s.original_path),
                 created_at=s.created_at,
                 inference_result=_inference_result(s.id),
                 folder_label=folder_label,
@@ -179,18 +215,20 @@ def import_slide(payload: SlideImportRequest, request: Request, db: Session = De
 
     src = Path(payload.file_path)
     if not src.exists():
-        raise AppError(ErrorCode.SLIDE_NOT_FOUND, f"File not found: {src}")
+        raise AppError(ErrorCode.SLIDE_NOT_FOUND, "File not found")
     if not src.is_file():
-        raise AppError(ErrorCode.SLIDE_INVALID, f"Not a file: {src}")
+        raise AppError(ErrorCode.SLIDE_INVALID, "Import path must be a file")
+
+    _ensure_import_allowed(src, settings.import_allowed_roots)
 
     # Basic extension gate (don’t rely solely on it)
     if src.suffix.lower() not in WSI_EXTENSIONS:
-        raise AppError(ErrorCode.SLIDE_INVALID, f"Unsupported extension: {src.suffix}")
+        raise AppError(ErrorCode.SLIDE_INVALID, "Unsupported slide file extension")
 
     # Create DB row first to reserve an ID (stable filename)
     size = src.stat().st_size
     slide = Slide(
-        original_path=str(src),
+        original_path=str(src.resolve()),
         stored_filename="pending",
         stored_path="pending",
         file_size_bytes=size,
@@ -204,21 +242,23 @@ def import_slide(payload: SlideImportRequest, request: Request, db: Session = De
         dest_path = copy_into_managed_storage(src, settings.slides_dir, dest_filename)
     except PermissionError:
         raise AppError(ErrorCode.SLIDE_PERMISSION, "Access denied when copying slide")
-    except FileExistsError as e:
-        raise AppError(ErrorCode.CONFLICT, str(e))
-    except OSError as e:
-        raise AppError(ErrorCode.IO_ERROR, f"Failed to copy slide: {e}")
+    except FileExistsError:
+        raise AppError(ErrorCode.CONFLICT, "Managed slide already exists")
+    except OSError:
+        logger.exception("Failed to copy slide from %s", src)
+        raise AppError(ErrorCode.IO_ERROR, "Failed to copy slide")
 
     slide.stored_filename = dest_filename
     slide.stored_path = str(dest_path)
 
     try:
         ensure_deepzoom(dest_path, settings.tiles_cache_dir, slide.id)
-    except Exception as e:
+    except Exception:
         # Keep import successful even if pre-generation fails; viewer can still use dynamic tiles.
-        logger.warning("DeepZoom generation failed for slide %s: %s", slide.id, e)
+        logger.exception("DeepZoom generation failed for slide %s", slide.id)
 
-    return SlideImportResponse(slide_id=slide.id, stored_path=slide.stored_path)
+    return SlideImportResponse(slide_id=slide.id, stored_path=_managed_slide_identifier(dest_filename))
+
 
 @router.get("/{slide_id}/metadata", response_model=SlideMetadataResponse)
 def slide_metadata(slide_id: int, db: Session = Depends(get_db)):
@@ -234,14 +274,16 @@ def slide_metadata(slide_id: int, db: Session = Depends(get_db)):
     if p.suffix.lower() in RASTER_EXTENSIONS:
         try:
             meta = read_raster_metadata(p)
-        except Exception as e:
-            raise AppError(ErrorCode.SLIDE_UNREADABLE, f"Could not read image: {e}")
+        except Exception:
+            logger.exception("Could not read raster metadata for slide %s", slide_id)
+            raise AppError(ErrorCode.SLIDE_UNREADABLE, "Could not read slide metadata")
     else:
         try:
             meta = read_openslide_metadata(p)
-        except Exception as e:
+        except Exception:
             # OpenSlide errors vary; treat as “unprocessable slide”
-            raise AppError(ErrorCode.SLIDE_UNREADABLE, f"OpenSlide failed: {e}")
+            logger.exception("OpenSlide metadata read failed for slide %s", slide_id)
+            raise AppError(ErrorCode.SLIDE_UNREADABLE, "Could not read slide metadata")
 
     return SlideMetadataResponse(slide_id=slide_id, **meta)
 
@@ -249,7 +291,7 @@ def slide_metadata(slide_id: int, db: Session = Depends(get_db)):
 @router.get("/{slide_id}/thumbnail")
 def slide_thumbnail(
     slide_id: int,
-    size: int = 256,
+    size: int = Query(default=256, ge=THUMBNAIL_SIZE_MIN, le=THUMBNAIL_SIZE_MAX),
     db: Session = Depends(get_db),
 ):
     slide = db.get(Slide, slide_id)
@@ -266,14 +308,16 @@ def slide_thumbnail(
             return Response(content=jpg, media_type="image/jpeg")
         except AppError:
             raise
-        except Exception as e:
-            raise AppError(ErrorCode.SLIDE_UNREADABLE, f"Could not read image: {e}")
+        except Exception:
+            logger.exception("Could not generate raster thumbnail for slide %s", slide_id)
+            raise AppError(ErrorCode.SLIDE_UNREADABLE, "Could not read slide image")
 
     try:
         import openslide
         osr = openslide.OpenSlide(str(slide_path))
-    except Exception as e:
-        raise AppError(ErrorCode.SLIDE_UNREADABLE, f"OpenSlide failed: {e}")
+    except Exception:
+        logger.exception("OpenSlide thumbnail open failed for slide %s", slide_id)
+        raise AppError(ErrorCode.SLIDE_UNREADABLE, "Could not read slide image")
 
     try:
         # Use lowest-resolution level (highest level index)
@@ -345,15 +389,17 @@ def slide_tile(
             return Response(content=jpg_bytes, media_type="image/jpeg")
         except AppError:
             raise
-        except Exception as e:
-            raise AppError(ErrorCode.SLIDE_UNREADABLE, f"Could not read image: {e}")
+        except Exception:
+            logger.exception("Could not generate raster tile for slide %s", slide_id)
+            raise AppError(ErrorCode.SLIDE_UNREADABLE, "Could not read slide image")
 
     # 2) Validate level exists + 3) compute tile region
     try:
         import openslide
         osr = openslide.OpenSlide(str(slide_path))
-    except Exception as e:
-        raise AppError(ErrorCode.SLIDE_UNREADABLE, f"OpenSlide failed: {e}")
+    except Exception:
+        logger.exception("OpenSlide tile open failed for slide %s", slide_id)
+        raise AppError(ErrorCode.SLIDE_UNREADABLE, "Could not read slide image")
 
     try:
         if level < 0 or level >= osr.level_count:

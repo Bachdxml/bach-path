@@ -12,13 +12,17 @@ import time
 import platform
 from pathlib import Path
 
-from app.api.deps import get_db
+from app.api.deps import get_db, require_api_key
 from app.util.exceptions import AppError, ErrorCode
 
 router = APIRouter(prefix="/health", tags=["health"])
 
 # Track process uptime (monotonic; survives wall-clock changes)
 _PROCESS_START = time.monotonic()
+
+
+def _sqlite_identifier(sqlite_path: Path) -> str:
+    return f"<app-data>/{sqlite_path.name}"
 
 
 class HealthResponse(BaseModel):
@@ -55,7 +59,11 @@ def health() -> HealthResponse:
 
 
 @router.get("/ready", response_model=ReadyResponse)
-def ready(request: Request, db: Session = Depends(get_db)) -> ReadyResponse:
+def ready(
+    request: Request,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_api_key),
+) -> ReadyResponse:
     """
     Readiness: validates we can serve real traffic.
     - Settings are loaded (lifespan already did this)
@@ -70,13 +78,13 @@ def ready(request: Request, db: Session = Depends(get_db)) -> ReadyResponse:
 
     # Basic filesystem sanity for frozen builds (helpful for support)
     if not sqlite_path.parent.exists():
-        raise AppError(ErrorCode.IO_ERROR, f"Database directory missing: {sqlite_path.parent}", http_status=500)
+        raise AppError(ErrorCode.IO_ERROR, "Database directory missing", http_status=500)
 
     # DB connectivity check
     try:
         db.execute(text("SELECT 1"))
-    except Exception as e:
-        raise AppError(ErrorCode.DB_ERROR, f"DB not reachable: {e}", http_status=500)
+    except Exception:
+        raise AppError(ErrorCode.DB_ERROR, "Database not reachable", http_status=500)
 
     # Verify migrations table exists (best-effort; helpful signal)
     # NOTE: Alembic creates alembic_version by default.
@@ -90,13 +98,17 @@ def ready(request: Request, db: Session = Depends(get_db)) -> ReadyResponse:
     return ReadyResponse(
         status="ready",
         db_ok=True,
-        sqlite_path=str(sqlite_path),
+        sqlite_path=_sqlite_identifier(sqlite_path),
         uptime_seconds=time.monotonic() - _PROCESS_START,
     )
 
 
 @router.get("/info", response_model=InfoResponse)
-def info(request: Request, verbose: bool = False) -> InfoResponse:
+def info(
+    request: Request,
+    verbose: bool = False,
+    _: None = Depends(require_api_key),
+) -> InfoResponse:
     settings = getattr(request.app.state, "settings", None)
     if settings is None:
         raise AppError(ErrorCode.INTERNAL, "Settings not initialized", http_status=500)
@@ -114,8 +126,8 @@ def info(request: Request, verbose: bool = False) -> InfoResponse:
         frozen=frozen,
         python=sys.version.split()[0],
         platform=f"{platform.system()} {platform.release()} ({platform.machine()})",
-        exe_path=exe_path if include_paths else None,
-        app_data_dir=str(settings.app_data_dir) if include_paths else None,
-        sqlite_path=str(settings.sqlite_path) if include_paths else None,
+        exe_path=Path(exe_path).name if include_paths and exe_path else None,
+        app_data_dir="<app-data>" if include_paths else None,
+        sqlite_path=_sqlite_identifier(settings.sqlite_path) if include_paths else None,
         uptime_seconds=time.monotonic() - _PROCESS_START,
     )

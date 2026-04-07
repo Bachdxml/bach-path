@@ -1,7 +1,8 @@
 from __future__ import annotations
+import hashlib
 import json
+import logging
 import subprocess
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +29,7 @@ from app.util.exceptions import AppError, ErrorCode
 
 router = APIRouter(prefix="/inference", tags=["inference"])
 _inference_executor = ThreadPoolExecutor(max_workers=2)
+logger = logging.getLogger(__name__)
 
 
 def _is_deployable_weight(p: Path) -> bool:
@@ -40,9 +42,10 @@ def _is_deployable_weight(p: Path) -> bool:
 def _folder_key_for_slide(original_path: str | None) -> str:
     if not original_path:
         return "uncategorized"
-    p = Path(original_path)
-    parent = p.parent
-    return str(parent) if str(parent) else "uncategorized"
+    parent = Path(original_path).parent
+    normalized = parent.resolve(strict=False).as_posix()
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+    return f"folder_{digest}"
 
 
 def _get_project_root() -> Path:
@@ -80,7 +83,7 @@ def _model_infos() -> list[InferenceModelInfo]:
                 InferenceModelInfo(
                     id=model_id,
                     label=model_id,
-                    path=str(p),
+                    path=model_id,
                     size_bytes=stat.st_size,
                     modified_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
                 )
@@ -121,7 +124,7 @@ def _resolve_model_checkpoint(model_file: str | None) -> tuple[Path, str]:
         except ValueError as e:
             raise AppError(ErrorCode.IO_ERROR, "Invalid model path") from e
         if not candidate.exists() or not candidate.is_file():
-            raise AppError(ErrorCode.IO_ERROR, f"Model not found: {requested}")
+            raise AppError(ErrorCode.IO_ERROR, "Requested model not found")
         return candidate, requested
 
     # 1) Explicit env override keeps highest priority for deployments.
@@ -137,11 +140,11 @@ def _resolve_model_checkpoint(model_file: str | None) -> tuple[Path, str]:
     # 3) First discovered model file.
     if model_infos:
         first = model_infos[0]
-        return Path(first.path), first.id
+        return (_get_models_dir() / first.id.removeprefix("models/")).resolve(), first.id
 
     raise AppError(
         ErrorCode.IO_ERROR,
-        f"No deploy model found. Add .pth.gz or .pt.gz weights to {_get_models_dir()} or set INFERENCE_CHECKPOINT.",
+        "No deploy model found. Add .pth.gz or .pt.gz weights to the models directory or set INFERENCE_CHECKPOINT.",
     )
 
 
@@ -210,10 +213,11 @@ def _run_inference_task(
         )
 
         if result.returncode != 0:
+            logger.warning("Inference subprocess failed for run %s with exit code %s", run_id, result.returncode)
             run.status = InferenceStatus.failed.value
             run.finished_at = datetime.now(timezone.utc)
             run.error_code = "inference_failed"
-            run.error_message = (result.stderr or result.stdout or f"Exit code {result.returncode}")[:2000]
+            run.error_message = "Inference failed. Check server logs for details."
             db.commit()
             return
 
@@ -251,18 +255,20 @@ def _run_inference_task(
 
         db.commit()
     except subprocess.TimeoutExpired:
+        logger.warning("Inference timed out for run %s", run_id)
         run.status = InferenceStatus.failed.value
         run.finished_at = datetime.now(timezone.utc)
         run.error_code = "timeout"
         run.error_message = "Inference timed out after 1 hour"
         db.commit()
-    except Exception as e:
+    except Exception:
+        logger.exception("Unhandled inference task failure for run %s", run_id)
         run = db.get(InferenceRun, run_id)
         if run:
             run.status = InferenceStatus.failed.value
             run.finished_at = datetime.now(timezone.utc)
             run.error_code = "internal"
-            run.error_message = str(e)[:2000]
+            run.error_message = "Inference failed due to an internal error."
             db.commit()
     finally:
         db.close()
@@ -277,7 +283,7 @@ def _queue_inference_run_for_slide(
 ) -> InferenceRun:
     slide_path = Path(slide.stored_path)
     if not slide_path.exists():
-        raise AppError(ErrorCode.STORAGE_INCONSISTENT, f"Slide file missing for slide {slide.id}")
+        raise AppError(ErrorCode.STORAGE_INCONSISTENT, "Slide file missing from managed storage")
 
     checkpoint, model_id = _resolve_model_checkpoint(payload.model_file)
     run = InferenceRun(
@@ -301,11 +307,12 @@ def _queue_inference_run_for_slide(
             checkpoint,
             payload.threshold,
         )
-    except Exception as e:
+    except Exception:
+        logger.exception("Failed to submit inference run %s", run.id)
         run.status = InferenceStatus.failed.value
         run.finished_at = datetime.now(timezone.utc)
         run.error_code = "executor_submit_failed"
-        run.error_message = str(e)[:2000]
+        run.error_message = "Could not start inference task."
         db.commit()
         raise AppError(ErrorCode.IO_ERROR, "Could not start inference task")
     return run
@@ -324,7 +331,7 @@ def run_inference(
 
     script_path = _get_script_path()
     if not script_path.exists():
-        raise AppError(ErrorCode.IO_ERROR, f"Inference script not found: {script_path}")
+        raise AppError(ErrorCode.IO_ERROR, "Inference script is not available on this server")
 
     settings = request.app.state.settings
     settings.inference_runs_dir.mkdir(parents=True, exist_ok=True)
@@ -343,7 +350,7 @@ def run_batch_inference(
 ):
     script_path = _get_script_path()
     if not script_path.exists():
-        raise AppError(ErrorCode.IO_ERROR, f"Inference script not found: {script_path}")
+        raise AppError(ErrorCode.IO_ERROR, "Inference script is not available on this server")
 
     settings = request.app.state.settings
     settings.inference_runs_dir.mkdir(parents=True, exist_ok=True)
@@ -381,7 +388,7 @@ def run_folder_inference(
 ):
     script_path = _get_script_path()
     if not script_path.exists():
-        raise AppError(ErrorCode.IO_ERROR, f"Inference script not found: {script_path}")
+        raise AppError(ErrorCode.IO_ERROR, "Inference script is not available on this server")
 
     settings = request.app.state.settings
     settings.inference_runs_dir.mkdir(parents=True, exist_ok=True)
@@ -470,5 +477,13 @@ def _run_to_response(run: InferenceRun, db: Session | None = None) -> InferenceR
         finished_at=run.finished_at,
         created_at=run.created_at,
         summary=summary,
-        error_message=run.error_message,
+        error_message=_public_error_message(run.error_message),
     )
+
+
+def _public_error_message(message: str | None) -> str | None:
+    if not message:
+        return None
+    if "/" in message or "\\" in message:
+        return "Inference failed. Check server logs for details."
+    return message

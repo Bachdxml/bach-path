@@ -14,7 +14,7 @@ def _project_root() -> Path:
 
 
 class PathEntry(BaseModel):
-    """Repo-relative path (stable across branches) and absolute resolved path on this machine."""
+    """Repo-relative path plus a redacted server-side identifier."""
 
     repo_relative: str
     resolved: str
@@ -37,7 +37,6 @@ class TrainingInfoResponse(BaseModel):
 
 @router.get("/info", response_model=TrainingInfoResponse)
 def training_info() -> TrainingInfoResponse:
-    root = _project_root()
     train_rel = "wsi-fungal-segmentation/scripts/train.py"
     cfg_rel = "wsi-fungal-segmentation/configs/default.yaml"
     export_rel = "wsi-fungal-segmentation/scripts/export_deploy_weights.py"
@@ -45,8 +44,7 @@ def training_info() -> TrainingInfoResponse:
     qp_rel = "wsi-fungal-segmentation/qu-path-scripts/export_tiles.groovy"
 
     def entry(rel: str) -> PathEntry:
-        p = (root / rel).resolve()
-        return PathEntry(repo_relative=rel, resolved=str(p))
+        return PathEntry(repo_relative=rel, resolved=f"<workspace>/{rel}")
 
     notes = [
         "Train in a Python environment with GPU support using the paths above; do not rely on the desktop app to run training.",
@@ -54,7 +52,7 @@ def training_info() -> TrainingInfoResponse:
         "Inference loads deployed gzip checkpoints (.pth.gz / .pt.gz) from models/.",
     ]
     if os.environ.get("INFERENCE_CHECKPOINT"):
-        notes.append(f"INFERENCE_CHECKPOINT is set; inference may ignore models/ ({os.environ['INFERENCE_CHECKPOINT']}).")
+        notes.append("INFERENCE_CHECKPOINT is set; inference may ignore the models directory.")
 
     return TrainingInfoResponse(
         train_script=entry(train_rel),

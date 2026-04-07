@@ -1,8 +1,10 @@
 from __future__ import annotations
-from fastapi import Request
-from sqlalchemy.orm import Session
-from typing import Generator
+import secrets
 import threading
+from typing import Generator
+
+from fastapi import Header, HTTPException, Request, status
+from sqlalchemy.orm import Session
 
 from app.db.session import make_engine, make_session_factory
 
@@ -26,3 +28,23 @@ def get_db(request: Request) -> Generator[Session, None, None]:
         raise
     finally:
         db.close()
+
+
+def require_api_key(
+    request: Request,
+    x_api_key: str | None = Header(default=None, alias="x-api-key"),
+) -> None:
+    settings = getattr(request.app.state, "settings", None)
+    expected = getattr(settings, "api_key", None)
+    if not expected:
+        return
+
+    provided_api_key = x_api_key
+    if provided_api_key is None:
+        provided_api_key = request.query_params.get("api_key")
+
+    if not provided_api_key or not secrets.compare_digest(provided_api_key, expected):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key",
+        )

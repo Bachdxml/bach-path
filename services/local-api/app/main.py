@@ -11,14 +11,40 @@ from app.db.init import init_database
 from fastapi.middleware.cors import CORSMiddleware
 
 
-def _cors_origins() -> list[str]:
-    raw = os.environ.get("APP_CORS_ORIGINS")
+def _csv_env(name: str, default: list[str]) -> list[str]:
+    raw = os.environ.get(name)
     if raw:
         parsed = [v.strip() for v in raw.split(",") if v.strip()]
         if parsed:
             return parsed
-    # Electron desktop (file:// / null origin) + localhost dev defaults.
-    return ["null", "http://127.0.0.1", "http://localhost"]
+    return default
+
+
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _cors_origins() -> list[str]:
+    origins = _csv_env("APP_CORS_ORIGINS", ["http://127.0.0.1", "http://localhost"])
+    if _bool_env("APP_CORS_ALLOW_FILE_ORIGIN", True):
+        for origin in _csv_env("APP_CORS_FILE_ORIGINS", ["null"]):
+            if origin not in origins:
+                origins.append(origin)
+    return origins
+
+
+def _cors_methods() -> list[str]:
+    return _csv_env("APP_CORS_METHODS", ["GET", "POST", "DELETE"])
+
+
+def _cors_headers() -> list[str]:
+    return _csv_env(
+        "APP_CORS_HEADERS",
+        ["Content-Type", "X-API-Key", "X-Request-Id"],
+    )
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -42,8 +68,8 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=_cors_origins(),
         allow_credentials=False,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=_cors_methods(),
+        allow_headers=_cors_headers(),
     )
     return app
 

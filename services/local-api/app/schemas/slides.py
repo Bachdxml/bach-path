@@ -17,11 +17,11 @@ class SlideImportRequest(BaseModel):
 
 class SlideImportResponse(BaseModel):
     slide_id: int
-    stored_path: str
+    stored_path: str = Field(..., description="Managed slide identifier, not an absolute filesystem path")
 
 class SlideListItem(BaseModel):
     id: int
-    original_path: str | None
+    original_path: str | None = Field(default=None, description="Original slide filename only")
     created_at: datetime
     inference_result: Literal["positive", "negative", "unchecked"] = "unchecked"
     folder_label: str = "Uncategorized"

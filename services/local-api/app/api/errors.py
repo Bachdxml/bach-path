@@ -1,9 +1,10 @@
 from __future__ import annotations
 from fastapi import FastAPI, Request
+from fastapi.exceptions import HTTPException
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
-import uuid
 import logging
+import uuid
 
 from app.util.exceptions import AppError, ErrorCode
 
@@ -38,10 +39,30 @@ def register_exception_handlers(app: FastAPI) -> None:
             },
         )
 
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(request: Request, exc: HTTPException):
+        rid = request.headers.get("x-request-id") or str(uuid.uuid4())
+        logger.info(
+            "HTTPException status=%s path=%s rid=%s",
+            exc.status_code,
+            request.url.path,
+            rid,
+        )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error": {
+                    "code": "http_error",
+                    "message": str(exc.detail),
+                    "request_id": rid,
+                }
+            },
+        )
+
     @app.exception_handler(SQLAlchemyError)
     async def db_error_handler(request: Request, exc: SQLAlchemyError):
         rid = request.headers.get("x-request-id") or str(uuid.uuid4())
-        logger.exception("DBError", extra={"rid": rid, "path": str(request.url)})
+        logger.exception("DBError rid=%s path=%s", rid, request.url.path)
         return JSONResponse(
             status_code=500,
             content={"error": {"code": ErrorCode.DB_ERROR, "message": "Database operation failed", "request_id": rid}},
@@ -50,7 +71,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(Exception)
     async def unhandled_handler(request: Request, exc: Exception):
         rid = request.headers.get("x-request-id") or str(uuid.uuid4())
-        logger.exception("UnhandledError", extra={"rid": rid, "path": str(request.url)})
+        logger.exception("UnhandledError rid=%s path=%s", rid, request.url.path)
         return JSONResponse(
             status_code=500,
             content={"error": {"code": ErrorCode.INTERNAL, "message": "Internal error", "request_id": rid}},
