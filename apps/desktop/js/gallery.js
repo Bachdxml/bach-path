@@ -536,7 +536,7 @@ function initGallery() {
   btnGalleryInferFolder?.addEventListener("click", async () => {
     const folderKey = galleryFolderFilter?.value || "all";
     if (folderKey === "all") {
-      window.appToast?.("Choose a folder filter first, then click Infer folder.", "info");
+      window.appToast?.("Choose a folder filter first, then click Infer All in Folder.", "info");
       return;
     }
     const folderSlides = allSlides.filter((s) => (s.folder_key || "uncategorized") === folderKey);
