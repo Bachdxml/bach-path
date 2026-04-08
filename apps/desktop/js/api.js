@@ -43,11 +43,24 @@ function withApiHeaders(headers = {}) {
 }
 
 async function apiFetch(path, options = {}) {
-  const { headers, ...rest } = options;
+  const { headers, signal, ...rest } = options;
   return fetch(`${apiBase}${path}`, {
     ...rest,
+    signal,
     headers: withApiHeaders(headers),
   });
+}
+
+async function apiFetchWithFallback(paths, options = {}) {
+  let lastResponse = null;
+  for (const path of paths) {
+    const res = await apiFetch(path, options);
+    if (res.ok || res.status !== 404) {
+      return res;
+    }
+    lastResponse = res;
+  }
+  return lastResponse;
 }
 
 async function listSlides() {
@@ -62,6 +75,39 @@ async function importSlide(filePath) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ file_path: filePath }),
   });
+  if (!res.ok) throw new Error(await parseErrorResponse(res));
+  return res.json();
+}
+
+async function importCollection(filePaths, title = null, sourceType = null, signal = null) {
+  const payload = {
+    file_paths: filePaths || [],
+  };
+  if (typeof title === "string" && title.trim()) payload.title = title.trim();
+  if (typeof sourceType === "string" && sourceType.trim()) payload.source_type = sourceType.trim();
+  const res = await apiFetchWithFallback(["/slides/import-collection", "/slides/import-collections"], {
+    method: "POST",
+    signal,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await parseErrorResponse(res));
+  return res.json();
+}
+
+async function renameImportCollection(collectionId, title) {
+  const res = await apiFetchWithFallback(
+    [
+      `/import-collections/${collectionId}`,
+      `/slides/import-collections/${collectionId}`,
+      `/slides/import-collection/${collectionId}`,
+    ],
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    }
+  );
   if (!res.ok) throw new Error(await parseErrorResponse(res));
   return res.json();
 }
@@ -178,6 +224,8 @@ window.slidesApi = {
   healthCheck,
   listSlides,
   importSlide,
+  importCollection,
+  renameImportCollection,
   deleteSlide,
   getThumbnailUrl,
   getSlideMetadata,
