@@ -285,6 +285,10 @@ function renderCards() {
     if (collapsed.has(group.key)) wrapper.classList.add("is-collapsed");
     const header = document.createElement("div");
     header.className = "gallery-folder-header";
+
+    const headerActions = document.createElement("div");
+    headerActions.className = "gallery-folder-actions";
+
     const toggleBtn = document.createElement("button");
     toggleBtn.type = "button";
     toggleBtn.className = "gallery-folder-toggle";
@@ -300,7 +304,27 @@ function renderCards() {
       toggleBtn.textContent = `${nowCollapsed ? "▸" : "▾"} ${group.label} (${group.slides.length})`;
       updateCollapseToggleButton(orderedGroups);
     });
-    header.appendChild(toggleBtn);
+    headerActions.appendChild(toggleBtn);
+
+    const folderSelectBtn = document.createElement("button");
+    folderSelectBtn.type = "button";
+    folderSelectBtn.className = "btn btn-secondary btn-sm gallery-folder-select-btn";
+    const selectedInGroup = group.slides.filter((s) => selectedIds.has(s.id)).length;
+    const allSelectedInGroup = selectedInGroup === group.slides.length && group.slides.length > 0;
+    folderSelectBtn.textContent = allSelectedInGroup ? "Deselect all" : "Select all";
+    folderSelectBtn.addEventListener("click", () => {
+      if (!selectionMode) selectionMode = true;
+      const shouldSelectAll = !group.slides.every((s) => selectedIds.has(s.id));
+      for (const slide of group.slides) {
+        if (shouldSelectAll) selectedIds.add(slide.id);
+        else selectedIds.delete(slide.id);
+      }
+      updateSelectionUi();
+      renderCards();
+    });
+    headerActions.appendChild(folderSelectBtn);
+
+    header.appendChild(headerActions);
     const grid = document.createElement("div");
     grid.className = "gallery-grid";
     for (const s of group.slides) {
