@@ -19,6 +19,7 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parents[1]
 API_DIR = ROOT / "services" / "local-api"
 API_VENV_PY = API_DIR / ".venv" / "bin" / "python"
+PHASE1_BOARD = ROOT / "PHASE1_SPRINT_BOARD.md"
 
 
 def run(cmd: list[str], cwd: Path | None = None, env: dict[str, str] | None = None) -> None:
@@ -414,6 +415,46 @@ def import_collision_smoke() -> None:
                 proc.wait(timeout=5)
 
 
+def phase1_board_compliance_check() -> None:
+    if not PHASE1_BOARD.exists():
+        print(f"Skipping Phase 1 board compliance check (local-only file missing): {PHASE1_BOARD}")
+        return
+
+    lines = PHASE1_BOARD.read_text(encoding="utf-8").splitlines()
+    rows = [line for line in lines if line.startswith("| P1-")]
+    if not rows:
+        raise RuntimeError("No Phase 1 ticket rows found in PHASE1_SPRINT_BOARD.md")
+
+    allowed_statuses = {"todo", "in_progress", "blocked", "done"}
+    date_pattern = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+    errors: list[str] = []
+
+    for row in rows:
+        parts = [cell.strip() for cell in row.strip().split("|")[1:-1]]
+        if len(parts) != 11:
+            errors.append(f"Malformed board row (expected 11 columns): {row}")
+            continue
+
+        ticket_id, _title, _stream, _priority, _estimate, status, _owner, _deps, _sprint, done_date, pr_ref = parts
+
+        if status not in allowed_statuses:
+            errors.append(f"{ticket_id}: invalid status '{status}'")
+            continue
+
+        if status == "done":
+            if not done_date or not date_pattern.match(done_date):
+                errors.append(f"{ticket_id}: status=done requires Done Date in YYYY-MM-DD")
+            if not pr_ref:
+                errors.append(f"{ticket_id}: status=done requires PR/Commit reference")
+        else:
+            if done_date:
+                errors.append(f"{ticket_id}: Done Date must be empty unless status=done")
+
+    if errors:
+        joined = "\n".join(f"- {err}" for err in errors)
+        raise RuntimeError(f"Phase 1 board compliance failed:\n{joined}")
+
+
 def main() -> int:
     if not API_VENV_PY.exists():
         print(f"Missing API venv python at {API_VENV_PY}", file=sys.stderr)
@@ -423,6 +464,8 @@ def main() -> int:
     js_syntax_checks()
     print("== QA Smoke: Python compile ==")
     python_compile_checks()
+    print("== QA Smoke: Phase 1 board compliance ==")
+    phase1_board_compliance_check()
     print("== QA Smoke: Bulk import collision scenario ==")
     import_collision_smoke()
     print("All QA smoke checks passed.")

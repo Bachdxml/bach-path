@@ -5,6 +5,8 @@ const folderBtn = document.getElementById("btn-select-folder");
 const cancelBtn = document.getElementById("btn-cancel-import");
 const importStatus = document.getElementById("import-status");
 const importProgress = document.getElementById("import-progress");
+const importApp = window.BachPath || null;
+const importSlidesApi = importApp?.services?.slidesApi || window.slidesApi;
 
 const WSI_EXTENSIONS = [".svs", ".tif", ".tiff", ".png"];
 
@@ -105,7 +107,7 @@ async function importPaths(paths, sourceType) {
   const collectionTitle = getCollectionTitle();
   setProgress(filePaths.length, filePaths.length);
   try {
-    const result = await window.slidesApi.importCollection(
+    const result = await importSlidesApi.importCollection(
       filePaths,
       collectionTitle,
       sourceType,
@@ -136,9 +138,8 @@ async function importPaths(paths, sourceType) {
     setImporting(false);
     importAbortController = null;
   }
-  if (typeof window.galleryRefresh === "function") {
-    window.galleryRefresh();
-  }
+  const refreshGallery = importApp?.features?.gallery?.refresh || window.galleryRefresh;
+  if (typeof refreshGallery === "function") refreshGallery();
 }
 
 function initImport() {
@@ -196,4 +197,10 @@ if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", initImport);
 } else {
   initImport();
+}
+
+if (importApp?.registerFeature) {
+  importApp.registerFeature("import", {
+    importPaths,
+  });
 }

@@ -11,6 +11,8 @@ const btnGallerySelect = document.getElementById("btn-gallery-select");
 const btnGalleryInferSelected = document.getElementById("btn-gallery-infer-selected");
 const btnGalleryInferFolder = document.getElementById("btn-gallery-infer-folder");
 const btnGalleryDeleteSelected = document.getElementById("btn-gallery-delete-selected");
+const galleryApp = window.BachPath || null;
+const gallerySlidesApi = galleryApp?.services?.slidesApi || window.slidesApi;
 
 const FAV_KEY = "galleryFavoriteIds";
 const FOLDER_COLLAPSE_KEY = "galleryCollapsedFolders";
@@ -279,7 +281,7 @@ function createSlideCard(s, fav) {
 
   const thumb = document.createElement("img");
   thumb.className = "gallery-card-thumb";
-  thumb.src = window.slidesApi.getThumbnailUrl(s.id);
+  thumb.src = gallerySlidesApi.getThumbnailUrl(s.id);
   thumb.alt = filenameFromPath(s.original_path);
   thumb.loading = "lazy";
   thumb.onerror = () => {
@@ -318,7 +320,8 @@ function createSlideCard(s, fav) {
       updateSelectionUi();
       return;
     }
-    window.showViewer(s.id);
+    const openViewer = galleryApp?.features?.viewer?.open || window.showViewer;
+    if (typeof openViewer === "function") openViewer(s.id);
   });
 
   return card;
@@ -460,7 +463,7 @@ function startInferencePolling() {
     let completedNow = 0;
     for (const runId of ids) {
       try {
-        const run = await window.slidesApi.getInferenceRun(runId);
+        const run = await gallerySlidesApi.getInferenceRun(runId);
         if (run.status === "succeeded" || run.status === "failed") {
           pendingInferenceRunIds.delete(runId);
           completedNow++;
@@ -469,8 +472,8 @@ function startInferencePolling() {
         // Keep polling while API is transiently unavailable.
       }
     }
-    if (completedNow > 0 && typeof window.galleryRefresh === "function") {
-      window.galleryRefresh();
+    if (completedNow > 0) {
+      loadGallery();
     }
     if (pendingInferenceRunIds.size === 0) {
       clearInterval(inferencePollTimer);
@@ -484,16 +487,14 @@ function trackInferenceRuns(runIds) {
   for (const id of runIds || []) {
     if (Number.isFinite(id)) pendingInferenceRunIds.add(id);
   }
-  if (typeof window.galleryRefresh === "function") {
-    window.galleryRefresh();
-  }
+  loadGallery();
   startInferencePolling();
 }
 
 async function deleteOneSlide(id) {
   if (!confirm("Delete this slide from the library? This cannot be undone.")) return;
   try {
-    await window.slidesApi.deleteSlide(id);
+    await gallerySlidesApi.deleteSlide(id);
     selectedIds.delete(id);
     updateSelectionUi();
     const fav = getFavorites();
@@ -524,7 +525,7 @@ async function renameCollectionGroup(group) {
   }
   if (trimmed === currentTitle) return;
   try {
-    await window.slidesApi.renameImportCollection(group.collectionId, trimmed);
+    await gallerySlidesApi.renameImportCollection(group.collectionId, trimmed);
     window.appToast?.("Collection renamed.", "success", 2500);
     await loadGalleryData();
   } catch (err) {
@@ -539,7 +540,7 @@ async function deleteSelectedSlides() {
   let ok = 0;
   for (const id of ids) {
     try {
-      await window.slidesApi.deleteSlide(id);
+      await gallerySlidesApi.deleteSlide(id);
       ok++;
       const fav = getFavorites();
       fav.delete(id);
@@ -563,7 +564,7 @@ async function loadGalleryData() {
   galleryEmpty.style.display = "none";
   showSkeletons();
   try {
-    const data = await window.slidesApi.listSlides();
+    const data = await gallerySlidesApi.listSlides();
     if (requestId !== galleryLoadSeq) return;
     allSlides = data.slides || [];
     const validIds = new Set(allSlides.map((s) => s.id));
@@ -589,6 +590,13 @@ function loadGallery() {
 window.galleryRefresh = loadGallery;
 window.galleryGetOrderedSlideIds = () => getOrderedSlides().map((s) => s.id);
 window.galleryTrackInferenceRuns = trackInferenceRuns;
+if (galleryApp?.registerFeature) {
+  galleryApp.registerFeature("gallery", {
+    refresh: loadGallery,
+    getOrderedSlideIds: () => getOrderedSlides().map((s) => s.id),
+    trackInferenceRuns,
+  });
+}
 
 function initGallery() {
   btnGalleryRefresh?.addEventListener("click", () => loadGalleryData());
@@ -625,7 +633,7 @@ function initGallery() {
     const threshold = getPreferredThreshold(modelId);
     btnGalleryInferSelected.disabled = true;
     try {
-      const res = await window.slidesApi.runBatchInference(slideIds, modelId, threshold);
+      const res = await gallerySlidesApi.runBatchInference(slideIds, modelId, threshold);
       trackInferenceRuns(res?.run_ids || []);
       window.appToast?.(`Queued inference for ${slideIds.length} slide(s).`, "success", 3500);
     } catch (err) {
@@ -654,7 +662,7 @@ function initGallery() {
     const threshold = getPreferredThreshold(modelId);
     btnGalleryInferFolder.disabled = true;
     try {
-      const res = await window.slidesApi.runFolderInference(folderKey, modelId, threshold);
+      const res = await gallerySlidesApi.runFolderInference(folderKey, modelId, threshold);
       trackInferenceRuns(res?.run_ids || []);
       window.appToast?.(
         `Queued folder inference for ${folderSlides.length} slide(s).`,

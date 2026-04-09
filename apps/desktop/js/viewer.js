@@ -22,6 +22,10 @@ const btnViewerSlideInfo = document.getElementById("btn-viewer-slide-info");
 const btnViewerMetadataClose = document.getElementById("btn-viewer-metadata-close");
 const btnViewerExportView = document.getElementById("viewer-export-view");
 const btnViewerExportRegions = document.getElementById("viewer-export-regions");
+const viewerApp = window.BachPath || null;
+const viewerSlidesApi = viewerApp?.services?.slidesApi || window.slidesApi;
+const viewerInferenceModelChangedEvent =
+  viewerApp?.constants?.events?.inferenceModelChanged || "inference-model-changed";
 
 if (viewerShowNegative) {
   viewerShowNegative.checked = false;
@@ -56,9 +60,9 @@ function saveThresholdMap(map) {
 }
 
 function getSelectedModelId() {
-  return typeof window.getSelectedInferenceModel === "function"
-    ? window.getSelectedInferenceModel()
-    : null;
+  const getModelFromShell =
+    viewerApp?.features?.shell?.getSelectedInferenceModel || window.getSelectedInferenceModel;
+  return typeof getModelFromShell === "function" ? getModelFromShell() : null;
 }
 
 function getCurrentThreshold() {
@@ -85,10 +89,12 @@ function isViewerOpen() {
 }
 
 function getViewerSlideOrder() {
-  if (typeof window.galleryGetOrderedSlideIds !== "function") {
+  const getOrderedIds =
+    viewerApp?.features?.gallery?.getOrderedSlideIds || window.galleryGetOrderedSlideIds;
+  if (typeof getOrderedIds !== "function") {
     return currentSlideId ? [currentSlideId] : [];
   }
-  const ids = window.galleryGetOrderedSlideIds().filter((id) => Number.isFinite(id));
+  const ids = getOrderedIds().filter((id) => Number.isFinite(id));
   if (currentSlideId && !ids.includes(currentSlideId)) {
     ids.unshift(currentSlideId);
   }
@@ -350,7 +356,7 @@ async function populateRunSelector(slideId, requestId = null) {
   viewerRunSelect.innerHTML = "";
   viewerRunSelect.disabled = true;
   try {
-    const { runs } = await window.slidesApi.getSlideInferenceRuns(slideId);
+    const { runs } = await viewerSlidesApi.getSlideInferenceRuns(slideId);
     if (
       (requestId != null && requestId !== viewerRequestSeq) ||
       currentSlideId !== slideId
@@ -394,7 +400,7 @@ async function populateRunSelector(slideId, requestId = null) {
 async function loadRegionsForRun(runId, slideId = currentSlideId, requestId = viewerRequestSeq) {
   if (!runId) return;
   try {
-    const { regions } = await window.slidesApi.getInferenceRegions(runId);
+    const { regions } = await viewerSlidesApi.getInferenceRegions(runId);
     if (requestId !== viewerRequestSeq || currentSlideId !== slideId) return;
     lastRegions = regions || [];
     const hasPositive = lastRegions.some(
@@ -485,7 +491,7 @@ function createDeepZoomTileSource(slideId, descriptor) {
       );
     },
     getTileUrl: (level, x, y) =>
-      window.slidesApi.getDeepZoomTileUrl(slideId, level, x, y, format),
+      viewerSlidesApi.getDeepZoomTileUrl(slideId, level, x, y, format),
   };
 }
 
@@ -507,7 +513,7 @@ async function showViewer(slideId) {
 
   let meta = null;
   try {
-    meta = await window.slidesApi.getSlideMetadata(slideId);
+    meta = await viewerSlidesApi.getSlideMetadata(slideId);
     if (requestId !== viewerRequestSeq || currentSlideId !== slideId) return;
     applyMppFromMeta(meta);
     renderMetadataPanel(meta);
@@ -524,7 +530,7 @@ async function showViewer(slideId) {
   }
 
   try {
-    const dziUrl = window.slidesApi.getDeepZoomDziUrl(slideId);
+    const dziUrl = viewerSlidesApi.getDeepZoomDziUrl(slideId);
     let tileSource = null;
 
     try {
@@ -539,7 +545,7 @@ async function showViewer(slideId) {
 
     if (!tileSource) {
       if (!meta) {
-        meta = await window.slidesApi.getSlideMetadata(slideId);
+        meta = await viewerSlidesApi.getSlideMetadata(slideId);
         if (requestId !== viewerRequestSeq || currentSlideId !== slideId) return;
         applyMppFromMeta(meta);
         renderMetadataPanel(meta);
@@ -572,7 +578,7 @@ async function showViewer(slideId) {
           );
         },
         getTileUrl: (level, x, y) =>
-          window.slidesApi.getTileUrl(slideId, osdToOpenSlideLevel(level), x, y),
+          viewerSlidesApi.getTileUrl(slideId, osdToOpenSlideLevel(level), x, y),
       };
     }
 
@@ -659,7 +665,7 @@ viewerInferenceThreshold?.addEventListener("change", () => {
   saveThresholdMap(map);
 });
 
-window.addEventListener("inference-model-changed", (e) => {
+window.addEventListener(viewerInferenceModelChangedEvent, (e) => {
   const modelId = e?.detail?.modelId || getSelectedModelId();
   loadThresholdForModel(modelId);
 });
@@ -718,19 +724,19 @@ async function handleRunInference() {
   const runSlideId = currentSlideId;
   const pollToken = ++activeInferencePollToken;
   runInferenceBtn.disabled = true;
-  const selectedModel =
-    typeof window.getSelectedInferenceModel === "function"
-      ? window.getSelectedInferenceModel()
-      : null;
+  const selectedModel = getSelectedModelId();
   const threshold = getCurrentThreshold();
   setInferenceStatus(selectedModel ? `Starting... (${selectedModel})` : "Starting...");
 
   try {
-    const run = await window.slidesApi.runInference(currentSlideId, selectedModel, threshold);
-    if (typeof window.galleryTrackInferenceRuns === "function") {
-      window.galleryTrackInferenceRuns([run.id]);
-    } else if (typeof window.galleryRefresh === "function") {
-      window.galleryRefresh();
+    const run = await viewerSlidesApi.runInference(currentSlideId, selectedModel, threshold);
+    const trackInferenceRuns =
+      viewerApp?.features?.gallery?.trackInferenceRuns || window.galleryTrackInferenceRuns;
+    const refreshGallery = viewerApp?.features?.gallery?.refresh || window.galleryRefresh;
+    if (typeof trackInferenceRuns === "function") {
+      trackInferenceRuns([run.id]);
+    } else if (typeof refreshGallery === "function") {
+      refreshGallery();
     }
     setInferenceStatus("Running...");
 
@@ -739,7 +745,7 @@ async function handleRunInference() {
         runInferenceBtn.disabled = false;
         return;
       }
-      const r = await window.slidesApi.getInferenceRun(run.id);
+      const r = await viewerSlidesApi.getInferenceRun(run.id);
       if (pollToken !== activeInferencePollToken || runSlideId !== currentSlideId) {
         runInferenceBtn.disabled = false;
         return;
@@ -747,8 +753,9 @@ async function handleRunInference() {
       if (r.status === "succeeded") {
         setInferenceStatus(`Done: ${r.summary?.fungus_positive ?? 0} positive`);
         runInferenceBtn.disabled = false;
-        if (typeof window.galleryRefresh === "function") {
-          window.galleryRefresh();
+        const refreshGallery = viewerApp?.features?.gallery?.refresh || window.galleryRefresh;
+        if (typeof refreshGallery === "function") {
+          refreshGallery();
         }
         await populateRunSelector(runSlideId, viewerRequestSeq);
         return;
@@ -770,6 +777,12 @@ async function handleRunInference() {
 }
 
 window.showViewer = showViewer;
+if (viewerApp?.registerFeature) {
+  viewerApp.registerFeature("viewer", {
+    open: showViewer,
+    close: closeViewer,
+  });
+}
 
 if (viewerBack) {
   viewerBack.addEventListener("click", () => {

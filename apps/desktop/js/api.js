@@ -217,7 +217,7 @@ async function deleteSlide(slideId) {
   return res.json();
 }
 
-window.slidesApi = {
+const slidesApi = {
   setApiBase,
   setApiKey,
   getApiBase,
@@ -241,3 +241,10 @@ window.slidesApi = {
   listInferenceModels,
   getTrainingInfo,
 };
+
+if (window.BachPath?.registerService) {
+  window.BachPath.registerService("slidesApi", slidesApi);
+}
+
+// Backward-compatible alias used by existing feature modules.
+window.slidesApi = slidesApi;

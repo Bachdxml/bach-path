@@ -113,3 +113,9 @@ python3 scripts/qa_smoke.py
 ```
 
 This validates syntax/compile checks and a bulk import collision scenario.
+It also validates Phase 1 board compliance for completed tickets when the local board file is present.
+
+## Delivery Tracking
+
+- Phase 1 execution board (local-only, gitignored): `PHASE1_SPRINT_BOARD.md`
+- Rule: whenever a task is completed, update the board in the same PR (status, date, and PR/commit reference).
