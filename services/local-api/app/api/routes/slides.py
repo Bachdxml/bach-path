@@ -412,6 +412,7 @@ def get_import_collection(
 
 
 @collections_router.patch("/import-collections/{collection_id}", response_model=ImportCollectionResponse)
+@collections_router.post("/import-collections/{collection_id}/rename", response_model=ImportCollectionResponse)
 def rename_import_collection(
     collection_id: int,
     payload: ImportCollectionRenameRequest,

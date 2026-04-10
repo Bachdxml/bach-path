@@ -2,6 +2,10 @@
 checkpoints/
 *.pth
 
+# Deployed gzip weights (large; export locally; never push to GitHub)
+models/*.pth.gz
+models/*.pt.gz
+
 # Data
 exports_ml/
 dataset_index.json

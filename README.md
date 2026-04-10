@@ -54,8 +54,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 python scripts/train.py --config configs/default.yaml
-python scripts/export_deploy_weights.py --checkpoint checkpoints/best_model.pth --output checkpoints/deploy.pth.gz
-cp checkpoints/deploy.pth.gz models/deploy.pth.gz
+python scripts/export_deploy_weights.py --checkpoint checkpoints/best_model.pth --output models/deploy-fungus.pth.gz
 ```
 
 Notes:

@@ -52,7 +52,7 @@ def _is_tensor_state_dict(candidate: Mapping) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Export compressed deploy weights for Bach Path")
     parser.add_argument("--checkpoint", required=True, help="Full training checkpoint (.pth)")
-    parser.add_argument("--output", required=True, help="Output path, e.g. models/deploy.pth.gz")
+    parser.add_argument("--output", required=True, help="Output path, e.g. models/deploy-fungus.pth.gz")
     args = parser.parse_args()
 
     src = Path(args.checkpoint).resolve()

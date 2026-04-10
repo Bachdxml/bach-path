@@ -216,7 +216,10 @@
             <div class="page-header">
               <h1 class="page-title">Models</h1>
               <p class="page-subtitle">
-                Train outside this app; deploy a gzip-compressed inference checkpoint into the models folder.
+                Train outside this app, then export with
+                <code>export_deploy_weights.py</code> using required
+                <code>--checkpoint</code> and <code>--output</code> paths; place the gzip file in
+                <code>wsi-fungal-segmentation/models/</code>.
               </p>
             </div>
             <div class="page-body">
@@ -230,20 +233,25 @@
                     <code>qu-path-scripts/</code> when building datasets.
                   </p>
                   <p class="training-hint">
-                    Run these exact commands in Terminal to train and generate a deployable model file:
+                    After training, export is a separate step: the script only accepts
+                    <code>--checkpoint</code> (full training <code>.pth</code> with
+                    <code>model_state_dict</code>) and <code>--output</code> (path for the gzip deploy file).
+                    Example from <code>wsi-fungal-segmentation</code>:
                   </p>
                   <div class="console-wrap" style="margin-top: 10px">
                     <div class="console-header">Terminal commands (from repository root)</div>
                     <pre class="training-log-output">cd wsi-fungal-segmentation
 pip install -r requirements.txt
 python scripts/train.py --config configs/default.yaml
-python scripts/export_deploy_weights.py --checkpoint checkpoints/best_model.pth --output checkpoints/deploy.pth.gz
-cp checkpoints/deploy.pth.gz models/deploy.pth.gz</pre>
+python scripts/export_deploy_weights.py \
+  --checkpoint checkpoints/best_model.pth \
+  --output models/deploy-fungus.pth.gz</pre>
                   </div>
                   <p class="training-hint">
-                    Copy <code>deploy.pth.gz</code> (or any <code>.pth.gz</code> / <code>.pt.gz</code>) into
-                    <code>wsi-fungal-segmentation/models</code> next to the application, then refresh the list
-                    below.
+                    Adjust <code>--checkpoint</code> to your saved weights. You can also write
+                    <code>--output</code> elsewhere and copy the <code>.pth.gz</code> (or
+                    <code>.pt.gz</code>) into <code>wsi-fungal-segmentation/models</code> next to the app, then
+                    refresh the list below.
                   </p>
                   <div class="form-group">
                     <label for="inference-model-select">Inference model</label>
