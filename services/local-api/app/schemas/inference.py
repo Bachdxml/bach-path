@@ -2,7 +2,6 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 from datetime import datetime
 
-
 class InferenceRunCreate(BaseModel):
     model_name: str = "ResidualAttentionUNet"
     model_version: str = "1.0"
@@ -63,3 +62,20 @@ class InferenceModelListResponse(BaseModel):
 class InferenceBatchRunResponse(BaseModel):
     run_ids: list[int]
     slide_ids: list[int]
+
+
+class InferenceRunLifecycleEventResponse(BaseModel):
+    id: int
+    run_id: int
+    from_status: str | None = None
+    to_status: str
+    changed_at: datetime
+    detail: str | None = None
+    error: str | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class InferenceRunLifecycleEventListResponse(BaseModel):
+    events: list[InferenceRunLifecycleEventResponse]

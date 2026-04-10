@@ -15,6 +15,7 @@ from app.models import (
     audit_log,
     enums,
     inference_run,
+    inference_run_event,
     import_collection,
     region,
     slide,

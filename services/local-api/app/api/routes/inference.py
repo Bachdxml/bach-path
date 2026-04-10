@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db
 from app.models.slide import Slide
 from app.models.inference_run import InferenceRun
+from app.models.inference_run_event import InferenceRunEvent
 from app.models.region import Region
 from app.models.enums import InferenceStatus
 from app.queue import InMemoryQueue, JobRecord, QueueInterface
@@ -23,6 +24,8 @@ from app.schemas.inference import (
     InferenceFolderRunCreate,
     InferenceBatchRunResponse,
     InferenceRunResponse,
+    InferenceRunLifecycleEventListResponse,
+    InferenceRunLifecycleEventResponse,
     RegionResponse,
     InferenceModelInfo,
     InferenceModelListResponse,
@@ -188,6 +191,41 @@ def _resolve_managed_slide_path(slide: Slide, settings) -> Path:
     return path
 
 
+def _record_inference_run_transition(
+    db: Session,
+    run: InferenceRun,
+    status: InferenceStatus | str,
+    *,
+    changed_at: datetime | None = None,
+    detail: str | None = None,
+    error: str | None = None,
+) -> datetime:
+    transition_at = changed_at or datetime.now(timezone.utc)
+    status_value = status.value if isinstance(status, InferenceStatus) else str(status)
+    supported = {s.value for s in InferenceStatus}
+    if status_value not in supported:
+        raise ValueError(f"Unsupported inference status transition: {status_value}")
+    previous_status = run.status
+
+    run.status = status_value
+    if status_value == InferenceStatus.running.value:
+        run.started_at = transition_at
+    elif status_value in {InferenceStatus.succeeded.value, InferenceStatus.failed.value, InferenceStatus.canceled.value}:
+        run.finished_at = transition_at
+
+    db.add(
+        InferenceRunEvent(
+            run_id=run.id,
+            from_status=previous_status,
+            to_status=status_value,
+            changed_at=transition_at,
+            detail=detail,
+            error=error,
+        )
+    )
+    return transition_at
+
+
 def _run_inference_task(
     run_id: int,
     slide_path: str,
@@ -256,8 +294,7 @@ def _process_inference_job(
         if not run:
             _inference_queue.cancel(job.id)
             return
-        run.status = InferenceStatus.running.value
-        run.started_at = datetime.now(timezone.utc)
+        _record_inference_run_transition(db, run, InferenceStatus.running)
         db.commit()
 
         script_path = _get_script_path()
@@ -284,27 +321,42 @@ def _process_inference_job(
 
         if result.returncode != 0:
             logger.warning("Inference subprocess failed for run %s with exit code %s", run_id, result.returncode)
-            run.status = InferenceStatus.failed.value
-            run.finished_at = datetime.now(timezone.utc)
             run.error_code = "inference_failed"
             run.error_message = "Inference failed. Check server logs for details."
+            _record_inference_run_transition(
+                db,
+                run,
+                InferenceStatus.failed,
+                detail="Inference subprocess returned non-zero exit code",
+                error="inference_failed",
+            )
             db.commit()
             _inference_queue.fail(job.id, "inference_failed")
             return
 
         if not output_path.exists():
-            run.status = InferenceStatus.failed.value
-            run.finished_at = datetime.now(timezone.utc)
             run.error_code = "missing_output"
             run.error_message = "Inference did not produce output."
+            _record_inference_run_transition(
+                db,
+                run,
+                InferenceStatus.failed,
+                detail="Inference subprocess did not create output JSON",
+                error="missing_output",
+            )
             db.commit()
             _inference_queue.fail(job.id, "missing_output")
             return
         if output_path.stat().st_size > settings.max_inference_output_bytes:
-            run.status = InferenceStatus.failed.value
-            run.finished_at = datetime.now(timezone.utc)
             run.error_code = "output_too_large"
             run.error_message = "Inference output exceeded server limits."
+            _record_inference_run_transition(
+                db,
+                run,
+                InferenceStatus.failed,
+                detail="Output JSON exceeded configured size limit",
+                error="output_too_large",
+            )
             db.commit()
             _inference_queue.fail(job.id, "output_too_large")
             return
@@ -344,28 +396,37 @@ def _process_inference_job(
             db.add(region)
 
         run.output_json_path = str(output_path)
-        run.status = InferenceStatus.succeeded.value
-        run.finished_at = datetime.now(timezone.utc)
+        _record_inference_run_transition(db, run, InferenceStatus.succeeded)
         db.commit()
         _inference_queue.ack(job.id)
     except subprocess.TimeoutExpired:
         logger.warning("Inference timed out for run %s", run_id)
         run = run or db.get(InferenceRun, run_id)
         if run:
-            run.status = InferenceStatus.failed.value
-            run.finished_at = datetime.now(timezone.utc)
             run.error_code = "timeout"
             run.error_message = "Inference timed out after 1 hour"
+            _record_inference_run_transition(
+                db,
+                run,
+                InferenceStatus.failed,
+                detail="Inference subprocess timed out",
+                error="timeout",
+            )
             db.commit()
         _inference_queue.fail(job.id, "timeout")
     except Exception:
         logger.exception("Unhandled inference task failure for run %s", run_id)
         run = run or db.get(InferenceRun, run_id)
         if run:
-            run.status = InferenceStatus.failed.value
-            run.finished_at = datetime.now(timezone.utc)
             run.error_code = "internal"
             run.error_message = "Inference failed due to an internal error."
+            _record_inference_run_transition(
+                db,
+                run,
+                InferenceStatus.failed,
+                detail="Unhandled exception while processing inference job",
+                error="internal",
+            )
             db.commit()
         _inference_queue.fail(job.id, "internal")
     finally:
@@ -390,6 +451,8 @@ def _queue_inference_run_for_slide(
         requested_by_user_id=None,
     )
     db.add(run)
+    db.flush()
+    _record_inference_run_transition(db, run, InferenceStatus.queued)
     db.commit()
     db.refresh(run)
 
@@ -417,10 +480,15 @@ def _queue_inference_run_for_slide(
         logger.exception("Failed to submit inference run %s", run.id)
         if job is not None:
             _inference_queue.cancel(job.id)
-        run.status = InferenceStatus.failed.value
-        run.finished_at = datetime.now(timezone.utc)
         run.error_code = "executor_submit_failed"
         run.error_message = "Could not start inference task."
+        _record_inference_run_transition(
+            db,
+            run,
+            InferenceStatus.failed,
+            detail="ThreadPool executor rejected inference submission",
+            error="executor_submit_failed",
+        )
         db.commit()
         raise AppError(ErrorCode.IO_ERROR, "Could not start inference task")
     return run
@@ -572,6 +640,34 @@ def get_inference_regions(run_id: int, db: Session = Depends(get_db)):
         raise AppError(ErrorCode.NOT_FOUND, f"Inference run {run_id} not found")
     regions = db.query(Region).filter(Region.inference_run_id == run_id).all()
     return {"regions": [RegionResponse.model_validate(r) for r in regions]}
+
+
+@router.get("/runs/{run_id}/lifecycle-events", response_model=InferenceRunLifecycleEventListResponse)
+def get_inference_run_lifecycle_events(run_id: int, db: Session = Depends(get_db)):
+    run = db.get(InferenceRun, run_id)
+    if not run:
+        raise AppError(ErrorCode.NOT_FOUND, f"Inference run {run_id} not found")
+
+    events = (
+        db.query(InferenceRunEvent)
+        .filter(InferenceRunEvent.run_id == run_id)
+        .order_by(InferenceRunEvent.changed_at.asc(), InferenceRunEvent.id.asc())
+        .all()
+    )
+    return InferenceRunLifecycleEventListResponse(
+        events=[
+            InferenceRunLifecycleEventResponse(
+                id=event.id,
+                run_id=event.run_id,
+                from_status=event.from_status,
+                to_status=event.to_status,
+                changed_at=event.changed_at,
+                detail=event.detail,
+                error=event.error,
+            )
+            for event in events
+        ]
+    )
 
 
 @router.get("/slides/{slide_id}/runs")
