@@ -13,7 +13,7 @@ The app includes an Electron desktop UI (`apps/desktop`) and a local FastAPI bac
 - `apps/desktop`: Electron desktop application
 - `services/local-api`: Local FastAPI service used by the desktop app
 - `wsi-fungal-segmentation`: Training and inference model code
-- `MASTERTILE`: Example/exported tile data used for training workflows
+- `training_data`: Gitignored dropzone for training datasets (recommended: `training_data/MASTERTILE`)
 
 ## Prerequisites
 
@@ -59,6 +59,7 @@ python scripts/export_deploy_weights.py --checkpoint checkpoints/best_model.pth 
 
 Notes:
 
+- Default training data root is `training_data/MASTERTILE` (from repo root), so place exported tiles there.
 - The desktop app/API loads deployable model files from `wsi-fungal-segmentation/models`.
 - Supported deploy weight suffixes: `.pth.gz` and `.pt.gz`.
 - You can keep multiple models in `wsi-fungal-segmentation/models` and select them in the UI.

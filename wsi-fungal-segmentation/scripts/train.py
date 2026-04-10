@@ -93,6 +93,39 @@ def _set_nested(cfg: dict, path: str, value) -> None:
     cur[keys[-1]] = value
 
 
+def _resolve_export_root(export_root_value: str | None) -> Path:
+    """
+    Resolve training export root with sensible defaults for this repo.
+
+    Priority:
+    1) Explicit config/CLI value
+    2) ../training_data/MASTERTILE
+    3) ../training_data
+    4) ../MASTERTILE (legacy layout)
+    """
+    if export_root_value and str(export_root_value).strip():
+        configured = Path(str(export_root_value)).expanduser()
+        if not configured.is_absolute():
+            configured = (_PROJECT_ROOT / configured).resolve()
+        return configured
+
+    candidates = [
+        (_PROJECT_ROOT.parent / "training_data" / "MASTERTILE").resolve(),
+        (_PROJECT_ROOT.parent / "training_data").resolve(),
+        (_PROJECT_ROOT.parent / "MASTERTILE").resolve(),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    checked = ", ".join(str(c) for c in candidates)
+    raise FileNotFoundError(
+        "Could not auto-detect training export root. "
+        f"Checked: {checked}. "
+        "Place your dataset under training_data/ (recommended: training_data/MASTERTILE) "
+        "or pass --export-root."
+    )
+
+
 def apply_training_profile(cfg: dict, profile: str = "auto") -> str:
     has_cuda = torch.cuda.is_available()
     has_mps = bool(getattr(torch.backends, "mps", None)) and torch.backends.mps.is_available()
@@ -341,10 +374,11 @@ def main_with_args(cfg_path: str = "configs/default.yaml",
 def _run_training(cfg: dict, progress_file: str | None = None):
     """Run training with config dict. Optionally write progress to JSON file."""
     # ---- Data ----
-    export_root = Path(cfg["data"]["export_root"])
+    export_root = _resolve_export_root(cfg["data"].get("export_root"))
     if not export_root.exists():
         raise FileNotFoundError(f"Export root not found: {export_root}")
     flat_format = cfg["data"].get("flat_format", False)
+    log(f"Dataset root: {export_root}")
 
     index = WSIDatasetIndex(
         export_root,
