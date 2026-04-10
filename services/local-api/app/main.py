@@ -48,7 +48,10 @@ def _cors_headers() -> list[str]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    settings: Settings = load_settings()
+    try:
+        settings: Settings = load_settings()
+    except RuntimeError as exc:
+        raise RuntimeError(f"API startup failed during settings validation: {exc}") from exc
     app.state.settings = settings
 
     configure_logging(settings.log_dir, settings.log_level)

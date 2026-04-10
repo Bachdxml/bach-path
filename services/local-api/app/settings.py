@@ -1,9 +1,17 @@
 from __future__ import annotations
 import os
+from enum import Enum
 from pathlib import Path
 from pydantic import BaseModel
 
+class DeploymentMode(str, Enum):
+    LOCAL = "local"
+    HYBRID = "hybrid"
+    CLOUD = "cloud"
+
+
 class Settings(BaseModel):
+    deployment_mode: DeploymentMode
     app_data_dir: Path
     log_dir: Path
     log_level: str
@@ -14,9 +22,38 @@ class Settings(BaseModel):
     sqlite_path: Path
     api_key: str | None = None
     allow_query_api_key: bool = False
+    remote_api_base_url: str | None = None
+    remote_auth_provider_url: str | None = None
+    remote_storage_url: str | None = None
     import_allowed_roots: tuple[Path, ...] = ()
     max_batch_inference_items: int = 64
     max_inference_output_bytes: int = 5_000_000
+
+
+def _parse_deployment_mode(raw: str | None) -> DeploymentMode:
+    value = (raw or "").strip().lower() or DeploymentMode.LOCAL.value
+    for mode in DeploymentMode:
+        if mode.value == value:
+            return mode
+
+    allowed = ", ".join(mode.value for mode in DeploymentMode)
+    raise RuntimeError(
+        f"Invalid APP_DEPLOYMENT_MODE={raw!r}. Expected one of: {allowed}."
+    )
+
+
+def _normalize_filesystem_path(raw: str, *, env_name: str) -> Path:
+    value = raw.strip()
+    if not value:
+        raise RuntimeError(f"{env_name} is empty")
+    if "://" in value:
+        raise RuntimeError(f"{env_name} must be a filesystem path, not a URL")
+    return Path(value).expanduser().resolve()
+
+
+def _optional_env(name: str) -> str | None:
+    value = (os.environ.get(name) or "").strip()
+    return value or None
 
 
 def _parse_allowed_roots(raw: str | None) -> tuple[Path, ...]:
@@ -49,29 +86,85 @@ def _parse_positive_int(raw: str | None, *, default: int) -> int:
         raise RuntimeError("Expected positive integer value")
     return parsed
 
-def load_settings() -> Settings:
-    # Required for your CLI/launcher: set APP_DATA_DIR before starting local-api.exe
-    data_dir = os.environ.get("APP_DATA_DIR")
-    if not data_dir:
-        raise RuntimeError("APP_DATA_DIR is not set")
 
-    app_data_dir = Path(data_dir).resolve()
+def _validate_profile_settings(
+    *,
+    deployment_mode: DeploymentMode,
+    app_data_dir: Path,
+    log_dir: Path,
+    api_key: str | None,
+    allow_query_api_key: bool,
+    remote_api_base_url: str | None,
+    remote_auth_provider_url: str | None,
+    remote_storage_url: str | None,
+) -> None:
+    errors: list[str] = []
+
+    if deployment_mode is DeploymentMode.LOCAL:
+        # Local mode keeps the current single-workstation storage model.
+        if not app_data_dir.is_absolute():
+            errors.append("APP_DATA_DIR must resolve to an absolute filesystem path")
+        if not log_dir.is_absolute():
+            errors.append("APP_LOG_DIR must resolve to an absolute filesystem path when set")
+    elif deployment_mode is DeploymentMode.HYBRID:
+        if not api_key:
+            errors.append("APP_API_KEY is required for hybrid mode")
+        if allow_query_api_key:
+            errors.append("APP_ALLOW_QUERY_API_KEY must be false in hybrid mode")
+        if not remote_api_base_url:
+            errors.append("APP_REMOTE_API_BASE_URL is required for hybrid mode")
+        if not remote_auth_provider_url:
+            errors.append("APP_REMOTE_AUTH_PROVIDER_URL is required for hybrid mode")
+    elif deployment_mode is DeploymentMode.CLOUD:
+        if not api_key:
+            errors.append("APP_API_KEY is required for cloud mode")
+        if allow_query_api_key:
+            errors.append("APP_ALLOW_QUERY_API_KEY must be false in cloud mode")
+        if not remote_api_base_url:
+            errors.append("APP_REMOTE_API_BASE_URL is required for cloud mode")
+        if not remote_auth_provider_url:
+            errors.append("APP_REMOTE_AUTH_PROVIDER_URL is required for cloud mode")
+        if not remote_storage_url:
+            errors.append("APP_REMOTE_STORAGE_URL is required for cloud mode")
+
+    if errors:
+        details = "; ".join(errors)
+        raise RuntimeError(f"Invalid {deployment_mode.value} deployment configuration: {details}.")
+
+
+def load_settings() -> Settings:
+    deployment_mode = _parse_deployment_mode(os.environ.get("APP_DEPLOYMENT_MODE"))
+
+    app_data_dir_raw = os.environ.get("APP_DATA_DIR")
+    if not app_data_dir_raw:
+        raise RuntimeError(
+            f"APP_DATA_DIR is required for {deployment_mode.value} deployment mode"
+        )
+
+    app_data_dir = _normalize_filesystem_path(app_data_dir_raw, env_name="APP_DATA_DIR")
 
     log_dir_raw = os.environ.get("APP_LOG_DIR")
-    log_dir = Path(log_dir_raw).resolve() if log_dir_raw else (app_data_dir / "logs")
+    log_dir = (
+        _normalize_filesystem_path(log_dir_raw, env_name="APP_LOG_DIR")
+        if log_dir_raw
+        else (app_data_dir / "logs")
+    )
     log_level = (os.environ.get("APP_LOG_LEVEL") or "INFO").upper()
     slides_dir = app_data_dir / "slides"
     inference_runs_dir = app_data_dir / "inference_runs"
     training_runs_dir = app_data_dir / "training_runs"
     tiles_cache_dir = app_data_dir / "tiles_cache"
     sqlite_path = app_data_dir / "app.db"
-    api_key = (os.environ.get("APP_API_KEY") or "").strip() or None
+    api_key = _optional_env("APP_API_KEY")
     allow_query_api_key = (os.environ.get("APP_ALLOW_QUERY_API_KEY") or "").strip().lower() in {
         "1",
         "true",
         "yes",
         "on",
     }
+    remote_api_base_url = _optional_env("APP_REMOTE_API_BASE_URL")
+    remote_auth_provider_url = _optional_env("APP_REMOTE_AUTH_PROVIDER_URL")
+    remote_storage_url = _optional_env("APP_REMOTE_STORAGE_URL")
     import_allowed_roots = _parse_allowed_roots(os.environ.get("APP_IMPORT_ALLOWED_ROOTS"))
     max_batch_inference_items = _parse_positive_int(
         os.environ.get("APP_MAX_BATCH_INFERENCE_ITEMS"),
@@ -82,7 +175,19 @@ def load_settings() -> Settings:
         default=5_000_000,
     )
 
+    _validate_profile_settings(
+        deployment_mode=deployment_mode,
+        app_data_dir=app_data_dir,
+        log_dir=log_dir,
+        api_key=api_key,
+        allow_query_api_key=allow_query_api_key,
+        remote_api_base_url=remote_api_base_url,
+        remote_auth_provider_url=remote_auth_provider_url,
+        remote_storage_url=remote_storage_url,
+    )
+
     return Settings(
+        deployment_mode=deployment_mode,
         app_data_dir=app_data_dir,
         log_dir=log_dir,
         log_level=log_level,
@@ -96,4 +201,7 @@ def load_settings() -> Settings:
         import_allowed_roots=import_allowed_roots,
         max_batch_inference_items=max_batch_inference_items,
         max_inference_output_bytes=max_inference_output_bytes,
+        remote_api_base_url=remote_api_base_url,
+        remote_auth_provider_url=remote_auth_provider_url,
+        remote_storage_url=remote_storage_url,
     )
