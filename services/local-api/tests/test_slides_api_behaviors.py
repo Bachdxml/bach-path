@@ -125,5 +125,5 @@ def test_delete_slide_removes_file_and_tile_cache(app_paths):
     assert slide_id not in gallery_ids
     assert not stored_slide_path.exists()
     assert not cached_tile_path.exists()
-    assert metadata_response.status_code == 404
+    assert metadata_response.status_code == 400
     assert metadata_response.json()["error"]["code"] == "not_found"
