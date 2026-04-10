@@ -49,6 +49,8 @@ PRODUCT_ROADMAP.md
 PHASE1_SPRINT_BOARD.md
 *ROADMAP*.md
 *SPRINT_BOARD*.md
+!docs/roadmap/
+!docs/roadmap/*.md
 
 # Cursor IDE (local agent definitions; keep rules/skills in repo if desired)
 .cursor/agents/

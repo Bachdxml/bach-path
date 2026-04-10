@@ -14,6 +14,7 @@ The desktop UI lives in `apps/desktop`, and it starts a local FastAPI backend fr
 - `services/local-api`: local FastAPI service used by the desktop app
 - `wsi-fungal-segmentation`: model training, evaluation, export, and inference scripts
 - `training_data`: gitignored training-data dropzone (recommended dataset root: `training_data/MASTERTILE`)
+- `docs`: architecture decisions and roadmap docs (see `docs/roadmap/phase1-roadmap.md`)
 
 ## Prerequisites
 
