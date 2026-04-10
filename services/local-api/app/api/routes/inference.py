@@ -2,6 +2,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -15,6 +16,7 @@ from app.models.slide import Slide
 from app.models.inference_run import InferenceRun
 from app.models.region import Region
 from app.models.enums import InferenceStatus
+from app.queue import InMemoryQueue, JobRecord, QueueInterface
 from app.schemas.inference import (
     InferenceRunCreate,
     InferenceBatchRunCreate,
@@ -29,6 +31,7 @@ from app.util.exceptions import AppError, ErrorCode
 
 router = APIRouter(prefix="/inference", tags=["inference"])
 _inference_executor = ThreadPoolExecutor(max_workers=2)
+_inference_queue: QueueInterface = InMemoryQueue()
 logger = logging.getLogger(__name__)
 MAX_FOLDER_INFERENCE_SLIDES = 512
 MAX_REGIONS_PER_RUN = 100_000
@@ -99,8 +102,6 @@ def _resolve_model_checkpoint(model_file: str | None) -> tuple[Path, str]:
     Resolve requested checkpoint from model id relative to models/.
     Returns (path, model_id_for_display).
     """
-    import os
-
     models_dir = _get_models_dir().resolve()
     model_roots = _get_model_roots()
     model_infos = _model_infos()
@@ -132,7 +133,10 @@ def _resolve_model_checkpoint(model_file: str | None) -> tuple[Path, str]:
     # 1) Explicit env override keeps highest priority for deployments.
     env_path = os.environ.get("INFERENCE_CHECKPOINT")
     if env_path:
-        return Path(env_path).resolve(), "env:INFERENCE_CHECKPOINT"
+        env_checkpoint = Path(env_path).resolve()
+        if not env_checkpoint.exists() or not env_checkpoint.is_file():
+            raise AppError(ErrorCode.IO_ERROR, "INFERENCE_CHECKPOINT must point to an existing file")
+        return env_checkpoint, "env:INFERENCE_CHECKPOINT"
 
     # 2) Prefer default deploy artifact if present (canonical name, then legacy).
     for name, label in (
@@ -191,7 +195,36 @@ def _run_inference_task(
     checkpoint: Path,
     threshold: float | None = None,
 ):
-    """Background task: run script, then load JSON and update DB."""
+    """Background task: claim a queued inference job, run it, and finalize queue state."""
+    claimed_job = _inference_queue.claim()
+    if claimed_job is None:
+        logger.warning("Inference worker started for run %s but no queued job was available", run_id)
+        return
+
+    try:
+        _process_inference_job(
+            claimed_job,
+            fallback_run_id=run_id,
+            fallback_slide_path=slide_path,
+            fallback_output_path=output_path,
+            fallback_checkpoint=checkpoint,
+            fallback_threshold=threshold,
+        )
+    except Exception:
+        logger.exception("Inference job %s could not be processed", claimed_job.id)
+        _inference_queue.fail(claimed_job.id, "internal")
+
+
+def _process_inference_job(
+    job: JobRecord,
+    *,
+    fallback_run_id: int,
+    fallback_slide_path: str,
+    fallback_output_path: Path,
+    fallback_checkpoint: Path,
+    fallback_threshold: float | None,
+):
+    """Run the claimed job and update both the DB row and queue record."""
     from app.db.session import make_engine, make_session_factory
     from app.settings import load_settings
 
@@ -200,10 +233,28 @@ def _run_inference_task(
     SessionLocal = make_session_factory(engine)
     db = SessionLocal()
 
+    payload = job.payload or {}
+    run_id = fallback_run_id
+    slide_path = fallback_slide_path
+    output_path = fallback_output_path
+    checkpoint = fallback_checkpoint
+    threshold = fallback_threshold
     run = None
     try:
+        if "run_id" in payload:
+            run_id = int(payload["run_id"])
+        if "slide_path" in payload:
+            slide_path = str(payload["slide_path"])
+        if "output_path" in payload:
+            output_path = Path(payload["output_path"])
+        if "checkpoint" in payload:
+            checkpoint = Path(payload["checkpoint"])
+        if "threshold" in payload:
+            threshold = payload["threshold"]
+
         run = db.get(InferenceRun, run_id)
         if not run:
+            _inference_queue.cancel(job.id)
             return
         run.status = InferenceStatus.running.value
         run.started_at = datetime.now(timezone.utc)
@@ -238,6 +289,7 @@ def _run_inference_task(
             run.error_code = "inference_failed"
             run.error_message = "Inference failed. Check server logs for details."
             db.commit()
+            _inference_queue.fail(job.id, "inference_failed")
             return
 
         if not output_path.exists():
@@ -246,6 +298,7 @@ def _run_inference_task(
             run.error_code = "missing_output"
             run.error_message = "Inference did not produce output."
             db.commit()
+            _inference_queue.fail(job.id, "missing_output")
             return
         if output_path.stat().st_size > settings.max_inference_output_bytes:
             run.status = InferenceStatus.failed.value
@@ -253,6 +306,7 @@ def _run_inference_task(
             run.error_code = "output_too_large"
             run.error_message = "Inference output exceeded server limits."
             db.commit()
+            _inference_queue.fail(job.id, "output_too_large")
             return
 
         with open(output_path, encoding="utf-8") as f:
@@ -293,6 +347,7 @@ def _run_inference_task(
         run.status = InferenceStatus.succeeded.value
         run.finished_at = datetime.now(timezone.utc)
         db.commit()
+        _inference_queue.ack(job.id)
     except subprocess.TimeoutExpired:
         logger.warning("Inference timed out for run %s", run_id)
         run = run or db.get(InferenceRun, run_id)
@@ -302,6 +357,7 @@ def _run_inference_task(
             run.error_code = "timeout"
             run.error_message = "Inference timed out after 1 hour"
             db.commit()
+        _inference_queue.fail(job.id, "timeout")
     except Exception:
         logger.exception("Unhandled inference task failure for run %s", run_id)
         run = run or db.get(InferenceRun, run_id)
@@ -311,6 +367,7 @@ def _run_inference_task(
             run.error_code = "internal"
             run.error_message = "Inference failed due to an internal error."
             db.commit()
+        _inference_queue.fail(job.id, "internal")
     finally:
         db.close()
 
@@ -337,7 +394,17 @@ def _queue_inference_run_for_slide(
     db.refresh(run)
 
     output_path = settings.inference_runs_dir / f"{run.id}.json"
+    job = None
     try:
+        job = _inference_queue.enqueue(
+            {
+                "run_id": run.id,
+                "slide_path": str(slide_path),
+                "output_path": str(output_path),
+                "checkpoint": str(checkpoint),
+                "threshold": payload.threshold,
+            }
+        )
         _inference_executor.submit(
             _run_inference_task,
             run.id,
@@ -348,6 +415,8 @@ def _queue_inference_run_for_slide(
         )
     except Exception:
         logger.exception("Failed to submit inference run %s", run.id)
+        if job is not None:
+            _inference_queue.cancel(job.id)
         run.status = InferenceStatus.failed.value
         run.finished_at = datetime.now(timezone.utc)
         run.error_code = "executor_submit_failed"

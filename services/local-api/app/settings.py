@@ -2,6 +2,7 @@ from __future__ import annotations
 import os
 from enum import Enum
 from pathlib import Path
+from urllib.parse import urlparse
 from pydantic import BaseModel
 
 class DeploymentMode(str, Enum):
@@ -54,6 +55,24 @@ def _normalize_filesystem_path(raw: str, *, env_name: str) -> Path:
 def _optional_env(name: str) -> str | None:
     value = (os.environ.get(name) or "").strip()
     return value or None
+
+
+def _validate_remote_url(
+    name: str,
+    value: str | None,
+    errors: list[str],
+    *,
+    allowed_schemes: tuple[str, ...] = ("https", "http"),
+) -> None:
+    if not value:
+        return
+    parsed = urlparse(value)
+    if parsed.scheme not in set(allowed_schemes) or not parsed.netloc:
+        scheme_label = "|".join(allowed_schemes)
+        errors.append(f"{name} must be an absolute URL with scheme {scheme_label}")
+        return
+    if parsed.username or parsed.password:
+        errors.append(f"{name} must not include embedded credentials")
 
 
 def _parse_allowed_roots(raw: str | None) -> tuple[Path, ...]:
@@ -115,6 +134,8 @@ def _validate_profile_settings(
             errors.append("APP_REMOTE_API_BASE_URL is required for hybrid mode")
         if not remote_auth_provider_url:
             errors.append("APP_REMOTE_AUTH_PROVIDER_URL is required for hybrid mode")
+        _validate_remote_url("APP_REMOTE_API_BASE_URL", remote_api_base_url, errors)
+        _validate_remote_url("APP_REMOTE_AUTH_PROVIDER_URL", remote_auth_provider_url, errors)
     elif deployment_mode is DeploymentMode.CLOUD:
         if not api_key:
             errors.append("APP_API_KEY is required for cloud mode")
@@ -126,6 +147,14 @@ def _validate_profile_settings(
             errors.append("APP_REMOTE_AUTH_PROVIDER_URL is required for cloud mode")
         if not remote_storage_url:
             errors.append("APP_REMOTE_STORAGE_URL is required for cloud mode")
+        _validate_remote_url("APP_REMOTE_API_BASE_URL", remote_api_base_url, errors)
+        _validate_remote_url("APP_REMOTE_AUTH_PROVIDER_URL", remote_auth_provider_url, errors)
+        _validate_remote_url(
+            "APP_REMOTE_STORAGE_URL",
+            remote_storage_url,
+            errors,
+            allowed_schemes=("https", "http", "s3"),
+        )
 
     if errors:
         details = "; ".join(errors)

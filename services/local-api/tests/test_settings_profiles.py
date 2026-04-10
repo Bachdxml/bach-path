@@ -112,3 +112,26 @@ def test_valid_env_loads_settings_for_each_profile(
 
     assert settings.deployment_mode.value == deployment_mode
     assert settings.app_data_dir == app_paths["app_data_dir"].resolve()
+
+
+def test_hybrid_rejects_non_http_remote_api_base_url(app_paths, monkeypatch):
+    _set_base_env(monkeypatch, app_paths["app_data_dir"])
+    monkeypatch.setenv("APP_DEPLOYMENT_MODE", "hybrid")
+    monkeypatch.setenv("APP_API_KEY", "hybrid-key")
+    monkeypatch.setenv("APP_REMOTE_API_BASE_URL", "file:///tmp/private")
+    monkeypatch.setenv("APP_REMOTE_AUTH_PROVIDER_URL", "https://auth.example.test")
+
+    with pytest.raises(RuntimeError, match="APP_REMOTE_API_BASE_URL must be an absolute URL with scheme https\\|http"):
+        load_settings()
+
+
+def test_cloud_rejects_remote_url_with_embedded_credentials(app_paths, monkeypatch):
+    _set_base_env(monkeypatch, app_paths["app_data_dir"])
+    monkeypatch.setenv("APP_DEPLOYMENT_MODE", "cloud")
+    monkeypatch.setenv("APP_API_KEY", "cloud-key")
+    monkeypatch.setenv("APP_REMOTE_API_BASE_URL", "https://api.example.test")
+    monkeypatch.setenv("APP_REMOTE_AUTH_PROVIDER_URL", "https://user:pass@auth.example.test")
+    monkeypatch.setenv("APP_REMOTE_STORAGE_URL", "https://storage.example.test")
+
+    with pytest.raises(RuntimeError, match="APP_REMOTE_AUTH_PROVIDER_URL must not include embedded credentials"):
+        load_settings()

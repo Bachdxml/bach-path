@@ -4,9 +4,11 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 from PIL import Image
+import pytest
 
 from app.main import create_app
 from app.api.routes import inference as inference_routes
+from app.util.exceptions import AppError
 
 
 def _create_sample_slide(path: Path, color: tuple[int, int, int] = (120, 80, 200)) -> None:
@@ -55,3 +57,9 @@ def test_folder_inference_rejects_oversized_folder(app_paths, monkeypatch):
     payload = response.json()
     assert payload["error"]["code"] == "slide_invalid"
 
+
+def test_env_inference_checkpoint_requires_existing_file(monkeypatch):
+    monkeypatch.setenv("INFERENCE_CHECKPOINT", "/tmp/definitely-missing-checkpoint-file.pth.gz")
+
+    with pytest.raises(AppError, match="INFERENCE_CHECKPOINT must point to an existing file"):
+        inference_routes._resolve_model_checkpoint(None)
