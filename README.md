@@ -37,12 +37,25 @@ npm install
 
 ## 2) Set Up Local API Environment
 
-From repo root:
+From repo root, use Python 3.13 and follow your OS-specific commands.
+
+macOS/Linux:
 
 ```bash
 cd services/local-api
 python3.13 -m venv .venv
 source .venv/bin/activate
+python -m pip install -U pip setuptools wheel
+pip install -r requirements.txt
+```
+
+Windows (PowerShell):
+
+```powershell
+cd services/local-api
+py -3.13 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -U pip setuptools wheel
 pip install -r requirements.txt
 ```
 
@@ -78,12 +91,26 @@ python utils.py/Classifytiles.py --export_dir /path/to/exported/slide --apply
 
 ## 4) Train, Evaluate, and Export Deploy Weights
 
-From repo root:
+From repo root.
+
+macOS/Linux:
 
 ```bash
 cd wsi-fungal-segmentation
-python3 -m venv .venv
+python3.13 -m venv .venv
 source .venv/bin/activate
+pip install -r requirements.txt
+python scripts/train.py --config configs/default.yaml
+python scripts/evaluate.py --checkpoint checkpoints/best_model.pth
+python scripts/export_deploy_weights.py --checkpoint checkpoints/best_model.pth --output models/deploy-fungus.pth.gz
+```
+
+Windows (PowerShell):
+
+```powershell
+cd wsi-fungal-segmentation
+py -3.13 -m venv .venv
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 python scripts/train.py --config configs/default.yaml
 python scripts/evaluate.py --checkpoint checkpoints/best_model.pth
