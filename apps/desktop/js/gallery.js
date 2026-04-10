@@ -9,7 +9,6 @@ const btnGalleryCollapseToggle = document.getElementById("btn-gallery-collapse-t
 const btnGalleryRefresh = document.getElementById("btn-gallery-refresh");
 const btnGallerySelect = document.getElementById("btn-gallery-select");
 const btnGalleryInferSelected = document.getElementById("btn-gallery-infer-selected");
-const btnGalleryInferFolder = document.getElementById("btn-gallery-infer-folder");
 const btnGalleryDeleteSelected = document.getElementById("btn-gallery-delete-selected");
 const galleryApp = window.BachPath || null;
 const gallerySlidesApi = galleryApp?.services?.slidesApi || window.slidesApi;
@@ -640,39 +639,6 @@ function initGallery() {
       window.appToast?.(err?.message || "Batch inference failed", "error", 4500);
     } finally {
       updateSelectionUi();
-    }
-  });
-  btnGalleryInferFolder?.addEventListener("click", async () => {
-    const folderKey = galleryFolderFilter?.value || "all";
-    if (folderKey === "all") {
-      window.appToast?.("Choose a folder filter first, then click Infer All in Folder.", "info");
-      return;
-    }
-    const folderSlides = allSlides.filter((s) => (s.folder_key || "uncategorized") === folderKey);
-    if (!folderSlides.length) {
-      window.appToast?.("No slides found in the selected folder.", "info");
-      return;
-    }
-    const proceed = confirm(`Run inference for ${folderSlides.length} slide(s) in this folder?`);
-    if (!proceed) return;
-    const modelId =
-      typeof window.getSelectedInferenceModel === "function"
-        ? window.getSelectedInferenceModel()
-        : null;
-    const threshold = getPreferredThreshold(modelId);
-    btnGalleryInferFolder.disabled = true;
-    try {
-      const res = await gallerySlidesApi.runFolderInference(folderKey, modelId, threshold);
-      trackInferenceRuns(res?.run_ids || []);
-      window.appToast?.(
-        `Queued folder inference for ${folderSlides.length} slide(s).`,
-        "success",
-        3500
-      );
-    } catch (err) {
-      window.appToast?.(err?.message || "Folder inference failed", "error", 4500);
-    } finally {
-      btnGalleryInferFolder.disabled = false;
     }
   });
   btnGalleryDeleteSelected?.addEventListener("click", deleteSelectedSlides);
