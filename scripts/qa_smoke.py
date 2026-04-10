@@ -237,7 +237,10 @@ def _import_collection_smoke(port: int, input_dir: Path, slides_dir: Path) -> No
 
     collection_id = _extract_collection_id(import_result)
     if isinstance(import_result, dict):
-        slide_ids = import_result.get("slide_ids")
+        # API returns imported_slide_ids (SlideImportCollectionResponse); some stacks use slide_ids.
+        slide_ids = import_result.get("imported_slide_ids")
+        if slide_ids is None:
+            slide_ids = import_result.get("slide_ids")
         if isinstance(slide_ids, list) and len(slide_ids) != 20:
             raise RuntimeError(f"Expected 20 imported slide ids, got {len(slide_ids)}")
     print(f"Batch import created collection id {collection_id} via {import_path}")
