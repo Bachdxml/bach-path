@@ -27,3 +27,6 @@ pyvips==2.2.2
 # Packaging (build only, not needed in production runtime)
 # Install separately in dev env:
 # pyinstaller
+
+# Testing
+pytest==8.3.3
