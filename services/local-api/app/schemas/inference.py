@@ -11,7 +11,7 @@ class InferenceRunCreate(BaseModel):
 
 
 class InferenceBatchRunCreate(InferenceRunCreate):
-    slide_ids: list[int] = Field(default_factory=list, min_length=1)
+    slide_ids: list[int] = Field(default_factory=list, min_length=1, max_length=256)
 
 
 class InferenceFolderRunCreate(InferenceRunCreate):

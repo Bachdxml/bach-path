@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from app.main import create_app
+from app.models.slide import Slide
 
 
 def _create_sample_slide(path: Path, color: tuple[int, int, int] = (80, 140, 210)) -> None:
@@ -24,8 +25,21 @@ def test_slides_endpoint_requires_api_key_when_configured(app_paths, monkeypatch
         assert missing_key_response.status_code == 401
         assert missing_key_response.json()["error"]["code"] == "http_error"
 
-        valid_key_response = client.get("/slides", params={"api_key": "test-key"})
+        query_key_response = client.get("/slides", params={"api_key": "test-key"})
+        assert query_key_response.status_code == 401
+
+        valid_key_response = client.get("/slides", headers={"x-api-key": "test-key"})
         assert valid_key_response.status_code == 200
+
+
+def test_slides_endpoint_allows_query_key_when_explicitly_enabled(app_paths, monkeypatch):
+    monkeypatch.setenv("APP_API_KEY", "test-key")
+    monkeypatch.setenv("APP_ALLOW_QUERY_API_KEY", "1")
+
+    app = create_app()
+    with TestClient(app) as client:
+        response = client.get("/slides", params={"api_key": "test-key"})
+        assert response.status_code == 200
 
 
 def test_import_rejects_disallowed_slide_path(app_paths, tmp_path):
@@ -127,3 +141,82 @@ def test_delete_slide_removes_file_and_tile_cache(app_paths):
     assert not cached_tile_path.exists()
     assert metadata_response.status_code == 400
     assert metadata_response.json()["error"]["code"] == "not_found"
+
+
+def test_metadata_rejects_stored_path_outside_managed_storage(app_paths):
+    outside_file = app_paths["app_data_dir"].parent / "outside-managed.png"
+    _create_sample_slide(outside_file)
+
+    app = create_app()
+    with TestClient(app) as client:
+        # Ensure app state/session factory is initialized.
+        response = client.get("/slides")
+        assert response.status_code == 200
+
+        db = app.state.SessionLocal()
+        try:
+            rogue = Slide(
+                original_path=str(outside_file),
+                stored_filename="rogue.png",
+                stored_path=str(outside_file),
+                file_size_bytes=outside_file.stat().st_size,
+                sha256=None,
+                import_collection_id=None,
+            )
+            db.add(rogue)
+            db.commit()
+            db.refresh(rogue)
+            rogue_id = rogue.id
+        finally:
+            db.close()
+
+        metadata_response = client.get(f"/slides/{rogue_id}/metadata")
+        assert metadata_response.status_code == 400
+        payload = metadata_response.json()
+        assert payload["error"]["code"] == "storage_inconsistent"
+
+
+def test_metadata_rejects_directory_stored_path(app_paths):
+    managed_slides_dir = app_paths["app_data_dir"] / "slides"
+    rogue_dir = managed_slides_dir / "not-a-file"
+    rogue_dir.mkdir(parents=True, exist_ok=True)
+
+    app = create_app()
+    with TestClient(app) as client:
+        response = client.get("/slides")
+        assert response.status_code == 200
+
+        db = app.state.SessionLocal()
+        try:
+            rogue = Slide(
+                original_path=str(rogue_dir),
+                stored_filename="not-a-file",
+                stored_path=str(rogue_dir),
+                file_size_bytes=0,
+                sha256=None,
+                import_collection_id=None,
+            )
+            db.add(rogue)
+            db.commit()
+            db.refresh(rogue)
+            rogue_id = rogue.id
+        finally:
+            db.close()
+
+        metadata_response = client.get(f"/slides/{rogue_id}/metadata")
+        assert metadata_response.status_code == 400
+        payload = metadata_response.json()
+        assert payload["error"]["code"] == "storage_inconsistent"
+
+
+def test_batch_inference_rejects_oversized_payload(app_paths):
+    app = create_app()
+    with TestClient(app) as client:
+        response = client.post(
+            "/inference/slides/batch-run",
+            json={"slide_ids": list(range(1, 66))},
+        )
+
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["error"]["code"] == "slide_invalid"

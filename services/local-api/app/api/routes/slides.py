@@ -137,6 +137,18 @@ def _validate_import_source(src: Path, allowed_roots: tuple[Path, ...]) -> None:
         raise AppError(ErrorCode.SLIDE_INVALID, "Unsupported slide file extension")
 
 
+def _resolve_managed_slide_path(slide: Slide, settings, *, must_exist: bool = True) -> Path:
+    path = Path(slide.stored_path).resolve(strict=False)
+    slides_root = settings.slides_dir.resolve(strict=False)
+    try:
+        path.relative_to(slides_root)
+    except ValueError as e:
+        raise AppError(ErrorCode.STORAGE_INCONSISTENT, "Slide path is outside managed storage") from e
+    if must_exist and (not path.exists() or not path.is_file()):
+        raise AppError(ErrorCode.STORAGE_INCONSISTENT, "Slide file missing from managed storage")
+    return path
+
+
 def _import_slide_file(
     *,
     db: Session,
@@ -171,6 +183,8 @@ def _import_slide_file(
             dest_filename = f"{slide.id}-{uuid.uuid4().hex[:8]}{src.suffix.lower()}"
         except PermissionError:
             raise AppError(ErrorCode.SLIDE_PERMISSION, "Access denied when copying slide")
+        except ValueError:
+            raise AppError(ErrorCode.SLIDE_INVALID, "Invalid managed storage destination")
         except OSError:
             logger.exception("Failed to copy slide from %s", src)
             raise AppError(ErrorCode.IO_ERROR, "Failed to copy slide")
@@ -236,7 +250,7 @@ def delete_slide(slide_id: int, request: Request, db: Session = Depends(get_db))
 
     runs = db.query(InferenceRun).filter(InferenceRun.slide_id == slide_id).all()
     run_json_paths = [settings.inference_runs_dir / f"{run.id}.json" for run in runs]
-    slide_path = Path(slide.stored_path)
+    slide_path = _resolve_managed_slide_path(slide, settings, must_exist=False)
     cache_slide = settings.tiles_cache_dir / str(slide_id)
 
     db.delete(slide)
@@ -427,15 +441,13 @@ def rename_import_collection(
 
 
 @router.get("/{slide_id}/metadata", response_model=SlideMetadataResponse)
-def slide_metadata(slide_id: int, db: Session = Depends(get_db)):
+def slide_metadata(slide_id: int, request: Request, db: Session = Depends(get_db)):
     slide = db.get(Slide, slide_id)
     if not slide:
         raise AppError(ErrorCode.NOT_FOUND, f"Slide {slide_id} not found")
 
-    p = Path(slide.stored_path)
-    if not p.exists():
-        # Clinical-track: DB says it exists but file is missing => integrity issue
-        raise AppError(ErrorCode.STORAGE_INCONSISTENT, "Slide file missing from managed storage")
+    settings = request.app.state.settings
+    p = _resolve_managed_slide_path(slide, settings)
 
     if p.suffix.lower() in RASTER_EXTENSIONS:
         try:
@@ -457,6 +469,7 @@ def slide_metadata(slide_id: int, db: Session = Depends(get_db)):
 @router.get("/{slide_id}/thumbnail")
 def slide_thumbnail(
     slide_id: int,
+    request: Request,
     size: int = Query(default=256, ge=THUMBNAIL_SIZE_MIN, le=THUMBNAIL_SIZE_MAX),
     db: Session = Depends(get_db),
 ):
@@ -464,9 +477,8 @@ def slide_thumbnail(
     if not slide:
         raise AppError(ErrorCode.NOT_FOUND, f"Slide {slide_id} not found")
 
-    slide_path = Path(slide.stored_path)
-    if not slide_path.exists():
-        raise AppError(ErrorCode.STORAGE_INCONSISTENT, "Slide file missing from managed storage")
+    settings = request.app.state.settings
+    slide_path = _resolve_managed_slide_path(slide, settings)
 
     if slide_path.suffix.lower() in RASTER_EXTENSIONS:
         try:
@@ -526,9 +538,7 @@ def slide_tile(
     if not slide:
         raise AppError(ErrorCode.NOT_FOUND, f"Slide {slide_id} not found")
 
-    slide_path = Path(slide.stored_path)
-    if not slide_path.exists():
-        raise AppError(ErrorCode.STORAGE_INCONSISTENT, "Slide file missing from managed storage")
+    slide_path = _resolve_managed_slide_path(slide, settings)
 
     # Tile settings
     TILE_SIZE = TILE_SIZE_DEFAULT
@@ -631,9 +641,7 @@ def slide_deepzoom_descriptor(
     if not slide:
         raise AppError(ErrorCode.NOT_FOUND, f"Slide {slide_id} not found")
 
-    slide_path = Path(slide.stored_path)
-    if not slide_path.exists():
-        raise AppError(ErrorCode.STORAGE_INCONSISTENT, "Slide file missing from managed storage")
+    slide_path = _resolve_managed_slide_path(slide, settings)
 
     dz_paths = deepzoom_paths(settings.tiles_cache_dir, slide_id)
     if not has_deepzoom(dz_paths):
@@ -655,9 +663,7 @@ def slide_deepzoom_tile(
     if not slide:
         raise AppError(ErrorCode.NOT_FOUND, f"Slide {slide_id} not found")
 
-    slide_path = Path(slide.stored_path)
-    if not slide_path.exists():
-        raise AppError(ErrorCode.STORAGE_INCONSISTENT, "Slide file missing from managed storage")
+    slide_path = _resolve_managed_slide_path(slide, settings)
 
     dz_paths = deepzoom_paths(settings.tiles_cache_dir, slide_id)
     if not has_deepzoom(dz_paths):

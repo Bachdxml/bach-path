@@ -30,6 +30,8 @@ from app.util.exceptions import AppError, ErrorCode
 router = APIRouter(prefix="/inference", tags=["inference"])
 _inference_executor = ThreadPoolExecutor(max_workers=2)
 logger = logging.getLogger(__name__)
+MAX_FOLDER_INFERENCE_SLIDES = 512
+MAX_REGIONS_PER_RUN = 100_000
 
 
 def _is_deployable_weight(p: Path) -> bool:
@@ -170,6 +172,18 @@ def _get_inference_python() -> str:
     return "python"
 
 
+def _resolve_managed_slide_path(slide: Slide, settings) -> Path:
+    path = Path(slide.stored_path).resolve(strict=False)
+    slides_root = settings.slides_dir.resolve(strict=False)
+    try:
+        path.relative_to(slides_root)
+    except ValueError as e:
+        raise AppError(ErrorCode.STORAGE_INCONSISTENT, "Slide path is outside managed storage") from e
+    if not path.exists() or not path.is_file():
+        raise AppError(ErrorCode.STORAGE_INCONSISTENT, "Slide file missing from managed storage")
+    return path
+
+
 def _run_inference_task(
     run_id: int,
     slide_path: str,
@@ -186,6 +200,7 @@ def _run_inference_task(
     SessionLocal = make_session_factory(engine)
     db = SessionLocal()
 
+    run = None
     try:
         run = db.get(InferenceRun, run_id)
         if not run:
@@ -225,15 +240,32 @@ def _run_inference_task(
             db.commit()
             return
 
-        run.output_json_path = str(output_path)
-        run.status = InferenceStatus.succeeded.value
-        run.finished_at = datetime.now(timezone.utc)
+        if not output_path.exists():
+            run.status = InferenceStatus.failed.value
+            run.finished_at = datetime.now(timezone.utc)
+            run.error_code = "missing_output"
+            run.error_message = "Inference did not produce output."
+            db.commit()
+            return
+        if output_path.stat().st_size > settings.max_inference_output_bytes:
+            run.status = InferenceStatus.failed.value
+            run.finished_at = datetime.now(timezone.utc)
+            run.error_code = "output_too_large"
+            run.error_message = "Inference output exceeded server limits."
+            db.commit()
+            return
 
-        with open(output_path) as f:
+        with open(output_path, encoding="utf-8") as f:
             data = json.load(f)
 
+        raw_regions = data.get("regions", [])
+        if not isinstance(raw_regions, list):
+            raise ValueError("Inference output regions must be a list")
+        if len(raw_regions) > MAX_REGIONS_PER_RUN:
+            raise ValueError(f"Inference output exceeded max regions ({MAX_REGIONS_PER_RUN})")
+
         parsed_regions = []
-        for r in data.get("regions", []):
+        for r in raw_regions:
             parsed_regions.append(
                 {
                     "x": int(r["x"]),
@@ -257,17 +289,22 @@ def _run_inference_task(
             )
             db.add(region)
 
+        run.output_json_path = str(output_path)
+        run.status = InferenceStatus.succeeded.value
+        run.finished_at = datetime.now(timezone.utc)
         db.commit()
     except subprocess.TimeoutExpired:
         logger.warning("Inference timed out for run %s", run_id)
-        run.status = InferenceStatus.failed.value
-        run.finished_at = datetime.now(timezone.utc)
-        run.error_code = "timeout"
-        run.error_message = "Inference timed out after 1 hour"
-        db.commit()
+        run = run or db.get(InferenceRun, run_id)
+        if run:
+            run.status = InferenceStatus.failed.value
+            run.finished_at = datetime.now(timezone.utc)
+            run.error_code = "timeout"
+            run.error_message = "Inference timed out after 1 hour"
+            db.commit()
     except Exception:
         logger.exception("Unhandled inference task failure for run %s", run_id)
-        run = db.get(InferenceRun, run_id)
+        run = run or db.get(InferenceRun, run_id)
         if run:
             run.status = InferenceStatus.failed.value
             run.finished_at = datetime.now(timezone.utc)
@@ -285,9 +322,7 @@ def _queue_inference_run_for_slide(
     settings,
     db: Session,
 ) -> InferenceRun:
-    slide_path = Path(slide.stored_path)
-    if not slide_path.exists():
-        raise AppError(ErrorCode.STORAGE_INCONSISTENT, "Slide file missing from managed storage")
+    slide_path = _resolve_managed_slide_path(slide, settings)
 
     checkpoint, model_id = _resolve_model_checkpoint(payload.model_file)
     run = InferenceRun(
@@ -360,6 +395,11 @@ def run_batch_inference(
     settings.inference_runs_dir.mkdir(parents=True, exist_ok=True)
 
     slide_ids = list(dict.fromkeys(payload.slide_ids))
+    if len(slide_ids) > settings.max_batch_inference_items:
+        raise AppError(
+            ErrorCode.SLIDE_INVALID,
+            f"Too many slides in one batch run (max {settings.max_batch_inference_items})",
+        )
     slides = db.query(Slide).filter(Slide.id.in_(slide_ids)).all()
     found_by_id = {s.id: s for s in slides}
     missing = [sid for sid in slide_ids if sid not in found_by_id]
@@ -405,6 +445,16 @@ def run_folder_inference(
     target_slides = [s for s in slides if _folder_key_for_slide(s.original_path) == requested_key]
     if not target_slides:
         raise AppError(ErrorCode.NOT_FOUND, "No slides found in that folder")
+    if len(target_slides) > settings.max_batch_inference_items:
+        raise AppError(
+            ErrorCode.SLIDE_INVALID,
+            f"Too many slides in one folder run (max {settings.max_batch_inference_items})",
+        )
+    if len(target_slides) > MAX_FOLDER_INFERENCE_SLIDES:
+        raise AppError(
+            ErrorCode.SLIDE_INVALID,
+            f"Too many slides in folder for one run (max {MAX_FOLDER_INFERENCE_SLIDES})",
+        )
 
     base_payload = InferenceRunCreate(
         model_name=payload.model_name,

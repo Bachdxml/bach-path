@@ -23,7 +23,7 @@ def get_db(request: Request) -> Generator[Session, None, None]:
     try:
         yield db
         db.commit()
-    except:
+    except Exception:
         db.rollback()
         raise
     finally:
@@ -40,7 +40,8 @@ def require_api_key(
         return
 
     provided_api_key = x_api_key
-    if provided_api_key is None:
+    allow_query_api_key = bool(getattr(settings, "allow_query_api_key", False))
+    if provided_api_key is None and allow_query_api_key:
         provided_api_key = request.query_params.get("api_key")
 
     if not provided_api_key or not secrets.compare_digest(provided_api_key, expected):

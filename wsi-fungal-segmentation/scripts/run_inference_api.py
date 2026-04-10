@@ -12,6 +12,7 @@ import argparse
 from collections.abc import Mapping
 import gzip
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,6 +43,9 @@ EXIT_ARGS = 1
 EXIT_SLIDE = 2
 EXIT_INFERENCE = 3
 EXIT_OUTPUT = 4
+
+MAX_INFERENCE_TILES_DEFAULT = 200_000
+MAX_RASTER_PIXELS_DEFAULT = 150_000_000
 
 
 def _safe_torch_load(source, *, map_location):
@@ -104,6 +108,42 @@ def preprocess_tile(pil_img: Image.Image, target_size: int = 512) -> torch.Tenso
     return tensor
 
 
+def _max_inference_tiles() -> int:
+    raw = (os.environ.get("BACH_MAX_INFERENCE_TILES") or "").strip()
+    if not raw:
+        return MAX_INFERENCE_TILES_DEFAULT
+    try:
+        value = int(raw)
+    except ValueError:
+        return MAX_INFERENCE_TILES_DEFAULT
+    return max(1, value)
+
+
+def _max_raster_pixels() -> int:
+    raw = (os.environ.get("BACH_MAX_RASTER_PIXELS") or "").strip()
+    if not raw:
+        return MAX_RASTER_PIXELS_DEFAULT
+    try:
+        value = int(raw)
+    except ValueError:
+        return MAX_RASTER_PIXELS_DEFAULT
+    return max(1, value)
+
+
+def _iter_tile_positions(level_w: int, level_h: int, tile_size: int, stride: int):
+    for y in range(0, level_h, stride):
+        for x in range(0, level_w, stride):
+            w = min(tile_size, level_w - x)
+            h = min(tile_size, level_h - y)
+            if w < tile_size // 2 or h < tile_size // 2:
+                continue
+            yield (x, y, w, h)
+
+
+def _count_tile_positions(level_w: int, level_h: int, tile_size: int, stride: int) -> int:
+    return sum(1 for _ in _iter_tile_positions(level_w, level_h, tile_size, stride))
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run fungus inference on a WSI")
     parser.add_argument("--slide-path", required=True, help="Path to slide (SVS/TIF/TIFF)")
@@ -139,6 +179,15 @@ def main():
     if args.batch_size <= 0:
         print("Error: --batch-size must be > 0", file=sys.stderr)
         return EXIT_ARGS
+    if not (0.0 <= args.threshold <= 1.0):
+        print("Error: --threshold must be in [0.0, 1.0]", file=sys.stderr)
+        return EXIT_ARGS
+    if args.tile_size > 8192:
+        print("Error: --tile-size must be <= 8192", file=sys.stderr)
+        return EXIT_ARGS
+    if args.stride > 8192:
+        print("Error: --stride must be <= 8192", file=sys.stderr)
+        return EXIT_ARGS
 
     # Load model
     try:
@@ -163,6 +212,7 @@ def main():
     tile_size = args.tile_size
     stride = args.stride
     level = args.level
+    max_tiles = _max_inference_tiles()
 
     # --- Raster image (PNG/JPEG): no OpenSlide ---
     if slide_path.suffix.lower() in RASTER_SLIDE_EXTENSIONS:
@@ -177,31 +227,42 @@ def main():
             return EXIT_SLIDE
 
         level_w, level_h = full_img.size
+        if (level_w * level_h) > _max_raster_pixels():
+            print(
+                f"Error: Raster image too large ({level_w}x{level_h}); "
+                "refusing to load into memory. Use WSI format or raise BACH_MAX_RASTER_PIXELS.",
+                file=sys.stderr,
+            )
+            return EXIT_SLIDE
         dims = (level_w, level_h)
 
-        tiles_x = list(range(0, level_w, stride))
-        tiles_y = list(range(0, level_h, stride))
-        tile_positions = []
-        for y in tiles_y:
-            for x in tiles_x:
-                w = min(tile_size, level_w - x)
-                h = min(tile_size, level_h - y)
-                if w < tile_size // 2 or h < tile_size // 2:
-                    continue
-                tile_positions.append((x, y, w, h))
-
-        if not tile_positions:
+        total_tiles = _count_tile_positions(level_w, level_h, tile_size, stride)
+        if total_tiles <= 0:
             print("Error: No tiles to process", file=sys.stderr)
+            return EXIT_SLIDE
+        if total_tiles > max_tiles:
+            print(
+                f"Error: Refusing to process {total_tiles} tiles "
+                f"(limit={max_tiles}; override with BACH_MAX_INFERENCE_TILES).",
+                file=sys.stderr,
+            )
             return EXIT_SLIDE
 
         regions = []
-        total_tiles = len(tile_positions)
         batch_size = args.batch_size
         density_label = torch.tensor([3] * batch_size, dtype=torch.long, device=device)
+        tile_iter = _iter_tile_positions(level_w, level_h, tile_size, stride)
 
         try:
             for i in range(0, total_tiles, batch_size):
-                batch_positions = tile_positions[i : i + batch_size]
+                batch_positions = []
+                for _ in range(batch_size):
+                    pos = next(tile_iter, None)
+                    if pos is None:
+                        break
+                    batch_positions.append(pos)
+                if not batch_positions:
+                    break
                 batch_tensors = []
 
                 for x, y, w, h in batch_positions:
@@ -260,38 +321,41 @@ def main():
 
             level_w, level_h = slide.level_dimensions[level]
             dims = slide.dimensions
-
-            # Build tile grid (level coordinates)
-            tiles_x = list(range(0, level_w, stride))
-            tiles_y = list(range(0, level_h, stride))
-            tile_positions = []
-            for y in tiles_y:
-                for x in tiles_x:
-                    w = min(tile_size, level_w - x)
-                    h = min(tile_size, level_h - y)
-                    if w < tile_size // 2 or h < tile_size // 2:
-                        continue
-                    tile_positions.append((x, y, w, h))
-
-            if not tile_positions:
+            total_tiles = _count_tile_positions(level_w, level_h, tile_size, stride)
+            if total_tiles <= 0:
                 print("Error: No tiles to process", file=sys.stderr)
+                slide.close()
+                return EXIT_SLIDE
+            if total_tiles > max_tiles:
+                print(
+                    f"Error: Refusing to process {total_tiles} tiles "
+                    f"(limit={max_tiles}; override with BACH_MAX_INFERENCE_TILES).",
+                    file=sys.stderr,
+                )
                 slide.close()
                 return EXIT_SLIDE
 
             regions = []
-            total_tiles = len(tile_positions)
             batch_size = args.batch_size
 
             # Density label: 3 = negative (unknown at inference)
             density_label = torch.tensor([3] * batch_size, dtype=torch.long, device=device)
+            downsample = float(slide.level_downsamples[level])
+            tile_iter = _iter_tile_positions(level_w, level_h, tile_size, stride)
 
             for i in range(0, total_tiles, batch_size):
-                batch_positions = tile_positions[i : i + batch_size]
+                batch_positions = []
+                for _ in range(batch_size):
+                    pos = next(tile_iter, None)
+                    if pos is None:
+                        break
+                    batch_positions.append(pos)
+                if not batch_positions:
+                    break
                 batch_tensors = []
 
                 for x, y, w, h in batch_positions:
                     # read_region uses level-0 coordinates
-                    downsample = float(slide.level_downsamples[level])
                     x0 = int(x * downsample)
                     y0 = int(y * downsample)
                     region = slide.read_region((x0, y0), level, (w, h))
@@ -320,7 +384,6 @@ def main():
                     if args.positive_only and label != "fungus_positive":
                         continue
                     # Convert to level-0 coordinates for API/Region
-                    downsample = float(slide.level_downsamples[level])
                     x0 = int(x * downsample)
                     y0 = int(y * downsample)
                     w0 = int(w * downsample)

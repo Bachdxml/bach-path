@@ -4,6 +4,7 @@ const fs = require("fs");
 const { spawn } = require("child_process");
 const http = require("http");
 const { fileURLToPath } = require("url");
+const net = require("net");
 
 const APP_DISPLAY_NAME = "Bach Path";
 const DEFAULT_PORT = 8765;
@@ -75,7 +76,15 @@ function handleTrusted(channel, handler) {
 
 function normalizeApiHost(value) {
   if (!isNonEmptyString(value)) return "127.0.0.1";
-  return value.trim();
+  const raw = value.trim();
+  const host = raw.replace(/^\[(.*)\]$/, "$1");
+  if (host === "localhost" || host === "127.0.0.1" || host === "::1") {
+    return host;
+  }
+  if (net.isIP(host) && (host.startsWith("127.") || host === "::1")) {
+    return host;
+  }
+  throw new Error("apiHost must be loopback-only (localhost, 127.0.0.1, or ::1)");
 }
 
 function normalizeApiKey(value) {
@@ -200,8 +209,24 @@ function validateCapturePayload(payload) {
 function loadConfig() {
   try {
     const data = fs.readFileSync(getConfigPath(), "utf-8");
-    const config = JSON.parse(data);
-    return isPlainObject(config) ? config : { apiPort: DEFAULT_PORT, apiHost: "127.0.0.1" };
+    const parsed = JSON.parse(data);
+    if (!isPlainObject(parsed)) {
+      return { apiPort: DEFAULT_PORT, apiHost: "127.0.0.1" };
+    }
+
+    const config = { apiPort: DEFAULT_PORT, apiHost: "127.0.0.1" };
+    if (Number.isInteger(parsed.apiPort) && parsed.apiPort >= 1024 && parsed.apiPort <= 65535) {
+      config.apiPort = parsed.apiPort;
+    }
+    try {
+      config.apiHost = normalizeApiHost(parsed.apiHost);
+    } catch {
+      config.apiHost = "127.0.0.1";
+    }
+    if (typeof parsed.apiKey === "string" && parsed.apiKey.trim() !== "") {
+      config.apiKey = parsed.apiKey.trim();
+    }
+    return config;
   } catch {
     return { apiPort: DEFAULT_PORT, apiHost: "127.0.0.1" };
   }
@@ -315,7 +340,14 @@ function startApi() {
   const dyldPath = [...homebrewLibPaths, process.env.DYLD_LIBRARY_PATH].filter(Boolean).join(path.delimiter);
   const spawnEnv = { ...process.env };
   if (dyldPath) spawnEnv.DYLD_LIBRARY_PATH = dyldPath;
-  if (apiKey) spawnEnv.APP_API_KEY = apiKey;
+  if (apiKey) {
+    spawnEnv.APP_API_KEY = apiKey;
+    // Browser-rendered <img> tile/thumbnail requests cannot include custom headers,
+    // so allow query API keys only for this local desktop-launched API process.
+    spawnEnv.APP_ALLOW_QUERY_API_KEY = "true";
+  }
+  // Desktop renderer runs from file:// (Origin: null), so enable this explicitly for desktop launches.
+  spawnEnv.APP_CORS_ALLOW_FILE_ORIGIN = "true";
   // Keep imports stable across execution contexts (dev vs packaged runtime).
   const pythonPathEntries = [getApiBaseDir(), process.env.PYTHONPATH].filter(Boolean);
   spawnEnv.PYTHONPATH = pythonPathEntries.join(path.delimiter);
@@ -375,6 +407,7 @@ function createWindow(apiReady) {
       preload: path.join(__dirname, "preload.js"),
       nodeIntegration: false,
       contextIsolation: true,
+      sandbox: true,
     },
   });
 

@@ -29,7 +29,7 @@ def _bool_env(name: str, default: bool) -> bool:
 
 def _cors_origins() -> list[str]:
     origins = _csv_env("APP_CORS_ORIGINS", ["http://127.0.0.1", "http://localhost"])
-    if _bool_env("APP_CORS_ALLOW_FILE_ORIGIN", True):
+    if _bool_env("APP_CORS_ALLOW_FILE_ORIGIN", False):
         for origin in _csv_env("APP_CORS_FILE_ORIGINS", ["null"]):
             if origin not in origins:
                 origins.append(origin)
