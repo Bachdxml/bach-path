@@ -321,18 +321,22 @@ function addRegionOverlays(regions, showNegative = false) {
   const opacity = getOverlayOpacity();
 
   for (const p of positives) {
-    const cx = ((p.x1 + p.x2) * 0.5 * canvasW) / dims.width;
-    const cy = ((p.y1 + p.y2) * 0.5 * canvasH) / dims.height;
-    const areaPx = (p.x2 - p.x1) * (p.y2 - p.y1);
-    const radiusImagePx = Math.max(18, Math.min(180, Math.sqrt(areaPx) * 0.33));
-    const radius = (radiusImagePx * Math.max(canvasW / dims.width, canvasH / dims.height));
-    const peak = Math.max(0.08, Math.min(0.9, opacity * (0.22 + p.score * 0.95)));
+    const x1 = (p.x1 * canvasW) / dims.width;
+    const y1 = (p.y1 * canvasH) / dims.height;
+    const x2 = (p.x2 * canvasW) / dims.width;
+    const y2 = (p.y2 * canvasH) / dims.height;
+    const rw = Math.max(1, x2 - x1);
+    const rh = Math.max(1, y2 - y1);
+    const cx = x1 + rw * 0.5;
+    const cy = y1 + rh * 0.5;
+    const radius = Math.max(Math.max(rw, rh) * 0.68, 10);
+    const peak = Math.max(0.07, Math.min(0.88, opacity * (0.18 + p.score * 0.95)));
     const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
     g.addColorStop(0, `rgba(255, 48, 48, ${peak.toFixed(3)})`);
-    g.addColorStop(0.45, `rgba(255, 120, 0, ${(peak * 0.62).toFixed(3)})`);
+    g.addColorStop(0.52, `rgba(255, 128, 0, ${(peak * 0.58).toFixed(3)})`);
     g.addColorStop(1, "rgba(255, 0, 0, 0)");
     ctx.fillStyle = g;
-    ctx.fillRect(cx - radius, cy - radius, radius * 2, radius * 2);
+    ctx.fillRect(x1, y1, rw, rh);
   }
 
   const container = document.createElement("div");

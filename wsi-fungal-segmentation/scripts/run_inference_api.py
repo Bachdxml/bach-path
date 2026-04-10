@@ -144,6 +144,112 @@ def _count_tile_positions(level_w: int, level_h: int, tile_size: int, stride: in
     return sum(1 for _ in _iter_tile_positions(level_w, level_h, tile_size, stride))
 
 
+def _connected_components(mask: np.ndarray) -> list[list[tuple[int, int]]]:
+    """Return 4-connected components over a small boolean grid."""
+    h, w = mask.shape
+    visited = np.zeros_like(mask, dtype=bool)
+    components: list[list[tuple[int, int]]] = []
+    for y in range(h):
+        for x in range(w):
+            if not mask[y, x] or visited[y, x]:
+                continue
+            stack = [(y, x)]
+            visited[y, x] = True
+            cells: list[tuple[int, int]] = []
+            while stack:
+                cy, cx = stack.pop()
+                cells.append((cy, cx))
+                if cy > 0 and mask[cy - 1, cx] and not visited[cy - 1, cx]:
+                    visited[cy - 1, cx] = True
+                    stack.append((cy - 1, cx))
+                if cy + 1 < h and mask[cy + 1, cx] and not visited[cy + 1, cx]:
+                    visited[cy + 1, cx] = True
+                    stack.append((cy + 1, cx))
+                if cx > 0 and mask[cy, cx - 1] and not visited[cy, cx - 1]:
+                    visited[cy, cx - 1] = True
+                    stack.append((cy, cx - 1))
+                if cx + 1 < w and mask[cy, cx + 1] and not visited[cy, cx + 1]:
+                    visited[cy, cx + 1] = True
+                    stack.append((cy, cx + 1))
+            components.append(cells)
+    return components
+
+
+def _tile_regions_from_prob_map(
+    prob_map: np.ndarray,
+    *,
+    tile_w: int,
+    tile_h: int,
+    tile_size: int,
+    threshold: float,
+    max_components: int = 8,
+    min_cells: int = 2,
+) -> list[dict]:
+    """
+    Build localized subregions from a tile segmentation probability map.
+    Uses a coarse cell grid to keep region count bounded while preserving locality.
+    """
+    h, w = prob_map.shape
+    if h <= 0 or w <= 0:
+        return []
+
+    cell_size = 32
+    grid_h = max(1, int(np.ceil(h / cell_size)))
+    grid_w = max(1, int(np.ceil(w / cell_size)))
+    grid_scores = np.zeros((grid_h, grid_w), dtype=np.float32)
+
+    for gy in range(grid_h):
+        y0 = gy * cell_size
+        y1 = min(h, y0 + cell_size)
+        for gx in range(grid_w):
+            x0 = gx * cell_size
+            x1 = min(w, x0 + cell_size)
+            patch = prob_map[y0:y1, x0:x1]
+            grid_scores[gy, gx] = float(patch.mean()) if patch.size else 0.0
+
+    adaptive_threshold = float(np.quantile(grid_scores, 0.80))
+    component_threshold = max(threshold, adaptive_threshold)
+
+    mask = grid_scores >= component_threshold
+    components = _connected_components(mask)
+    if not components and component_threshold > threshold:
+        mask = grid_scores >= threshold
+        components = _connected_components(mask)
+
+    regions = []
+    for cells in components:
+        if len(cells) < min_cells:
+            continue
+        ys = [c[0] for c in cells]
+        xs = [c[1] for c in cells]
+        gy0, gy1 = min(ys), max(ys) + 1
+        gx0, gx1 = min(xs), max(xs) + 1
+        score = float(np.mean([grid_scores[cy, cx] for cy, cx in cells]))
+
+        # Map coarse-grid bbox back into original (possibly edge-clipped) tile dimensions.
+        x0 = int(round((gx0 * cell_size) * tile_w / tile_size))
+        y0 = int(round((gy0 * cell_size) * tile_h / tile_size))
+        x1 = int(round((min(w, gx1 * cell_size)) * tile_w / tile_size))
+        y1 = int(round((min(h, gy1 * cell_size)) * tile_h / tile_size))
+        x0 = max(0, min(tile_w - 1, x0))
+        y0 = max(0, min(tile_h - 1, y0))
+        x1 = max(x0 + 1, min(tile_w, x1))
+        y1 = max(y0 + 1, min(tile_h, y1))
+
+        regions.append(
+            {
+                "x": x0,
+                "y": y0,
+                "w": x1 - x0,
+                "h": y1 - y0,
+                "score": round(max(0.0, min(1.0, score)), 4),
+            }
+        )
+
+    regions.sort(key=lambda r: r["score"], reverse=True)
+    return regions[:max_components]
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run fungus inference on a WSI")
     parser.add_argument("--slide-path", required=True, help="Path to slide (SVS/TIF/TIFF)")
@@ -284,18 +390,42 @@ def main():
                     return EXIT_INFERENCE
 
                 for j, (x, y, w, h) in enumerate(batch_positions):
-                    score = float(probs[j].mean().item())
+                    prob_map = probs[j, 0].detach().cpu().numpy()
+                    score = float(prob_map.mean())
                     label = "fungus_positive" if score >= args.threshold else "fungus_negative"
+                    if label == "fungus_positive":
+                        localized = _tile_regions_from_prob_map(
+                            prob_map,
+                            tile_w=w,
+                            tile_h=h,
+                            tile_size=tile_size,
+                            threshold=max(args.threshold, 0.20),
+                        )
+                        if localized:
+                            for loc in localized:
+                                regions.append(
+                                    {
+                                        "x": int(x + loc["x"]),
+                                        "y": int(y + loc["y"]),
+                                        "w": int(loc["w"]),
+                                        "h": int(loc["h"]),
+                                        "score": float(loc["score"]),
+                                        "label": "fungus_positive",
+                                    }
+                                )
+                            continue
                     if args.positive_only and label != "fungus_positive":
                         continue
-                    regions.append({
-                        "x": int(x),
-                        "y": int(y),
-                        "w": int(w),
-                        "h": int(h),
-                        "score": round(score, 4),
-                        "label": label,
-                    })
+                    regions.append(
+                        {
+                            "x": int(x),
+                            "y": int(y),
+                            "w": int(w),
+                            "h": int(h),
+                            "score": round(score, 4),
+                            "label": label,
+                        }
+                    )
         except Exception as e:
             print(f"Error processing image: {e}", file=sys.stderr)
             return EXIT_SLIDE
@@ -379,23 +509,47 @@ def main():
                     return EXIT_INFERENCE
 
                 for j, (x, y, w, h) in enumerate(batch_positions):
-                    score = float(probs[j].mean().item())
+                    prob_map = probs[j, 0].detach().cpu().numpy()
+                    score = float(prob_map.mean())
                     label = "fungus_positive" if score >= args.threshold else "fungus_negative"
-                    if args.positive_only and label != "fungus_positive":
-                        continue
                     # Convert to level-0 coordinates for API/Region
                     x0 = int(x * downsample)
                     y0 = int(y * downsample)
                     w0 = int(w * downsample)
                     h0 = int(h * downsample)
-                    regions.append({
-                        "x": x0,
-                        "y": y0,
-                        "w": w0,
-                        "h": h0,
-                        "score": round(score, 4),
-                        "label": label,
-                    })
+                    if label == "fungus_positive":
+                        localized = _tile_regions_from_prob_map(
+                            prob_map,
+                            tile_w=w0,
+                            tile_h=h0,
+                            tile_size=tile_size,
+                            threshold=max(args.threshold, 0.20),
+                        )
+                        if localized:
+                            for loc in localized:
+                                regions.append(
+                                    {
+                                        "x": int(x0 + loc["x"]),
+                                        "y": int(y0 + loc["y"]),
+                                        "w": int(loc["w"]),
+                                        "h": int(loc["h"]),
+                                        "score": float(loc["score"]),
+                                        "label": "fungus_positive",
+                                    }
+                                )
+                            continue
+                    if args.positive_only and label != "fungus_positive":
+                        continue
+                    regions.append(
+                        {
+                            "x": x0,
+                            "y": y0,
+                            "w": w0,
+                            "h": h0,
+                            "score": round(score, 4),
+                            "label": label,
+                        }
+                    )
 
             slide.close()
         except Exception as e:
