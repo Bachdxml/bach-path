@@ -37,7 +37,7 @@ def _cors_origins() -> list[str]:
 
 
 def _cors_methods() -> list[str]:
-    return _csv_env("APP_CORS_METHODS", ["GET", "POST", "DELETE"])
+    return _csv_env("APP_CORS_METHODS", ["GET", "POST", "PATCH", "DELETE"])
 
 
 def _cors_headers() -> list[str]:

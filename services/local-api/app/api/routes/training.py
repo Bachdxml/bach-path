@@ -48,7 +48,7 @@ def training_info() -> TrainingInfoResponse:
 
     notes = [
         "Train in a Python environment with GPU support using the paths above; do not rely on the desktop app to run training.",
-        "After training, export a small gzip checkpoint with export_deploy_weights.py and copy the .pth.gz file into models/.",
+        "After training, run export_deploy_weights.py with required --checkpoint (training .pth) and --output (gzip path); copy the .pth.gz into models/ or write --output directly under models/.",
         "Inference loads deployed gzip checkpoints (.pth.gz / .pt.gz) from models/.",
     ]
     if os.environ.get("INFERENCE_CHECKPOINT"):

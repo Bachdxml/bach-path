@@ -61,7 +61,7 @@ class WSIDatasetIndex:
             'total_pairs':      0,
             'density_counts':   {d: 0 for d in DENSITY_FOLDERS},
             'issues':           [],
-            'unpaired_skipped': 0,  # images with no matching mask (skipped, not fatal)
+            'unpaired_skipped': 0,  # images with no matching mask (strict mode raises)
         }
 
 
@@ -183,6 +183,7 @@ class WSIDatasetIndex:
         image_files = list(img_dir.glob("*.[pP][nN][gG]"))
         if not image_files:
             raise ValueError(f"No PNG images in {wsi_id}/images/")
+        unpaired = []
         for img_path in natsorted(image_files):
             mask_path = self._find_corresponding_mask(img_path, msk_dir)
             if mask_path is None:
@@ -191,6 +192,7 @@ class WSIDatasetIndex:
                     mask_path = alt
                 else:
                     self.validation_report["unpaired_skipped"] += 1
+                    unpaired.append(img_path.name)
                     continue
             self._validate_tile_pair(img_path, mask_path, wsi_id)
             all_pairs.append(TilePair(
@@ -200,6 +202,14 @@ class WSIDatasetIndex:
                 tile_id=img_path.stem,
                 density="medium"
             ))
+        if unpaired:
+            msg = (
+                f"{wsi_id}: {len(unpaired)} image(s) have no matching mask "
+                f"(e.g. {unpaired[:3]})."
+            )
+            if self.strict_mode:
+                raise ValueError(msg)
+            print(f"⚠️  {msg}")
         print(f"✓ {wsi_id}: {len(all_pairs)} pairs (flat format, density=medium)")
         return all_pairs
 
@@ -252,13 +262,15 @@ class WSIDatasetIndex:
                 ))
 
             if unpaired:
-                # Exports often omit masks for some tiles; skip them instead of failing the build
                 n = len(unpaired)
                 self.validation_report['unpaired_skipped'] += n
-                print(
-                    f"\u26a0\ufe0f  {wsi_id}/{density}: skipped {n} image(s) without matching "
+                msg = (
+                    f"{wsi_id}/{density}: {n} image(s) without matching "
                     f"_mask.png (e.g. {unpaired[:3]})"
                 )
+                if self.strict_mode:
+                    raise ValueError(msg)
+                print(f"⚠️  {msg}")
 
         if not found_any_density:
             raise FileNotFoundError(

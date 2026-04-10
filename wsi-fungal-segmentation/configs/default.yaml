@@ -2,7 +2,7 @@
 # Data
 # -----------------------------------------------------------------------
 data:
-  export_root: ""  # Set via --export-root or API (e.g. MASTERTILE folder)
+  export_root: "../training_data/MASTERTILE"  # Default repo dropzone for training tiles
   img_size: 512
   val_ratio: 0.2
   random_seed: 42

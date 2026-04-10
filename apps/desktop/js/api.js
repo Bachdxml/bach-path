@@ -43,11 +43,24 @@ function withApiHeaders(headers = {}) {
 }
 
 async function apiFetch(path, options = {}) {
-  const { headers, ...rest } = options;
+  const { headers, signal, ...rest } = options;
   return fetch(`${apiBase}${path}`, {
     ...rest,
+    signal,
     headers: withApiHeaders(headers),
   });
+}
+
+async function apiFetchWithFallback(paths, options = {}) {
+  let lastResponse = null;
+  for (const path of paths) {
+    const res = await apiFetch(path, options);
+    if (res.ok || res.status !== 404) {
+      return res;
+    }
+    lastResponse = res;
+  }
+  return lastResponse;
 }
 
 async function listSlides() {
@@ -62,6 +75,53 @@ async function importSlide(filePath) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ file_path: filePath }),
   });
+  if (!res.ok) throw new Error(await parseErrorResponse(res));
+  return res.json();
+}
+
+async function importCollection(filePaths, title = null, sourceType = null, signal = null) {
+  const payload = {
+    file_paths: filePaths || [],
+  };
+  if (typeof title === "string" && title.trim()) payload.title = title.trim();
+  if (typeof sourceType === "string" && sourceType.trim()) payload.source_type = sourceType.trim();
+  const res = await apiFetchWithFallback(["/slides/import-collection", "/slides/import-collections"], {
+    method: "POST",
+    signal,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await parseErrorResponse(res));
+  return res.json();
+}
+
+async function renameImportCollection(collectionId, title) {
+  const payload = JSON.stringify({ title });
+  const attempts = [
+    { method: "POST", path: `/import-collections/${collectionId}/rename` },
+    { method: "POST", path: `/slides/import-collections/${collectionId}/rename` },
+    { method: "PATCH", path: `/import-collections/${collectionId}` },
+    { method: "PATCH", path: `/slides/import-collections/${collectionId}` },
+    { method: "PATCH", path: `/slides/import-collection/${collectionId}` },
+  ];
+  let res = null;
+  for (const attempt of attempts) {
+    try {
+      const nextRes = await apiFetch(attempt.path, {
+        method: attempt.method,
+        headers: { "Content-Type": "application/json" },
+        body: payload,
+      });
+      if (nextRes.ok || nextRes.status !== 404) {
+        res = nextRes;
+        break;
+      }
+      res = nextRes;
+    } catch (_) {
+      // Continue to next route/method combo if this attempt fails at transport/CORS level.
+    }
+  }
+  if (!res) throw new Error("Rename request could not reach the API");
   if (!res.ok) throw new Error(await parseErrorResponse(res));
   return res.json();
 }
@@ -171,13 +231,15 @@ async function deleteSlide(slideId) {
   return res.json();
 }
 
-window.slidesApi = {
+const slidesApi = {
   setApiBase,
   setApiKey,
   getApiBase,
   healthCheck,
   listSlides,
   importSlide,
+  importCollection,
+  renameImportCollection,
   deleteSlide,
   getThumbnailUrl,
   getSlideMetadata,
@@ -193,3 +255,10 @@ window.slidesApi = {
   listInferenceModels,
   getTrainingInfo,
 };
+
+if (window.BachPath?.registerService) {
+  window.BachPath.registerService("slidesApi", slidesApi);
+}
+
+// Backward-compatible alias used by existing feature modules.
+window.slidesApi = slidesApi;

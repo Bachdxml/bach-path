@@ -41,6 +41,37 @@ logs/
 
 # Training data
 MASTERTILE/
+training_data/*
+!training_data/.gitkeep
 
 # Local planning docs
 PRODUCT_ROADMAP.md
+PHASE1_SPRINT_BOARD.md
+*ROADMAP*.md
+*SPRINT_BOARD*.md
+
+# Cursor IDE (local agent definitions; keep rules/skills in repo if desired)
+.cursor/agents/
+
+# Codex local configuration
+.codex/
+
+# Claude Flow runtime data
+.claude-flow/data/
+.claude-flow/logs/
+
+# Agent/RuFlo generated project files (keep local)
+.agents/
+.claude/
+.claude-flow/
+.swarm/
+.mcp.json
+AGENTS.md
+CLAUDE.md
+ruvector.db
+.cursor/
+
+# Environment variables
+.env
+.env.local
+.env.*.local

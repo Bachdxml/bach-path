@@ -1,9 +1,11 @@
 # Pinned runtime dependencies for training, evaluation, and inference.
 # On macOS/Linux, install the native OpenSlide library separately if you use WSI inputs.
-torch==2.4.1
-torchvision==0.19.1
+# torch 2.4.x wheels are no longer published for some Python/macOS combos; use 2.6+ from PyPI.
+torch==2.6.0
+torchvision==0.21.0
 numpy==1.26.4
-matplotlib==3.8.4
+# 3.8.x has no cp313 wheels: pip builds from source and often fails (bundled FreeType). Use 3.9+.
+matplotlib==3.10.8
 PyYAML==6.0.2
 Pillow==10.4.0
 natsort==8.4.0

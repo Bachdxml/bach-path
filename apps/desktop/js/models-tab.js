@@ -1,9 +1,11 @@
 const modelsDeployPathsEl = document.getElementById("models-deploy-paths");
+const modelsApp = window.BachPath || null;
+const modelsSlidesApi = modelsApp?.services?.slidesApi || window.slidesApi;
 
 async function loadDeployInfo() {
   if (!modelsDeployPathsEl) return;
   try {
-    const info = await window.slidesApi.getTrainingInfo();
+    const info = await modelsSlidesApi.getTrainingInfo();
     const lines = [];
     lines.push("Training runs outside this application. Use the repo paths below on your training machine.");
     lines.push("");
@@ -42,6 +44,11 @@ async function loadDeployInfo() {
 }
 
 window.loadDeployInfo = loadDeployInfo;
+if (modelsApp?.registerFeature) {
+  modelsApp.registerFeature("models", {
+    loadDeployInfo,
+  });
+}
 
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", loadDeployInfo);

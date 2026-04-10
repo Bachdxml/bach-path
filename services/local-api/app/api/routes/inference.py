@@ -132,10 +132,14 @@ def _resolve_model_checkpoint(model_file: str | None) -> tuple[Path, str]:
     if env_path:
         return Path(env_path).resolve(), "env:INFERENCE_CHECKPOINT"
 
-    # 2) Prefer default deploy artifact if present.
-    default_model = models_dir / "deploy.pth.gz"
-    if default_model.exists():
-        return default_model, "models/deploy.pth.gz"
+    # 2) Prefer default deploy artifact if present (canonical name, then legacy).
+    for name, label in (
+        ("deploy-fungus.pth.gz", "models/deploy-fungus.pth.gz"),
+        ("deploy.pth.gz", "models/deploy.pth.gz"),
+    ):
+        default_model = models_dir / name
+        if default_model.exists():
+            return default_model, label
 
     # 3) First discovered model file.
     if model_infos:

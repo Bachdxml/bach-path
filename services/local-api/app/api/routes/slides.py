@@ -4,26 +4,39 @@ import io
 import logging
 import shutil
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import FileResponse
 from PIL import Image
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import get_db
 from app.models.enums import InferenceStatus
 from app.models.inference_run import InferenceRun
+from app.models.import_collection import ImportCollection
 from app.models.region import Region
 from app.models.slide import Slide
-from app.schemas.slides import SlideImportRequest, SlideImportResponse, SlideListItem, SlideListResponse, SlideMetadataResponse
+from app.schemas.slides import (
+    ImportCollectionRenameRequest,
+    ImportCollectionResponse,
+    SlideImportCollectionRequest,
+    SlideImportCollectionResponse,
+    SlideImportRequest,
+    SlideImportResponse,
+    SlideListItem,
+    SlideListResponse,
+    SlideMetadataResponse,
+)
 from app.slides.deepzoom import deepzoom_paths, ensure_deepzoom, has_deepzoom
 from app.slides.metadata import RASTER_EXTENSIONS, read_openslide_metadata, read_raster_metadata
 from app.slides.storage import copy_into_managed_storage
 from app.util.exceptions import AppError, ErrorCode
 
 router = APIRouter(prefix="/slides", tags=["slides"])
+collections_router = APIRouter(tags=["slides"])
 logger = logging.getLogger(__name__)
 
 WSI_EXTENSIONS = {".svs", ".tif", ".tiff", ".png"}
@@ -31,6 +44,7 @@ WSI_EXTENSIONS = {".svs", ".tif", ".tiff", ".png"}
 TILE_SIZE_DEFAULT = 256
 THUMBNAIL_SIZE_MIN = 32
 THUMBNAIL_SIZE_MAX = 2048
+MAX_IMPORT_COLLECTION_ITEMS = 256
 
 
 def _display_original_path(original_path: str | None) -> str | None:
@@ -60,6 +74,41 @@ def _managed_slide_identifier(stored_filename: str) -> str:
     return f"slides/{stored_filename}"
 
 
+def _collection_title_from_timestamp(timestamp: datetime | None) -> str:
+    ts = timestamp or datetime.now(timezone.utc)
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts.isoformat(timespec="seconds")
+
+
+def _serialize_collection(collection: ImportCollection) -> ImportCollectionResponse:
+    return ImportCollectionResponse(
+        id=collection.id,
+        title=collection.title,
+        source_type=collection.source_type,
+        created_at=collection.created_at,
+    )
+
+
+def _create_import_collection(
+    db: Session,
+    *,
+    title: str | None,
+    source_type: str | None,
+    created_at: datetime | None = None,
+) -> ImportCollection:
+    collection = ImportCollection(
+        title=title if title is not None else _collection_title_from_timestamp(created_at),
+        source_type=(source_type or "import"),
+    )
+    if created_at is not None:
+        collection.created_at = created_at
+    db.add(collection)
+    db.flush()
+    db.refresh(collection)
+    return collection
+
+
 def _ensure_import_allowed(src: Path, allowed_roots: tuple[Path, ...]) -> None:
     if not allowed_roots:
         return
@@ -76,6 +125,68 @@ def _ensure_import_allowed(src: Path, allowed_roots: tuple[Path, ...]) -> None:
         "Slide import path is not allowed",
         http_status=403,
     )
+
+
+def _validate_import_source(src: Path, allowed_roots: tuple[Path, ...]) -> None:
+    if not src.exists():
+        raise AppError(ErrorCode.SLIDE_NOT_FOUND, "File not found")
+    if not src.is_file():
+        raise AppError(ErrorCode.SLIDE_INVALID, "Import path must be a file")
+    _ensure_import_allowed(src, allowed_roots)
+    if src.suffix.lower() not in WSI_EXTENSIONS:
+        raise AppError(ErrorCode.SLIDE_INVALID, "Unsupported slide file extension")
+
+
+def _import_slide_file(
+    *,
+    db: Session,
+    src: Path,
+    settings,
+    collection_id: int | None,
+) -> Slide:
+    slide = Slide(
+        original_path=str(src.resolve()),
+        stored_filename="pending",
+        stored_path="pending",
+        file_size_bytes=src.stat().st_size,
+        sha256=None,
+        import_collection_id=collection_id,
+    )
+    db.add(slide)
+    db.flush()
+
+    dest_filename = f"{slide.id}{src.suffix.lower()}"
+    dest_path = None
+    for attempt in range(4):
+        try:
+            dest_path = copy_into_managed_storage(src, settings.slides_dir, dest_filename)
+            break
+        except FileExistsError:
+            if attempt == 0:
+                logger.warning(
+                    "Managed storage collision for slide id=%s filename=%s; retrying with unique suffix",
+                    slide.id,
+                    dest_filename,
+                )
+            dest_filename = f"{slide.id}-{uuid.uuid4().hex[:8]}{src.suffix.lower()}"
+        except PermissionError:
+            raise AppError(ErrorCode.SLIDE_PERMISSION, "Access denied when copying slide")
+        except OSError:
+            logger.exception("Failed to copy slide from %s", src)
+            raise AppError(ErrorCode.IO_ERROR, "Failed to copy slide")
+    if dest_path is None:
+        raise AppError(ErrorCode.CONFLICT, "Managed slide already exists")
+
+    slide.stored_filename = dest_filename
+    slide.stored_path = str(dest_path)
+
+    try:
+        ensure_deepzoom(dest_path, settings.tiles_cache_dir, slide.id)
+    except Exception:
+        # Keep import successful even if pre-generation fails; viewer can still use dynamic tiles.
+        logger.exception("DeepZoom generation failed for slide %s", slide.id)
+
+    return slide
 
 
 def _raster_thumbnail_jpeg(slide_path: Path, size: int) -> bytes:
@@ -157,7 +268,12 @@ def delete_slide(slide_id: int, request: Request, db: Session = Depends(get_db))
 # List all slides in db for gallery
 @router.get("", response_model=SlideListResponse)
 def list_slides(db: Session = Depends(get_db)):
-    slides = db.query(Slide).order_by(Slide.created_at.desc()).all()
+    slides = (
+        db.query(Slide)
+        .options(selectinload(Slide.import_collection))
+        .order_by(Slide.created_at.desc())
+        .all()
+    )
     slide_ids = [s.id for s in slides]
     latest_run_by_slide: dict[int, InferenceRun] = {}
     positive_count_by_run: dict[int, int] = {}
@@ -205,6 +321,9 @@ def list_slides(db: Session = Depends(get_db)):
                 inference_result=_inference_result(s.id),
                 folder_label=folder_label,
                 folder_key=folder_key,
+                collection_id=s.import_collection.id if s.import_collection else s.import_collection_id,
+                collection_title=s.import_collection.title if s.import_collection else None,
+                collection_created_at=s.import_collection.created_at if s.import_collection else None,
             )
         )
     return SlideListResponse(slides=items)
@@ -215,63 +334,96 @@ def import_slide(payload: SlideImportRequest, request: Request, db: Session = De
     settings = request.app.state.settings
 
     src = Path(payload.file_path)
-    if not src.exists():
-        raise AppError(ErrorCode.SLIDE_NOT_FOUND, "File not found")
-    if not src.is_file():
-        raise AppError(ErrorCode.SLIDE_INVALID, "Import path must be a file")
+    _validate_import_source(src, settings.import_allowed_roots)
 
-    _ensure_import_allowed(src, settings.import_allowed_roots)
+    collection: ImportCollection | None = None
+    if payload.collection_id is not None:
+        collection = db.get(ImportCollection, payload.collection_id)
+        if not collection:
+            raise AppError(ErrorCode.NOT_FOUND, f"Import collection {payload.collection_id} not found")
+    else:
+        collection = _create_import_collection(
+            db,
+            title=None,
+            source_type="import",
+        )
 
-    # Basic extension gate (don’t rely solely on it)
-    if src.suffix.lower() not in WSI_EXTENSIONS:
-        raise AppError(ErrorCode.SLIDE_INVALID, "Unsupported slide file extension")
+    slide = _import_slide_file(db=db, src=src, settings=settings, collection_id=collection.id if collection else None)
+    return SlideImportResponse(slide_id=slide.id, stored_path=_managed_slide_identifier(slide.stored_filename))
 
-    # Create DB row first to reserve an ID (stable filename)
-    size = src.stat().st_size
-    slide = Slide(
-        original_path=str(src.resolve()),
-        stored_filename="pending",
-        stored_path="pending",
-        file_size_bytes=size,
-        sha256=None,
+
+@router.post("/import-collection", response_model=SlideImportCollectionResponse)
+@router.post("/import-collections", response_model=SlideImportCollectionResponse)
+def import_slide_collection(payload: SlideImportCollectionRequest, request: Request, db: Session = Depends(get_db)):
+    settings = request.app.state.settings
+
+    # Keep batch imports bounded to avoid long-running single requests.
+    if len(payload.file_paths) > MAX_IMPORT_COLLECTION_ITEMS:
+        raise AppError(
+            ErrorCode.SLIDE_INVALID,
+            f"Too many files in one import collection (max {MAX_IMPORT_COLLECTION_ITEMS})",
+        )
+
+    deduped_file_paths = list(dict.fromkeys(payload.file_paths))
+    sources = [Path(file_path) for file_path in deduped_file_paths]
+    for src in sources:
+        _validate_import_source(src, settings.import_allowed_roots)
+
+    collection = _create_import_collection(
+        db,
+        title=payload.title,
+        source_type=payload.source_type,
     )
-    db.add(slide)
-    db.flush()  # assigns slide.id without committing yet
 
-    # Prefer deterministic id-based names, but recover if stale/orphan files already
-    # occupy that path (common after interrupted/manual cleanup scenarios).
-    dest_filename = f"{slide.id}{src.suffix.lower()}"
-    dest_path = None
-    for attempt in range(4):
-        try:
-            dest_path = copy_into_managed_storage(src, settings.slides_dir, dest_filename)
-            break
-        except FileExistsError:
-            if attempt == 0:
-                logger.warning(
-                    "Managed storage collision for slide id=%s filename=%s; retrying with unique suffix",
-                    slide.id,
-                    dest_filename,
-                )
-            dest_filename = f"{slide.id}-{uuid.uuid4().hex[:8]}{src.suffix.lower()}"
-        except PermissionError:
-            raise AppError(ErrorCode.SLIDE_PERMISSION, "Access denied when copying slide")
-        except OSError:
-            logger.exception("Failed to copy slide from %s", src)
-            raise AppError(ErrorCode.IO_ERROR, "Failed to copy slide")
-    if dest_path is None:
-        raise AppError(ErrorCode.CONFLICT, "Managed slide already exists")
-
-    slide.stored_filename = dest_filename
-    slide.stored_path = str(dest_path)
-
+    imported_slide_ids: list[int] = []
+    copied_paths: list[Path] = []
     try:
-        ensure_deepzoom(dest_path, settings.tiles_cache_dir, slide.id)
+        for src in sources:
+            slide = _import_slide_file(db=db, src=src, settings=settings, collection_id=collection.id)
+            imported_slide_ids.append(slide.id)
+            copied_paths.append(Path(slide.stored_path))
     except Exception:
-        # Keep import successful even if pre-generation fails; viewer can still use dynamic tiles.
-        logger.exception("DeepZoom generation failed for slide %s", slide.id)
+        for slide_id in imported_slide_ids:
+            shutil.rmtree(settings.tiles_cache_dir / str(slide_id), ignore_errors=True)
+        for copied_path in copied_paths:
+            if copied_path.is_file():
+                try:
+                    copied_path.unlink()
+                except OSError:
+                    logger.warning("Could not delete copied slide file %s after failed collection import", copied_path)
+        raise
 
-    return SlideImportResponse(slide_id=slide.id, stored_path=_managed_slide_identifier(dest_filename))
+    return SlideImportCollectionResponse(
+        collection=_serialize_collection(collection),
+        imported_count=len(imported_slide_ids),
+        imported_slide_ids=imported_slide_ids,
+    )
+
+
+@collections_router.get("/import-collections/{collection_id}", response_model=ImportCollectionResponse)
+def get_import_collection(
+    collection_id: int,
+    db: Session = Depends(get_db),
+):
+    collection = db.get(ImportCollection, collection_id)
+    if not collection:
+        raise AppError(ErrorCode.NOT_FOUND, f"Import collection {collection_id} not found")
+    return _serialize_collection(collection)
+
+
+@collections_router.patch("/import-collections/{collection_id}", response_model=ImportCollectionResponse)
+@collections_router.post("/import-collections/{collection_id}/rename", response_model=ImportCollectionResponse)
+def rename_import_collection(
+    collection_id: int,
+    payload: ImportCollectionRenameRequest,
+    db: Session = Depends(get_db),
+):
+    collection = db.get(ImportCollection, collection_id)
+    if not collection:
+        raise AppError(ErrorCode.NOT_FOUND, f"Import collection {collection_id} not found")
+
+    collection.title = payload.title
+    return _serialize_collection(collection)
 
 
 @router.get("/{slide_id}/metadata", response_model=SlideMetadataResponse)

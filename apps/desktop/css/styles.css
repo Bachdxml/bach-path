@@ -375,6 +375,10 @@ body {
   justify-content: center;
 }
 
+.import-collection-field {
+  width: min(420px, 100%);
+}
+
 .import-status,
 .import-progress {
   min-height: 18px;
@@ -509,6 +513,8 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .gallery-folder-toggle {
@@ -518,10 +524,36 @@ body {
   font-size: 12px;
   padding: 0;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
 }
 
 .gallery-folder-toggle:hover {
   color: var(--text);
+}
+
+.gallery-collection-title {
+  min-width: 0;
+  max-width: min(46vw, 420px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.gallery-collection-meta {
+  color: var(--text-muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.gallery-collection-toggle-icon {
+  color: var(--text-secondary);
+  width: 10px;
+  flex: none;
 }
 
 .gallery-folder-group.is-collapsed .gallery-grid {

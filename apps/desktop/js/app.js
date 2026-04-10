@@ -1,4 +1,9 @@
 document.addEventListener("DOMContentLoaded", () => {
+  const app = window.BachPath || null;
+  const slidesApi = app?.services?.slidesApi || window.slidesApi;
+  const inferenceModelChangedEvent =
+    app?.constants?.events?.inferenceModelChanged || "inference-model-changed";
+
   const tabBtns = document.querySelectorAll(".tab-btn");
   const tabPanes = document.querySelectorAll(".tab-pane");
   const modelSelect = document.getElementById("inference-model-select");
@@ -77,12 +82,12 @@ document.addEventListener("DOMContentLoaded", () => {
   let healthTimer = null;
   async function pingApi() {
     try {
-      const data = await window.slidesApi.healthCheck();
+      const data = await slidesApi.healthCheck();
       const up = typeof data?.uptime_seconds === "number" ? data.uptime_seconds : null;
       const meta =
         up != null
           ? `uptime ${Math.floor(up / 60)}m`
-          : window.slidesApi.getApiBase().replace(/^https?:\/\//, "");
+          : slidesApi.getApiBase().replace(/^https?:\/\//, "");
       setApiStatus("ok", meta);
     } catch {
       setApiStatus("error", "Check that the local API started");
@@ -96,10 +101,10 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   async function loadModelOptions() {
-    if (!modelSelect) return;
+      if (!modelSelect) return;
     try {
       setModelStatus("Loading models...");
-      const data = await window.slidesApi.listInferenceModels();
+      const data = await slidesApi.listInferenceModels();
       const models = data.models || [];
       if (homeMetricModels) homeMetricModels.textContent = String(models.length);
       modelSelect.innerHTML = "";
@@ -126,9 +131,8 @@ document.addEventListener("DOMContentLoaded", () => {
       modelSelect.value = selected;
       localStorage.setItem("selectedInferenceModel", selected);
       setModelStatus(`Using model: ${selected}`);
-      window.dispatchEvent(
-        new CustomEvent("inference-model-changed", { detail: { modelId: selected } })
-      );
+      if (app?.emit) app.emit(inferenceModelChangedEvent, { modelId: selected });
+      else window.dispatchEvent(new CustomEvent(inferenceModelChangedEvent, { detail: { modelId: selected } }));
     } catch (err) {
       setModelStatus(`Failed to load models: ${err.message}`, true);
     }
@@ -142,8 +146,8 @@ document.addEventListener("DOMContentLoaded", () => {
   async function refreshHomeMetrics() {
     try {
       const [slidesRes, modelsRes] = await Promise.all([
-        window.slidesApi.listSlides(),
-        window.slidesApi.listInferenceModels(),
+        slidesApi.listSlides(),
+        slidesApi.listInferenceModels(),
       ]);
       const slides = slidesRes?.slides || [];
       const positive = slides.filter((s) => s.inference_result === "positive").length;
@@ -167,8 +171,10 @@ document.addEventListener("DOMContentLoaded", () => {
     if (tab === "home") {
       refreshHomeMetrics();
     }
-    if (tab === "gallery" && typeof window.galleryRefresh === "function") {
-      window.galleryRefresh();
+    const refreshGallery =
+      app?.features?.gallery?.refresh || window.galleryRefresh;
+    if (tab === "gallery" && typeof refreshGallery === "function") {
+      refreshGallery();
     }
   }
 
@@ -185,18 +191,21 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const offApiReady = window.electronAPI.onApiReady(({ port, host, apiKey }) => {
     const hostForUrl = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
-    window.slidesApi.setApiBase(`http://${hostForUrl}:${port}`);
-    if (typeof window.slidesApi.setApiKey === "function") {
-      window.slidesApi.setApiKey(apiKey || null);
+    slidesApi.setApiBase(`http://${hostForUrl}:${port}`);
+    if (typeof slidesApi.setApiKey === "function") {
+      slidesApi.setApiKey(apiKey || null);
     }
     if (healthTimer) clearInterval(healthTimer);
     pingApi();
     healthTimer = setInterval(pingApi, 10000);
-    if (typeof window.galleryRefresh === "function") {
-      window.galleryRefresh();
+    const refreshGallery =
+      app?.features?.gallery?.refresh || window.galleryRefresh;
+    if (typeof refreshGallery === "function") {
+      refreshGallery();
     }
     loadModelOptions();
-    if (typeof window.loadDeployInfo === "function") window.loadDeployInfo();
+    const loadDeployInfo = app?.features?.models?.loadDeployInfo || window.loadDeployInfo;
+    if (typeof loadDeployInfo === "function") loadDeployInfo();
     refreshHomeMetrics();
   });
   window.addEventListener("beforeunload", () => {
@@ -208,8 +217,8 @@ document.addEventListener("DOMContentLoaded", () => {
     .then((config) => {
       const portInput = document.getElementById("api-port");
       if (portInput) portInput.value = config.apiPort ?? 8765;
-      if (typeof window.slidesApi.setApiKey === "function") {
-        window.slidesApi.setApiKey(config.apiKey || null);
+      if (typeof slidesApi.setApiKey === "function") {
+        slidesApi.setApiKey(config.apiKey || null);
       }
     })
     .catch((err) => {
@@ -236,9 +245,10 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!modelSelect.value) return;
     localStorage.setItem("selectedInferenceModel", modelSelect.value);
     setModelStatus(`Using model: ${modelSelect.value}`);
-    window.dispatchEvent(
-      new CustomEvent("inference-model-changed", { detail: { modelId: modelSelect.value } })
-    );
+    if (app?.emit) app.emit(inferenceModelChangedEvent, { modelId: modelSelect.value });
+    else {
+      window.dispatchEvent(new CustomEvent(inferenceModelChangedEvent, { detail: { modelId: modelSelect.value } }));
+    }
   });
 
   refreshModelsBtn?.addEventListener("click", loadModelOptions);
@@ -303,4 +313,13 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     }
   });
+
+  if (app?.registerFeature) {
+    app.registerFeature("shell", {
+      activateTab,
+      refreshHomeMetrics,
+      getSelectedInferenceModel: window.getSelectedInferenceModel,
+      toast,
+    });
+  }
 });
