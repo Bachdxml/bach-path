@@ -19,7 +19,7 @@ The desktop UI lives in `apps/desktop`, and it starts a local FastAPI backend fr
 
 - macOS, Linux, or Windows
 - Node.js 18+ and npm
-- Python 3.10+
+- Python 3.13 (required for local API dependencies)
 
 Optional but recommended:
 
@@ -41,7 +41,7 @@ From repo root:
 
 ```bash
 cd services/local-api
-python3 -m venv .venv
+python3.13 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
