@@ -23,3 +23,11 @@
 - confidence: medium
 - evidence: Initial suspicion about queue lifecycle correctness was tested via `services/local-api/tests/test_queue_abstraction.py`.
 - decision: discarded
+
+## F4
+- id: F4
+- category: bug
+- severity: high
+- confidence: high
+- evidence: `queued`/`running` inference runs could remain orphaned after process restart because in-memory queue state is lost while DB statuses remained non-terminal.
+- decision: confirmed

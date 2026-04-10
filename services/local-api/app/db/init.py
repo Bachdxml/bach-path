@@ -21,12 +21,19 @@ from app.models import (
     slide,
     user,
 )
+from app.models.enums import InferenceStatus
+from app.models.inference_run import InferenceRun
+from app.models.inference_run_event import InferenceRunEvent
 from app.models.import_collection import ImportCollection
 from app.models.slide import Slide
 
 
 REQUIRED_DIRS = ("slides", "inference_runs", "training_runs", "tiles_cache", "logs")
 logger = logging.getLogger(__name__)
+_STARTUP_FAILURE_CODE = "startup_recovery"
+_STARTUP_FAILURE_MESSAGE = (
+    "Inference run was interrupted by an unclean API shutdown and was marked failed during startup reconciliation."
+)
 
 def ensure_dirs(settings: Settings) -> None:
     settings.app_data_dir.mkdir(parents=True, exist_ok=True)
@@ -81,10 +88,62 @@ def _upgrade_sqlite_schema(sqlite_path: Path) -> None:
 
         db.commit()
 
-def init_database(settings: Settings) -> None:
+def _is_blank(value: str | None) -> bool:
+    return value is None or not value.strip()
+
+def _reconcile_orphaned_inference_runs(sqlite_path: Path) -> int:
+    engine = make_engine(sqlite_path)
+    session_factory = make_session_factory(engine)
+    now = datetime.now(timezone.utc)
+    repaired_count = 0
+
+    with session_factory() as db:
+        orphaned_runs = (
+            db.query(InferenceRun)
+            .filter(InferenceRun.status.in_([InferenceStatus.queued.value, InferenceStatus.running.value]))
+            .order_by(InferenceRun.id.asc())
+            .all()
+        )
+        if not orphaned_runs:
+            return 0
+
+        for run in orphaned_runs:
+            previous_status = run.status
+            run.status = InferenceStatus.failed.value
+            run.finished_at = now
+            if _is_blank(run.error_code):
+                run.error_code = _STARTUP_FAILURE_CODE
+            if _is_blank(run.error_message):
+                run.error_message = _STARTUP_FAILURE_MESSAGE
+            db.add(
+                InferenceRunEvent(
+                    run_id=run.id,
+                    from_status=previous_status,
+                    to_status=InferenceStatus.failed.value,
+                    changed_at=now,
+                    detail="Startup reconciliation recovered an interrupted inference run.",
+                    error=run.error_code,
+                )
+            )
+            repaired_count += 1
+
+        db.commit()
+
+    return repaired_count
+
+def init_database(settings: Settings) -> int:
     ensure_dirs(settings)
     if migrations_available():
         run_migrations(settings.sqlite_path)
     else:
         logger.warning("Alembic assets not found; falling back to metadata.create_all().")
     _upgrade_sqlite_schema(settings.sqlite_path)
+    repaired_count = _reconcile_orphaned_inference_runs(settings.sqlite_path)
+    if repaired_count:
+        logger.info(
+            "Startup reconciliation marked %d orphaned inference run(s) as failed.",
+            repaired_count,
+        )
+    else:
+        logger.info("Startup reconciliation found no orphaned inference runs.")
+    return repaired_count

@@ -13,3 +13,10 @@
 - Added lifecycle API query endpoint: `GET /inference/runs/{run_id}/lifecycle-events`.
 - Re-validated targeted suite after integration: `17 passed`.
 - No new critical/high findings observed in touched inference lifecycle paths.
+
+## Cycle Update: P1-B3 Startup Reconciliation
+
+- Added startup reconciliation for orphaned `queued`/`running` inference runs.
+- Reconciliation now marks orphaned runs as `failed`, sets `finished_at`, and writes lifecycle transition events.
+- Confirmed idempotent behavior: only non-terminal runs are reconciled.
+- No new critical/high security findings introduced in reconciliation path.

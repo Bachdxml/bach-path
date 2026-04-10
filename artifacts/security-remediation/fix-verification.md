@@ -15,3 +15,9 @@
 - Command: `.venv/bin/pytest -q tests/test_inference_lifecycle_persistence.py tests/test_queue_abstraction.py tests/test_inference_limits.py tests/test_settings_profiles.py`
 - Result: `17 passed`.
 - Added negative-path coverage for failed inference lifecycle (`queued -> running -> failed`) and success lifecycle (`queued -> running -> succeeded`).
+
+## Cycle Update: P1-B3 Verification
+
+- Command: `.venv/bin/pytest -q tests/test_inference_startup_reconciliation.py tests/test_inference_lifecycle_persistence.py tests/test_queue_abstraction.py tests/test_inference_limits.py tests/test_settings_profiles.py`
+- Result: `18 passed`.
+- Restart simulation test confirms orphaned `queued`/`running` runs are reconciled and terminal `succeeded` runs are unchanged.
