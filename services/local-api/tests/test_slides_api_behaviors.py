@@ -6,6 +6,8 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from app.main import create_app
+from app.models.inference_run import InferenceRun
+from app.models.region import Region
 from app.models.slide import Slide
 
 
@@ -220,3 +222,55 @@ def test_batch_inference_rejects_oversized_payload(app_paths):
     assert response.status_code == 400
     payload = response.json()
     assert payload["error"]["code"] == "slide_invalid"
+
+
+def test_inference_regions_include_hotspot_payload(app_paths):
+    slide_path = app_paths["source_dir"] / "region-payload.png"
+    _create_sample_slide(slide_path, color=(180, 90, 120))
+
+    app = create_app()
+    with TestClient(app) as client:
+        import_response = client.post("/slides/import", json={"file_path": str(slide_path)})
+        assert import_response.status_code == 200, import_response.text
+        slide_id = import_response.json()["slide_id"]
+
+        db = app.state.SessionLocal()
+        try:
+            run = InferenceRun(
+                slide_id=slide_id,
+                model_name="ResidualAttentionUNet",
+                model_version="test",
+                status="succeeded",
+            )
+            db.add(run)
+            db.flush()
+
+            region = Region(
+                inference_run_id=run.id,
+                x=100,
+                y=200,
+                w=512,
+                h=512,
+                score=0.82,
+                label="fungus_positive",
+                payload_json=(
+                    '{"hotspot":{"cx":164.5,"cy":248.25,"x":140,"y":226,"w":72,"h":60,'
+                    '"coverage":0.118,"source":"segmentation_centroid"}}'
+                ),
+            )
+            db.add(region)
+            db.commit()
+            run_id = run.id
+        finally:
+            db.close()
+
+        regions_response = client.get(f"/inference/runs/{run_id}/regions")
+
+    assert regions_response.status_code == 200, regions_response.text
+    payload = regions_response.json()
+    assert len(payload["regions"]) == 1
+    hotspot = payload["regions"][0]["payload"]["hotspot"]
+    assert hotspot["cx"] == 164.5
+    assert hotspot["cy"] == 248.25
+    assert hotspot["w"] == 72
+    assert hotspot["coverage"] == 0.118

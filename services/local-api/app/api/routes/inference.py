@@ -40,6 +40,30 @@ MAX_FOLDER_INFERENCE_SLIDES = 512
 MAX_REGIONS_PER_RUN = 100_000
 
 
+def _region_payload_from_json(payload_json: str | None) -> dict | None:
+    if not payload_json:
+        return None
+    try:
+        payload = json.loads(payload_json)
+    except (TypeError, ValueError):
+        logger.warning("Skipping invalid region payload JSON")
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _region_to_response(region: Region) -> RegionResponse:
+    return RegionResponse(
+        id=region.id,
+        x=region.x,
+        y=region.y,
+        w=region.w,
+        h=region.h,
+        score=region.score,
+        label=region.label,
+        payload=_region_payload_from_json(region.payload_json),
+    )
+
+
 def _is_deployable_weight(p: Path) -> bool:
     if not p.is_file():
         return False
@@ -372,6 +396,11 @@ def _process_inference_job(
 
         parsed_regions = []
         for r in raw_regions:
+            payload = {
+                k: v
+                for k, v in r.items()
+                if k not in {"x", "y", "w", "h", "score", "label"}
+            }
             parsed_regions.append(
                 {
                     "x": int(r["x"]),
@@ -380,6 +409,7 @@ def _process_inference_job(
                     "h": int(r["h"]),
                     "score": float(r["score"]),
                     "label": r.get("label"),
+                    "payload_json": json.dumps(payload) if payload else None,
                 }
             )
 
@@ -392,6 +422,7 @@ def _process_inference_job(
                 h=r["h"],
                 score=r["score"],
                 label=r.get("label"),
+                payload_json=r.get("payload_json"),
             )
             db.add(region)
 
@@ -639,7 +670,7 @@ def get_inference_regions(run_id: int, db: Session = Depends(get_db)):
     if not run:
         raise AppError(ErrorCode.NOT_FOUND, f"Inference run {run_id} not found")
     regions = db.query(Region).filter(Region.inference_run_id == run_id).all()
-    return {"regions": [RegionResponse.model_validate(r) for r in regions]}
+    return {"regions": [_region_to_response(r) for r in regions]}
 
 
 @router.get("/runs/{run_id}/lifecycle-events", response_model=InferenceRunLifecycleEventListResponse)

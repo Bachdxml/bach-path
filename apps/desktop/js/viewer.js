@@ -274,6 +274,73 @@ function getSlideDimensions() {
   return null;
 }
 
+function getNumericRegionField(region, ...keys) {
+  for (const key of keys) {
+    const value = region?.[key];
+    if (Number.isFinite(value)) return value;
+  }
+  return null;
+}
+
+function getRegionPayload(region) {
+  const payload = region?.payload;
+  if (!payload) return null;
+  if (typeof payload === "string") {
+    try {
+      const parsed = JSON.parse(payload);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch (_) {
+      return null;
+    }
+  }
+  return typeof payload === "object" ? payload : null;
+}
+
+function clampRectToSlide(x, y, w, h, dims) {
+  if (![x, y, w, h].every(Number.isFinite)) return null;
+  const x1 = Math.max(0, Math.min(dims.width, x));
+  const y1 = Math.max(0, Math.min(dims.height, y));
+  const x2 = Math.max(0, Math.min(dims.width, x + w));
+  const y2 = Math.max(0, Math.min(dims.height, y + h));
+  if (x2 <= x1 || y2 <= y1) return null;
+  return { x1, y1, x2, y2 };
+}
+
+function getRegionHotspot(region, dims, fallbackRect) {
+  const payload = getRegionPayload(region);
+  const hotspot = payload?.hotspot;
+  if (!hotspot || typeof hotspot !== "object") return null;
+
+  const cx = getNumericRegionField(hotspot, "cx", "center_x");
+  const cy = getNumericRegionField(hotspot, "cy", "center_y");
+  let rect = null;
+
+  const hx = getNumericRegionField(hotspot, "x", "left");
+  const hy = getNumericRegionField(hotspot, "y", "top");
+  const hw = getNumericRegionField(hotspot, "w", "width");
+  const hh = getNumericRegionField(hotspot, "h", "height");
+  if ([hx, hy, hw, hh].every(Number.isFinite)) {
+    rect = clampRectToSlide(hx, hy, hw, hh, dims);
+  }
+
+  if (!rect && [cx, cy].every(Number.isFinite)) {
+    const fallbackW = Math.max(1, (fallbackRect.x2 - fallbackRect.x1) * 0.35);
+    const fallbackH = Math.max(1, (fallbackRect.y2 - fallbackRect.y1) * 0.35);
+    rect = clampRectToSlide(cx - fallbackW / 2, cy - fallbackH / 2, fallbackW, fallbackH, dims);
+  }
+  if (!rect) return null;
+
+  return {
+    x1: rect.x1,
+    y1: rect.y1,
+    x2: rect.x2,
+    y2: rect.y2,
+    cx: Number.isFinite(cx) ? Math.max(0, Math.min(dims.width, cx)) : (rect.x1 + rect.x2) * 0.5,
+    cy: Number.isFinite(cy) ? Math.max(0, Math.min(dims.height, cy)) : (rect.y1 + rect.y2) * 0.5,
+    coverage: getNumericRegionField(hotspot, "coverage"),
+  };
+}
+
 function addRegionOverlays(regions, showNegative = false) {
   if (!viewer) return;
   viewer.clearOverlays();
@@ -284,20 +351,22 @@ function addRegionOverlays(regions, showNegative = false) {
   for (const r of regions || []) {
     const label = normalizeRegionLabel(r.label);
     if (label !== "fungus_positive") continue;
-    const x = Number.isFinite(r.x) ? r.x : 0;
-    const y = Number.isFinite(r.y) ? r.y : 0;
-    const w = Math.max(1, Number.isFinite(r.w) ? r.w : 1);
-    const h = Math.max(1, Number.isFinite(r.h) ? r.h : 1);
-    const x1 = Math.max(0, Math.min(dims.width, x));
-    const y1 = Math.max(0, Math.min(dims.height, y));
-    const x2 = Math.max(0, Math.min(dims.width, x + w));
-    const y2 = Math.max(0, Math.min(dims.height, y + h));
-    if (x2 <= x1 || y2 <= y1) continue;
+    const x = getNumericRegionField(r, "x", "left");
+    const y = getNumericRegionField(r, "y", "top");
+    const w = getNumericRegionField(r, "w", "width");
+    const h = getNumericRegionField(r, "h", "height");
+    const tileRect = clampRectToSlide(x, y, w, h, dims);
+    if (!tileRect) continue;
+    const hotspot = getRegionHotspot(r, dims, tileRect);
     positives.push({
-      x1,
-      y1,
-      x2,
-      y2,
+      x1: hotspot?.x1 ?? tileRect.x1,
+      y1: hotspot?.y1 ?? tileRect.y1,
+      x2: hotspot?.x2 ?? tileRect.x2,
+      y2: hotspot?.y2 ?? tileRect.y2,
+      cx: hotspot?.cx ?? (tileRect.x1 + tileRect.x2) * 0.5,
+      cy: hotspot?.cy ?? (tileRect.y1 + tileRect.y2) * 0.5,
+      tileArea: (tileRect.x2 - tileRect.x1) * (tileRect.y2 - tileRect.y1),
+      coverage: hotspot?.coverage,
       score: Number.isFinite(r.score) ? Math.max(0, Math.min(1, r.score)) : 0.5,
     });
   }
@@ -321,22 +390,24 @@ function addRegionOverlays(regions, showNegative = false) {
   const opacity = getOverlayOpacity();
 
   for (const p of positives) {
-    const x1 = (p.x1 * canvasW) / dims.width;
-    const y1 = (p.y1 * canvasH) / dims.height;
-    const x2 = (p.x2 * canvasW) / dims.width;
-    const y2 = (p.y2 * canvasH) / dims.height;
-    const rw = Math.max(1, x2 - x1);
-    const rh = Math.max(1, y2 - y1);
-    const cx = x1 + rw * 0.5;
-    const cy = y1 + rh * 0.5;
-    const radius = Math.max(Math.max(rw, rh) * 0.68, 10);
-    const peak = Math.max(0.07, Math.min(0.88, opacity * (0.18 + p.score * 0.95)));
+    const cx = (p.cx * canvasW) / dims.width;
+    const cy = (p.cy * canvasH) / dims.height;
+    const areaPx = (p.x2 - p.x1) * (p.y2 - p.y1);
+    const coverageBoost = Number.isFinite(p.coverage)
+      ? Math.max(0.18, Math.min(1, Math.sqrt(p.coverage)))
+      : 0.42;
+    const radiusImagePx = Math.max(
+      14,
+      Math.min(180, Math.sqrt(Math.max(areaPx, p.tileArea * coverageBoost)) * 0.5)
+    );
+    const radius = (radiusImagePx * Math.max(canvasW / dims.width, canvasH / dims.height));
+    const peak = Math.max(0.08, Math.min(0.9, opacity * (0.22 + p.score * 0.95)));
     const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
     g.addColorStop(0, `rgba(255, 48, 48, ${peak.toFixed(3)})`);
     g.addColorStop(0.52, `rgba(255, 128, 0, ${(peak * 0.58).toFixed(3)})`);
     g.addColorStop(1, "rgba(255, 0, 0, 0)");
     ctx.fillStyle = g;
-    ctx.fillRect(x1, y1, rw, rh);
+    ctx.fillRect(cx - radius, cy - radius, radius * 2, radius * 2);
   }
 
   const container = document.createElement("div");

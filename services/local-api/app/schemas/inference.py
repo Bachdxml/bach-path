@@ -1,6 +1,7 @@
 from __future__ import annotations
 from pydantic import BaseModel, Field
 from datetime import datetime
+from typing import Any
 
 class InferenceRunCreate(BaseModel):
     model_name: str = "ResidualAttentionUNet"
@@ -41,6 +42,7 @@ class RegionResponse(BaseModel):
     h: int
     score: float
     label: str | None
+    payload: dict[str, Any] | None = None
 
     class Config:
         from_attributes = True

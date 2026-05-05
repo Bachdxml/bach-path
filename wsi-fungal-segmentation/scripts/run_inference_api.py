@@ -250,6 +250,75 @@ def _tile_regions_from_prob_map(
     return regions[:max_components]
 
 
+def _compute_hotspot(prob_map: torch.Tensor, *, x: int, y: int, w: int, h: int) -> dict | None:
+    """
+    Estimate a fungus hotspot inside a tile from the segmentation probability map.
+    Returns absolute slide-space coordinates plus a localized bbox for rendering.
+    """
+    if w <= 0 or h <= 0:
+        return None
+
+    data = prob_map.detach().float()
+    if data.ndim == 3:
+        data = data.squeeze(0)
+    if data.ndim != 2 or data.numel() == 0:
+        return None
+
+    map_h, map_w = data.shape
+    mean_prob = float(data.mean().item())
+    cutoff = max(0.05, min(0.8, mean_prob * 1.25))
+    weights = torch.clamp(data - cutoff, min=0.0)
+    if float(weights.sum().item()) <= 1e-6:
+        weights = torch.clamp(data - mean_prob, min=0.0)
+    if float(weights.sum().item()) <= 1e-6:
+        weights = torch.clamp(data, min=0.0)
+
+    total = float(weights.sum().item())
+    if total <= 1e-6:
+        return None
+
+    active = weights > 0
+    if not bool(active.any().item()):
+        active = data >= max(float(data.max().item()) * 0.85, mean_prob)
+
+    xs = torch.arange(map_w, device=data.device, dtype=torch.float32).unsqueeze(0).expand(map_h, map_w)
+    ys = torch.arange(map_h, device=data.device, dtype=torch.float32).unsqueeze(1).expand(map_h, map_w)
+    cx = float((weights * xs).sum().item() / total)
+    cy = float((weights * ys).sum().item() / total)
+
+    active_ys, active_xs = torch.where(active)
+    if active_xs.numel() == 0 or active_ys.numel() == 0:
+        x_min = x_max = int(round(cx))
+        y_min = y_max = int(round(cy))
+    else:
+        x_min = int(active_xs.min().item())
+        x_max = int(active_xs.max().item())
+        y_min = int(active_ys.min().item())
+        y_max = int(active_ys.max().item())
+
+    scale_x = w / map_w
+    scale_y = h / map_h
+    hotspot_x = x + (x_min * scale_x)
+    hotspot_y = y + (y_min * scale_y)
+    hotspot_w = max(scale_x, (x_max - x_min + 1) * scale_x)
+    hotspot_h = max(scale_y, (y_max - y_min + 1) * scale_y)
+    hotspot_cx = x + ((cx + 0.5) * scale_x)
+    hotspot_cy = y + ((cy + 0.5) * scale_y)
+
+    return {
+        "hotspot": {
+            "cx": round(hotspot_cx, 2),
+            "cy": round(hotspot_cy, 2),
+            "x": round(hotspot_x, 2),
+            "y": round(hotspot_y, 2),
+            "w": round(hotspot_w, 2),
+            "h": round(hotspot_h, 2),
+            "coverage": round(float(active.float().mean().item()), 4),
+            "source": "segmentation_centroid",
+        }
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run fungus inference on a WSI")
     parser.add_argument("--slide-path", required=True, help="Path to slide (SVS/TIF/TIFF)")
@@ -416,16 +485,18 @@ def main():
                             continue
                     if args.positive_only and label != "fungus_positive":
                         continue
-                    regions.append(
-                        {
-                            "x": int(x),
-                            "y": int(y),
-                            "w": int(w),
-                            "h": int(h),
-                            "score": round(score, 4),
-                            "label": label,
-                        }
-                    )
+                    region = {
+                        "x": int(x),
+                        "y": int(y),
+                        "w": int(w),
+                        "h": int(h),
+                        "score": round(score, 4),
+                        "label": label,
+                    }
+                    hotspot_payload = _compute_hotspot(probs[j], x=int(x), y=int(y), w=int(w), h=int(h))
+                    if hotspot_payload:
+                        region.update(hotspot_payload)
+                    regions.append(region)
         except Exception as e:
             print(f"Error processing image: {e}", file=sys.stderr)
             return EXIT_SLIDE
@@ -540,16 +611,18 @@ def main():
                             continue
                     if args.positive_only and label != "fungus_positive":
                         continue
-                    regions.append(
-                        {
-                            "x": x0,
-                            "y": y0,
-                            "w": w0,
-                            "h": h0,
-                            "score": round(score, 4),
-                            "label": label,
-                        }
-                    )
+                    region = {
+                        "x": x0,
+                        "y": y0,
+                        "w": w0,
+                        "h": h0,
+                        "score": round(score, 4),
+                        "label": label,
+                    }
+                    hotspot_payload = _compute_hotspot(probs[j], x=x0, y=y0, w=w0, h=h0)
+                    if hotspot_payload:
+                        region.update(hotspot_payload)
+                    regions.append(region)
 
             slide.close()
         except Exception as e:
