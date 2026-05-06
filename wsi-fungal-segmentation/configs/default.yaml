@@ -7,6 +7,10 @@ data:
   val_ratio: 0.2
   random_seed: 42
   flat_format: false  # MASTERTILE format: <slide>/<density>/images, <slide>/<density>/masks
+  strict_mode: true
+  allow_unpaired: true  # Skip image tiles without a matching mask, but report them
+  allow_size_mismatch: false
+  skip_validation: false
 
 # -----------------------------------------------------------------------
 # DataLoader

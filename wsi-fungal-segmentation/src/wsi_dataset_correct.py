@@ -46,12 +46,13 @@ class WSIDatasetIndex:
 
     def __init__(self, export_root: Path, strict_mode: bool = True,
                  allow_size_mismatch: bool = False, flat_format: bool = False,
-                 skip_validation: bool = False):
+                 skip_validation: bool = False, allow_unpaired: bool = False):
         self.export_root       = Path(export_root)
         self.strict_mode       = strict_mode
         self.allow_size_mismatch = allow_size_mismatch
         self.flat_format       = flat_format
         self.skip_validation   = skip_validation
+        self.allow_unpaired    = allow_unpaired
         self.tile_pairs: List[TilePair] = []
         self.wsi_groups: Dict[str, List[TilePair]] = {}
         self.validation_report: Dict = {
@@ -61,7 +62,7 @@ class WSIDatasetIndex:
             'total_pairs':      0,
             'density_counts':   {d: 0 for d in DENSITY_FOLDERS},
             'issues':           [],
-            'unpaired_skipped': 0,  # images with no matching mask (strict mode raises)
+            'unpaired_skipped': 0,  # images with no matching mask
         }
 
 
@@ -144,6 +145,7 @@ class WSIDatasetIndex:
         index_data = {
             'export_root':       str(self.export_root),
             'strict_mode':       self.strict_mode,
+            'allow_unpaired':    self.allow_unpaired,
             'validation_report': self.validation_report,
             'tile_pairs': [
                 {
@@ -207,7 +209,7 @@ class WSIDatasetIndex:
                 f"{wsi_id}: {len(unpaired)} image(s) have no matching mask "
                 f"(e.g. {unpaired[:3]})."
             )
-            if self.strict_mode:
+            if self.strict_mode and not self.allow_unpaired:
                 raise ValueError(msg)
             print(f"⚠️  {msg}")
         print(f"✓ {wsi_id}: {len(all_pairs)} pairs (flat format, density=medium)")
@@ -268,7 +270,7 @@ class WSIDatasetIndex:
                     f"{wsi_id}/{density}: {n} image(s) without matching "
                     f"_mask.png (e.g. {unpaired[:3]})"
                 )
-                if self.strict_mode:
+                if self.strict_mode and not self.allow_unpaired:
                     raise ValueError(msg)
                 print(f"⚠️  {msg}")
 

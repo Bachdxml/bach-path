@@ -382,10 +382,11 @@ def _run_training(cfg: dict, progress_file: str | None = None):
 
     index = WSIDatasetIndex(
         export_root,
-        strict_mode=True,
-        allow_size_mismatch=False,
+        strict_mode=cfg["data"].get("strict_mode", True),
+        allow_size_mismatch=cfg["data"].get("allow_size_mismatch", False),
         flat_format=flat_format,
-        skip_validation=False,
+        skip_validation=cfg["data"].get("skip_validation", False),
+        allow_unpaired=cfg["data"].get("allow_unpaired", True),
     )
     index.build_index()
     index.save_index(Path("dataset_index.json"))

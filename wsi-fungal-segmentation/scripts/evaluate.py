@@ -105,25 +105,46 @@ def overlay_mask(image_tensor, mask_tensor, color=(1, 0, 0), alpha=0.4,
 
 def plot_training_curves(history, save_path="training_curves.png"):
     fig, axes = plt.subplots(1, 4, figsize=(20, 4))
-    epochs_range = range(1, len(history["train_loss"]) + 1)
 
-    axes[0].plot(epochs_range, history["train_loss"], label="Train")
-    if history["val_loss"]:
-        axes[0].plot(epochs_range, history["val_loss"], label="Val")
-    axes[0].set_title("Loss"); axes[0].legend(); axes[0].grid(True)
+    def _plot_series(ax, values, label, color=None):
+        valid_points = [
+            (epoch_idx, value)
+            for epoch_idx, value in enumerate(values, start=1)
+            if value is not None
+        ]
+        if not valid_points:
+            return False
 
-    axes[1].plot(epochs_range, history["train_dice"], label="Train")
-    if history["val_dice"]:
-        axes[1].plot(epochs_range, history["val_dice"], label="Val")
-    axes[1].set_title("Dice"); axes[1].legend(); axes[1].grid(True)
+        xs, ys = zip(*valid_points)
+        # A single history point is otherwise invisible with a line-only plot.
+        marker = "o"
+        linestyle = "-" if len(xs) > 1 else "None"
+        ax.plot(xs, ys, label=label, color=color, marker=marker, linestyle=linestyle)
+        ax.set_xticks(list(xs))
+        return True
 
-    axes[2].plot(epochs_range, history["train_iou"], label="Train")
-    if history["val_iou"]:
-        axes[2].plot(epochs_range, history["val_iou"], label="Val")
-    axes[2].set_title("IoU"); axes[2].legend(); axes[2].grid(True)
+    def _plot_panel(ax, train_values, val_values):
+        plotted = _plot_series(ax, train_values, "Train")
+        plotted = _plot_series(ax, val_values, "Val") or plotted
+        return plotted
 
-    axes[3].plot(epochs_range, history["lr"], color="purple")
-    axes[3].set_title("Learning Rate"); axes[3].set_yscale("log"); axes[3].grid(True)
+    plotted_any = [
+        _plot_panel(axes[0], history.get("train_loss", []), history.get("val_loss", [])),
+        _plot_panel(axes[1], history.get("train_dice", []), history.get("val_dice", [])),
+        _plot_panel(axes[2], history.get("train_iou", []), history.get("val_iou", [])),
+        _plot_series(axes[3], history.get("lr", []), "LR", color="purple"),
+    ]
+
+    titles = ["Loss", "Dice", "IoU", "Learning Rate"]
+    for idx, ax in enumerate(axes):
+        ax.set_title(titles[idx])
+        ax.grid(True)
+        if plotted_any[idx]:
+            ax.legend()
+        else:
+            ax.text(0.5, 0.5, "No history data", ha="center", va="center", transform=ax.transAxes)
+
+    axes[3].set_yscale("log")
 
     plt.tight_layout()
     plt.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -209,7 +230,17 @@ def main(checkpoint_path: str, config_path: str = "configs/default.yaml",
 
     # ---- Plot training curves (if stored in checkpoint) ----
     if "history" in ckpt:
-        plot_training_curves(ckpt["history"])
+        history = ckpt["history"]
+        epoch_count = max(
+            (len(series) for series in history.values() if isinstance(series, list)),
+            default=0,
+        )
+        if epoch_count <= 1:
+            print(
+                f"\nHistory contains {epoch_count} epoch"
+                f"{'' if epoch_count == 1 else 's'}; plots will show points rather than lines."
+            )
+        plot_training_curves(history)
 
     # ---- Visualize predictions ----
     if visualize:
