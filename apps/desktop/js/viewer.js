@@ -306,39 +306,158 @@ function clampRectToSlide(x, y, w, h, dims) {
   return { x1, y1, x2, y2 };
 }
 
-function getRegionHotspot(region, dims, fallbackRect) {
+function clampPointToRect(x, y, rect) {
+  if (![x, y].every(Number.isFinite) || !rect) return null;
+  return {
+    x: Math.max(rect.x1, Math.min(rect.x2, x)),
+    y: Math.max(rect.y1, Math.min(rect.y2, y)),
+  };
+}
+
+function buildCentroidFallbackRect(cx, cy, dims, referenceRect = null) {
+  if (![cx, cy].every(Number.isFinite)) return null;
+  const refW = referenceRect ? referenceRect.x2 - referenceRect.x1 : 0;
+  const refH = referenceRect ? referenceRect.y2 - referenceRect.y1 : 0;
+  const longSide = Math.max(dims.width, dims.height);
+  const fallbackW = Math.max(24, refW > 0 ? refW * 0.35 : longSide * 0.028);
+  const fallbackH = Math.max(24, refH > 0 ? refH * 0.35 : longSide * 0.028);
+  return clampRectToSlide(cx - fallbackW / 2, cy - fallbackH / 2, fallbackW, fallbackH, dims);
+}
+
+function getRegionHotspot(region, dims) {
   const payload = getRegionPayload(region);
   const hotspot = payload?.hotspot;
   if (!hotspot || typeof hotspot !== "object") return null;
 
   const cx = getNumericRegionField(hotspot, "cx", "center_x");
   const cy = getNumericRegionField(hotspot, "cy", "center_y");
-  let rect = null;
-
   const hx = getNumericRegionField(hotspot, "x", "left");
   const hy = getNumericRegionField(hotspot, "y", "top");
   const hw = getNumericRegionField(hotspot, "w", "width");
   const hh = getNumericRegionField(hotspot, "h", "height");
-  if ([hx, hy, hw, hh].every(Number.isFinite)) {
-    rect = clampRectToSlide(hx, hy, hw, hh, dims);
-  }
-
-  if (!rect && [cx, cy].every(Number.isFinite)) {
-    const fallbackW = Math.max(1, (fallbackRect.x2 - fallbackRect.x1) * 0.35);
-    const fallbackH = Math.max(1, (fallbackRect.y2 - fallbackRect.y1) * 0.35);
-    rect = clampRectToSlide(cx - fallbackW / 2, cy - fallbackH / 2, fallbackW, fallbackH, dims);
-  }
-  if (!rect) return null;
+  const rect =
+    [hx, hy, hw, hh].every(Number.isFinite) ? clampRectToSlide(hx, hy, hw, hh, dims) : null;
 
   return {
-    x1: rect.x1,
-    y1: rect.y1,
-    x2: rect.x2,
-    y2: rect.y2,
-    cx: Number.isFinite(cx) ? Math.max(0, Math.min(dims.width, cx)) : (rect.x1 + rect.x2) * 0.5,
-    cy: Number.isFinite(cy) ? Math.max(0, Math.min(dims.height, cy)) : (rect.y1 + rect.y2) * 0.5,
+    rect,
+    cx: Number.isFinite(cx) ? Math.max(0, Math.min(dims.width, cx)) : null,
+    cy: Number.isFinite(cy) ? Math.max(0, Math.min(dims.height, cy)) : null,
     coverage: getNumericRegionField(hotspot, "coverage"),
   };
+}
+
+function getRegionContribution(region, dims) {
+  const x = getNumericRegionField(region, "x", "left");
+  const y = getNumericRegionField(region, "y", "top");
+  const w = getNumericRegionField(region, "w", "width");
+  const h = getNumericRegionField(region, "h", "height");
+  const tileRect = clampRectToSlide(x, y, w, h, dims);
+  const hotspot = getRegionHotspot(region, dims);
+
+  const rawCx =
+    hotspot?.cx ??
+    getNumericRegionField(region, "cx", "center_x") ??
+    (tileRect ? (tileRect.x1 + tileRect.x2) * 0.5 : null);
+  const rawCy =
+    hotspot?.cy ??
+    getNumericRegionField(region, "cy", "center_y") ??
+    (tileRect ? (tileRect.y1 + tileRect.y2) * 0.5 : null);
+
+  const areaRect = hotspot?.rect || tileRect || buildCentroidFallbackRect(rawCx, rawCy, dims, tileRect);
+  if (!areaRect) return null;
+
+  const peak =
+    clampPointToRect(rawCx, rawCy, areaRect) || {
+      x: (areaRect.x1 + areaRect.x2) * 0.5,
+      y: (areaRect.y1 + areaRect.y2) * 0.5,
+    };
+
+  return {
+    x1: areaRect.x1,
+    y1: areaRect.y1,
+    x2: areaRect.x2,
+    y2: areaRect.y2,
+    cx: peak.x,
+    cy: peak.y,
+    coverage: hotspot?.coverage,
+    score: Number.isFinite(region.score) ? Math.max(0, Math.min(1, region.score)) : 0.5,
+  };
+}
+
+function traceRoundedRect(ctx, x, y, w, h, radius) {
+  const r = Math.max(0, Math.min(radius, w * 0.5, h * 0.5));
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+function drawEllipticalGradient(ctx, cx, cy, rx, ry, stops) {
+  if (!(rx > 0) || !(ry > 0)) return;
+  const radius = Math.max(rx, ry);
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(rx / radius, ry / radius);
+  const gradient = ctx.createRadialGradient(0, 0, 0, 0, 0, radius);
+  for (const [offset, color] of stops) {
+    gradient.addColorStop(offset, color);
+  }
+  ctx.fillStyle = gradient;
+  ctx.fillRect(-radius, -radius, radius * 2, radius * 2);
+  ctx.restore();
+}
+
+function renderHeatContribution(ctx, contribution, dims, canvasW, canvasH, opacity) {
+  const scaleX = canvasW / dims.width;
+  const scaleY = canvasH / dims.height;
+  const x = contribution.x1 * scaleX;
+  const y = contribution.y1 * scaleY;
+  const w = Math.max(1, (contribution.x2 - contribution.x1) * scaleX);
+  const h = Math.max(1, (contribution.y2 - contribution.y1) * scaleY);
+  const peakX = Math.max(x, Math.min(x + w, contribution.cx * scaleX));
+  const peakY = Math.max(y, Math.min(y + h, contribution.cy * scaleY));
+  const coverageBoost = Number.isFinite(contribution.coverage)
+    ? Math.max(0.35, Math.min(1, Math.sqrt(contribution.coverage)))
+    : 0.55;
+  const cornerRadius = Math.max(4, Math.min(Math.min(w, h) * 0.28, 18));
+  const glowBlur = Math.max(10, Math.min(Math.max(w, h) * 0.34, 34));
+  const baseAlpha = Math.max(
+    0.04,
+    Math.min(0.24, opacity * (0.05 + contribution.score * 0.14 + coverageBoost * 0.06))
+  );
+  const peakAlpha = Math.max(0.08, Math.min(0.9, opacity * (0.22 + contribution.score * 0.95)));
+
+  ctx.save();
+  ctx.shadowColor = `rgba(255, 88, 40, ${(baseAlpha * 0.95).toFixed(3)})`;
+  ctx.shadowBlur = glowBlur;
+  ctx.fillStyle = `rgba(255, 86, 32, ${(baseAlpha * 0.55).toFixed(3)})`;
+  traceRoundedRect(ctx, x, y, w, h, cornerRadius);
+  ctx.fill();
+  ctx.restore();
+
+  ctx.save();
+  traceRoundedRect(ctx, x, y, w, h, cornerRadius);
+  ctx.clip();
+  ctx.fillStyle = `rgba(255, 92, 32, ${(baseAlpha * 0.75).toFixed(3)})`;
+  ctx.fillRect(x, y, w, h);
+  drawEllipticalGradient(ctx, x + w * 0.5, y + h * 0.5, Math.max(12, w * 0.9), Math.max(12, h * 0.9), [
+    [0, `rgba(255, 96, 32, ${(peakAlpha * 0.22).toFixed(3)})`],
+    [0.55, `rgba(255, 128, 0, ${(peakAlpha * 0.12).toFixed(3)})`],
+    [1, "rgba(255, 0, 0, 0)"],
+  ]);
+  drawEllipticalGradient(ctx, peakX, peakY, Math.max(10, w * 0.58), Math.max(10, h * 0.58), [
+    [0, `rgba(255, 48, 48, ${peakAlpha.toFixed(3)})`],
+    [0.52, `rgba(255, 128, 0, ${(peakAlpha * 0.58).toFixed(3)})`],
+    [1, "rgba(255, 0, 0, 0)"],
+  ]);
+  ctx.restore();
 }
 
 function addRegionOverlays(regions, showNegative = false) {
@@ -351,24 +470,9 @@ function addRegionOverlays(regions, showNegative = false) {
   for (const r of regions || []) {
     const label = normalizeRegionLabel(r.label);
     if (label !== "fungus_positive") continue;
-    const x = getNumericRegionField(r, "x", "left");
-    const y = getNumericRegionField(r, "y", "top");
-    const w = getNumericRegionField(r, "w", "width");
-    const h = getNumericRegionField(r, "h", "height");
-    const tileRect = clampRectToSlide(x, y, w, h, dims);
-    if (!tileRect) continue;
-    const hotspot = getRegionHotspot(r, dims, tileRect);
-    positives.push({
-      x1: hotspot?.x1 ?? tileRect.x1,
-      y1: hotspot?.y1 ?? tileRect.y1,
-      x2: hotspot?.x2 ?? tileRect.x2,
-      y2: hotspot?.y2 ?? tileRect.y2,
-      cx: hotspot?.cx ?? (tileRect.x1 + tileRect.x2) * 0.5,
-      cy: hotspot?.cy ?? (tileRect.y1 + tileRect.y2) * 0.5,
-      tileArea: (tileRect.x2 - tileRect.x1) * (tileRect.y2 - tileRect.y1),
-      coverage: hotspot?.coverage,
-      score: Number.isFinite(r.score) ? Math.max(0, Math.min(1, r.score)) : 0.5,
-    });
+    const contribution = getRegionContribution(r, dims);
+    if (!contribution) continue;
+    positives.push(contribution);
   }
   if (!positives.length) return;
 
@@ -390,24 +494,7 @@ function addRegionOverlays(regions, showNegative = false) {
   const opacity = getOverlayOpacity();
 
   for (const p of positives) {
-    const cx = (p.cx * canvasW) / dims.width;
-    const cy = (p.cy * canvasH) / dims.height;
-    const areaPx = (p.x2 - p.x1) * (p.y2 - p.y1);
-    const coverageBoost = Number.isFinite(p.coverage)
-      ? Math.max(0.18, Math.min(1, Math.sqrt(p.coverage)))
-      : 0.42;
-    const radiusImagePx = Math.max(
-      14,
-      Math.min(180, Math.sqrt(Math.max(areaPx, p.tileArea * coverageBoost)) * 0.5)
-    );
-    const radius = (radiusImagePx * Math.max(canvasW / dims.width, canvasH / dims.height));
-    const peak = Math.max(0.08, Math.min(0.9, opacity * (0.22 + p.score * 0.95)));
-    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
-    g.addColorStop(0, `rgba(255, 48, 48, ${peak.toFixed(3)})`);
-    g.addColorStop(0.52, `rgba(255, 128, 0, ${(peak * 0.58).toFixed(3)})`);
-    g.addColorStop(1, "rgba(255, 0, 0, 0)");
-    ctx.fillStyle = g;
-    ctx.fillRect(cx - radius, cy - radius, radius * 2, radius * 2);
+    renderHeatContribution(ctx, p, dims, canvasW, canvasH, opacity);
   }
 
   const container = document.createElement("div");

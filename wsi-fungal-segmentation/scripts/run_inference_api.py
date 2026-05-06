@@ -425,7 +425,6 @@ def main():
 
         regions = []
         batch_size = args.batch_size
-        density_label = torch.tensor([3] * batch_size, dtype=torch.long, device=device)
         tile_iter = _iter_tile_positions(level_w, level_h, tile_size, stride)
 
         try:
@@ -448,11 +447,10 @@ def main():
                     batch_tensors.append(tensor)
 
                 batch = torch.cat(batch_tensors, dim=0).to(device)
-                density_batch = density_label[: len(batch_positions)]
 
                 try:
                     with torch.no_grad():
-                        seg_logits, _, _, _ = model(batch, density_batch)
+                        seg_logits, _, _, _ = model(batch)
                     probs = torch.sigmoid(seg_logits)
                 except Exception as e:
                     print(f"Inference error at batch {i // batch_size}: {e}", file=sys.stderr)
@@ -538,9 +536,6 @@ def main():
 
             regions = []
             batch_size = args.batch_size
-
-            # Density label: 3 = negative (unknown at inference)
-            density_label = torch.tensor([3] * batch_size, dtype=torch.long, device=device)
             downsample = float(slide.level_downsamples[level])
             tile_iter = _iter_tile_positions(level_w, level_h, tile_size, stride)
 
@@ -568,11 +563,10 @@ def main():
                     batch_tensors.append(tensor)
 
                 batch = torch.cat(batch_tensors, dim=0).to(device)
-                density_batch = density_label[: len(batch_positions)]
 
                 try:
                     with torch.no_grad():
-                        seg_logits, _, _, _ = model(batch, density_batch)
+                        seg_logits, _, _, _ = model(batch)
                     probs = torch.sigmoid(seg_logits)
                 except Exception as e:
                     print(f"Inference error at batch {i // batch_size}: {e}", file=sys.stderr)
