@@ -9,6 +9,10 @@ class SlideImportRequest(BaseModel):
     file_path: str = Field(..., description="Absolute path to an SVS file accessible to the local machine")
     compute_sha256: bool = False
     collection_id: int | None = Field(default=None, description="Existing import collection to attach the slide to")
+    allow_tile_like_import: bool = Field(
+        default=False,
+        description="Explicit override for importing generated tile-like raster images as slides",
+    )
 
     @field_validator("file_path")
     @classmethod
@@ -36,6 +40,10 @@ class SlideImportCollectionRequest(BaseModel):
     )
     title: str | None = Field(default=None, description="Optional collection title")
     source_type: str | None = Field(default=None, description="Optional collection source label")
+    allow_tile_like_import: bool = Field(
+        default=False,
+        description="Explicit override for importing generated tile-like raster images as slides",
+    )
 
     @field_validator("file_paths")
     @classmethod
@@ -81,11 +89,19 @@ class ImportCollectionRenameRequest(BaseModel):
             raise ValueError("title must be a non-empty string")
         return trimmed[:255]
 
+class SlideReviewRequest(BaseModel):
+    review_status: Literal["unreviewed", "positive", "negative", "indeterminate"]
+
+class SlideReviewResponse(BaseModel):
+    id: int
+    review_status: Literal["unreviewed", "positive", "negative", "indeterminate"]
+
 class SlideListItem(BaseModel):
     id: int
     original_path: str | None = Field(default=None, description="Original slide filename only")
     created_at: datetime
-    inference_result: Literal["positive", "negative", "unchecked"] = "unchecked"
+    inference_result: Literal["positive", "negative", "indecisive", "unchecked"] = "unchecked"
+    review_status: Literal["unreviewed", "positive", "negative", "indeterminate"] = "unreviewed"
     folder_label: str = "Uncategorized"
     folder_key: str = "uncategorized"
     collection_id: int | None = None

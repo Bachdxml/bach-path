@@ -20,6 +20,7 @@ class Slide(Base):
         nullable=True,
         index=True,
     )
+    review_status: Mapped[str] = mapped_column(String(32), default="unreviewed", server_default="unreviewed")
 
     created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

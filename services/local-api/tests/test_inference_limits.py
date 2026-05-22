@@ -63,3 +63,23 @@ def test_env_inference_checkpoint_requires_existing_file(monkeypatch):
 
     with pytest.raises(AppError, match="INFERENCE_CHECKPOINT must point to an existing file"):
         inference_routes._resolve_model_checkpoint(None)
+
+
+def test_inference_python_prefers_local_api_venv(monkeypatch, tmp_path):
+    project_root = tmp_path / "project"
+    local_python = project_root / "services" / "local-api" / ".venv" / "bin" / "python"
+    local_python.parent.mkdir(parents=True)
+    local_python.write_text("#!/usr/bin/env python\n", encoding="utf-8")
+
+    monkeypatch.delenv("INFERENCE_PYTHON", raising=False)
+    monkeypatch.setattr(inference_routes, "_get_project_root", lambda: project_root)
+
+    assert inference_routes._get_inference_python() == str(local_python)
+
+
+def test_inference_python_env_override_wins(monkeypatch, tmp_path):
+    custom_python = tmp_path / "custom-python"
+
+    monkeypatch.setenv("INFERENCE_PYTHON", str(custom_python))
+
+    assert inference_routes._get_inference_python() == str(custom_python)

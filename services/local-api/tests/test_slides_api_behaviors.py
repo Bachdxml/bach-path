@@ -145,6 +145,28 @@ def test_delete_slide_removes_file_and_tile_cache(app_paths):
     assert metadata_response.json()["error"]["code"] == "not_found"
 
 
+def test_cached_raster_tile_still_rejects_invalid_coordinates(app_paths):
+    slide_path = app_paths["source_dir"] / "cache-guard.png"
+    _create_sample_slide(slide_path)
+
+    app_data_dir = app_paths["app_data_dir"]
+
+    app = create_app()
+    with TestClient(app) as client:
+        import_response = client.post("/slides/import", json={"file_path": str(slide_path)})
+        assert import_response.status_code == 200, import_response.text
+        slide_id = import_response.json()["slide_id"]
+
+        poisoned_cache = app_data_dir / "tiles_cache" / str(slide_id) / "256_0" / "0" / "-1_0.jpg"
+        poisoned_cache.parent.mkdir(parents=True, exist_ok=True)
+        poisoned_cache.write_bytes(b"not really a jpg")
+
+        tile_response = client.get(f"/slides/{slide_id}/tiles/0/-1/0.jpg")
+
+    assert tile_response.status_code == 400
+    assert tile_response.json()["error"]["code"] == "not_found"
+
+
 def test_metadata_rejects_stored_path_outside_managed_storage(app_paths):
     outside_file = app_paths["app_data_dir"].parent / "outside-managed.png"
     _create_sample_slide(outside_file)

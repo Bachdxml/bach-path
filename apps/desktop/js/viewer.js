@@ -22,6 +22,11 @@ const btnViewerSlideInfo = document.getElementById("btn-viewer-slide-info");
 const btnViewerMetadataClose = document.getElementById("btn-viewer-metadata-close");
 const btnViewerExportView = document.getElementById("viewer-export-view");
 const btnViewerExportRegions = document.getElementById("viewer-export-regions");
+const viewerTileReviewContent = document.getElementById("viewer-tile-review-content");
+const viewerTileReviewStatus = document.getElementById("viewer-tile-review-status");
+const btnViewerReviewPositive = document.getElementById("viewer-review-positive");
+const btnViewerReviewNegative = document.getElementById("viewer-review-negative");
+const btnViewerReviewIndeterminate = document.getElementById("viewer-review-indeterminate");
 const viewerApp = window.BachPath || null;
 const viewerSlidesApi = viewerApp?.services?.slidesApi || window.slidesApi;
 const viewerInferenceModelChangedEvent =
@@ -40,9 +45,12 @@ let currentRunId = null;
 let lastRegions = [];
 let currentSlideWidth = null;
 let currentSlideHeight = null;
+let currentSlideLabel = "";
+let currentReviewStatus = "unreviewed";
 let viewerRequestSeq = 0;
 let activeInferencePollToken = 0;
 let viewerSlideOrder = [];
+let selectedReviewRegionId = null;
 const INFERENCE_THRESHOLD_KEY = "inferenceThresholdByModel";
 
 function getThresholdMap() {
@@ -129,6 +137,9 @@ function closeViewer() {
   currentMpp = null;
   currentSlideWidth = null;
   currentSlideHeight = null;
+  currentSlideLabel = "";
+  currentReviewStatus = "unreviewed";
+  selectedReviewRegionId = null;
   lastRegions = [];
   viewerContainer.innerHTML = "";
   viewerContainer.style.display = "none";
@@ -141,6 +152,8 @@ function closeViewer() {
   showMetadataPanel(false);
   runInferenceBtn.disabled = false;
   setInferenceStatus("");
+  renderTileReviewPanel([]);
+  updateReviewStatusDisplay();
   if (viewerOverlay) viewerOverlay.hidden = true;
 }
 
@@ -153,6 +166,29 @@ function escapeHtml(s) {
   const d = document.createElement("div");
   d.textContent = String(s);
   return d.innerHTML;
+}
+
+function filenameFromPath(p) {
+  if (!p) return "";
+  return String(p).split(/[/\\]/).pop() || "";
+}
+
+function getGallerySlide(slideId) {
+  const getSlideById = viewerApp?.features?.gallery?.getSlideById || window.galleryGetSlideById;
+  return typeof getSlideById === "function" ? getSlideById(slideId) : null;
+}
+
+function updateReviewStatusDisplay() {
+  if (!viewerTileReviewStatus) return;
+  const label =
+    currentReviewStatus === "positive"
+      ? "positive"
+      : currentReviewStatus === "negative"
+        ? "negative"
+        : currentReviewStatus === "indeterminate"
+          ? "needs review"
+          : "unreviewed";
+  viewerTileReviewStatus.textContent = `Decision: ${label}`;
 }
 
 function renderMetadataPanel(meta) {
@@ -384,6 +420,88 @@ function getRegionContribution(region, dims) {
   };
 }
 
+function buildReviewTile(region, index, dims) {
+  const contribution = getRegionContribution(region, dims);
+  if (!contribution) return null;
+  const score = Number.isFinite(region.score) ? Math.max(0, Math.min(1, region.score)) : null;
+  return {
+    id: Number.isFinite(region.id) ? region.id : index + 1,
+    label: `Tile ${String(index + 1).padStart(3, "0")}`,
+    score,
+    rect: contribution,
+    coordinates: {
+      x: Math.round(contribution.x1),
+      y: Math.round(contribution.y1),
+      w: Math.round(contribution.x2 - contribution.x1),
+      h: Math.round(contribution.y2 - contribution.y1),
+    },
+  };
+}
+
+function jumpToReviewTile(tile) {
+  if (!viewer || !tile?.rect) return;
+  selectedReviewRegionId = tile.id;
+  const rect = new OpenSeadragon.Rect(
+    tile.rect.x1,
+    tile.rect.y1,
+    Math.max(1, tile.rect.x2 - tile.rect.x1),
+    Math.max(1, tile.rect.y2 - tile.rect.y1)
+  );
+  viewer.viewport.fitBounds(viewer.viewport.imageToViewportRectangle(rect), false);
+  renderTileReviewPanel(lastRegions);
+}
+
+function renderTileReviewPanel(regions) {
+  if (!viewerTileReviewContent) return;
+  updateReviewStatusDisplay();
+  const dims = getSlideDimensions();
+  if (!dims) {
+    viewerTileReviewContent.innerHTML =
+      '<p class="tile-review-empty">Slide dimensions are loading. Tiles will appear after the slide opens.</p>';
+    return;
+  }
+
+  const tiles = (regions || [])
+    .filter((r) => normalizeRegionLabel(r.label) === "fungus_positive")
+    .map((region, index) => buildReviewTile(region, index, dims))
+    .filter(Boolean)
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+
+  viewerTileReviewContent.innerHTML = "";
+  const slideLabel = document.createElement("p");
+  slideLabel.className = "tile-review-slide-label";
+  slideLabel.textContent = `Slide ${currentSlideId}${currentSlideLabel ? ` · ${currentSlideLabel}` : ""}`;
+  viewerTileReviewContent.appendChild(slideLabel);
+
+  if (!tiles.length) {
+    const empty = document.createElement("p");
+    empty.className = "tile-review-empty";
+    empty.textContent = "No model-positive tiles for the selected run. Confirm the whole slide context before marking negative.";
+    viewerTileReviewContent.appendChild(empty);
+    return;
+  }
+
+  for (const tile of tiles) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "tile-review-card";
+    if (selectedReviewRegionId === tile.id) btn.classList.add("is-active");
+    const scoreText = tile.score == null ? "n/a" : tile.score.toFixed(2);
+    btn.innerHTML = `
+      <div class="tile-review-card-title">
+        <span>${escapeHtml(tile.label)}</span>
+        <span>Score ${escapeHtml(scoreText)}</span>
+      </div>
+      <div class="tile-review-card-meta">
+        Slide ${escapeHtml(currentSlideId)} · Level-0 x=${escapeHtml(tile.coordinates.x)}, y=${escapeHtml(tile.coordinates.y)}<br />
+        Region ${escapeHtml(tile.coordinates.w)}×${escapeHtml(tile.coordinates.h)} px · Click to open in slide
+      </div>
+    `;
+    btn.addEventListener("click", () => jumpToReviewTile(tile));
+    viewerTileReviewContent.appendChild(btn);
+  }
+}
+
 function traceRoundedRect(ctx, x, y, w, h, radius) {
   const r = Math.max(0, Math.min(radius, w * 0.5, h * 0.5));
   ctx.beginPath();
@@ -531,6 +649,8 @@ async function populateRunSelector(slideId, requestId = null) {
       opt.value = "";
       opt.textContent = "No inference runs yet";
       viewerRunSelect.appendChild(opt);
+      lastRegions = [];
+      renderTileReviewPanel([]);
       return;
     }
     for (const r of succeeded) {
@@ -556,6 +676,8 @@ async function populateRunSelector(slideId, requestId = null) {
     opt.value = "";
     opt.textContent = "Runs unavailable";
     viewerRunSelect.appendChild(opt);
+    lastRegions = [];
+    renderTileReviewPanel([]);
   }
 }
 
@@ -565,6 +687,7 @@ async function loadRegionsForRun(runId, slideId = currentSlideId, requestId = vi
     const { regions } = await viewerSlidesApi.getInferenceRegions(runId);
     if (requestId !== viewerRequestSeq || currentSlideId !== slideId) return;
     lastRegions = regions || [];
+    selectedReviewRegionId = null;
     const hasPositive = lastRegions.some(
       (r) => normalizeRegionLabel(r.label) === "fungus_positive"
     );
@@ -572,10 +695,12 @@ async function loadRegionsForRun(runId, slideId = currentSlideId, requestId = vi
       window.appToast?.("No positive regions found for this run.", "info", 3500);
     }
     addRegionOverlays(lastRegions, false);
+    renderTileReviewPanel(lastRegions);
   } catch (_) {
     if (requestId !== viewerRequestSeq || currentSlideId !== slideId) return;
     lastRegions = [];
     clearOverlays();
+    renderTileReviewPanel([]);
   }
 }
 
@@ -661,6 +786,10 @@ async function showViewer(slideId) {
   const requestId = ++viewerRequestSeq;
   activeInferencePollToken += 1; // cancel any in-flight inference poll from another slide
   currentSlideId = slideId;
+  const gallerySlide = getGallerySlide(slideId);
+  currentSlideLabel = filenameFromPath(gallerySlide?.original_path);
+  currentReviewStatus = gallerySlide?.review_status || "unreviewed";
+  selectedReviewRegionId = null;
   viewerSlideOrder = getViewerSlideOrder();
   updateViewerNavButtons();
   if (viewerOverlay) viewerOverlay.hidden = false;
@@ -671,6 +800,7 @@ async function showViewer(slideId) {
   viewerContainer.style.display = "block";
   clearOverlays();
   setInferenceStatus("");
+  renderTileReviewPanel([]);
   if (viewerScaleWrap) viewerScaleWrap.hidden = true;
 
   let meta = null;
@@ -860,6 +990,20 @@ async function exportViewerViewport() {
   }
 }
 
+async function setSlideReviewStatus(reviewStatus) {
+  if (!currentSlideId) return;
+  try {
+    const response = await viewerSlidesApi.updateSlideReview(currentSlideId, reviewStatus);
+    currentReviewStatus = response.review_status || reviewStatus;
+    updateReviewStatusDisplay();
+    const refreshGallery = viewerApp?.features?.gallery?.refresh || window.galleryRefresh;
+    if (typeof refreshGallery === "function") refreshGallery();
+    window.appToast?.("Slide review decision saved.", "success", 2200);
+  } catch (err) {
+    window.appToast?.(err.message || "Could not save review decision.", "error");
+  }
+}
+
 function exportInferenceRegionsJson() {
   if (!currentSlideId || !lastRegions?.length) {
     window.appToast?.("No regions to export. Run inference first.", "info");
@@ -972,6 +1116,9 @@ if (runInferenceBtn) {
 
 btnViewerExportView?.addEventListener("click", () => exportViewerViewport());
 btnViewerExportRegions?.addEventListener("click", () => exportInferenceRegionsJson());
+btnViewerReviewPositive?.addEventListener("click", () => setSlideReviewStatus("positive"));
+btnViewerReviewNegative?.addEventListener("click", () => setSlideReviewStatus("negative"));
+btnViewerReviewIndeterminate?.addEventListener("click", () => setSlideReviewStatus("indeterminate"));
 loadThresholdForModel(getSelectedModelId());
 
 document.addEventListener("keydown", (e) => {

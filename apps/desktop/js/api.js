@@ -231,6 +231,16 @@ async function deleteSlide(slideId) {
   return res.json();
 }
 
+async function updateSlideReview(slideId, reviewStatus) {
+  const res = await apiFetch(`/slides/${slideId}/review`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ review_status: reviewStatus }),
+  });
+  if (!res.ok) throw new Error(await parseErrorResponse(res));
+  return res.json();
+}
+
 const slidesApi = {
   setApiBase,
   setApiKey,
@@ -252,6 +262,7 @@ const slidesApi = {
   getInferenceRun,
   getInferenceRegions,
   getSlideInferenceRuns,
+  updateSlideReview,
   listInferenceModels,
   getTrainingInfo,
 };

@@ -3,7 +3,9 @@ import hashlib
 import json
 import logging
 import os
+import re
 import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,6 +40,10 @@ _inference_queue: QueueInterface = InMemoryQueue()
 logger = logging.getLogger(__name__)
 MAX_FOLDER_INFERENCE_SLIDES = 512
 MAX_REGIONS_PER_RUN = 100_000
+MAX_SUBPROCESS_DIAGNOSTIC_CHARS = 2000
+_SECRET_PATTERNS = (
+    re.compile(r"(?i)(api[_-]?key|token|secret|password)(\s*[=:]\s*)([^\s,;]+)"),
+)
 
 
 def _region_payload_from_json(payload_json: str | None) -> dict | None:
@@ -193,6 +199,8 @@ def _get_inference_python() -> str:
         return env_py
     base = _get_project_root()
     for venv in [
+        base / "services" / "local-api" / ".venv" / "bin" / "python",
+        base / "services" / "local-api" / ".venv" / "Scripts" / "python.exe",
         base / "wsi-fungal-segmentation" / ".venv" / "bin" / "python",
         base / "wsi-fungal-segmentation" / ".venv" / "Scripts" / "python.exe",
         base / ".venv" / "bin" / "python",
@@ -200,7 +208,37 @@ def _get_inference_python() -> str:
     ]:
         if venv.exists():
             return str(venv)
-    return "python"
+    return sys.executable or "python"
+
+
+def _subprocess_diagnostic(result: subprocess.CompletedProcess | object) -> str:
+    parts = []
+    for label, value in (("stderr", getattr(result, "stderr", None)), ("stdout", getattr(result, "stdout", None))):
+        if not value:
+            continue
+        text = str(value).replace("\x00", "").strip()
+        if text:
+            parts.append(f"{label}: {text}")
+    diagnostic = "\n".join(parts).strip()
+    if not diagnostic:
+        return "Inference subprocess exited without diagnostic output."
+    for pattern in _SECRET_PATTERNS:
+        diagnostic = pattern.sub(r"\1\2[redacted]", diagnostic)
+    if len(diagnostic) > MAX_SUBPROCESS_DIAGNOSTIC_CHARS:
+        return diagnostic[:MAX_SUBPROCESS_DIAGNOSTIC_CHARS].rstrip() + "\n...[truncated]"
+    return diagnostic
+
+
+def _inference_subprocess_env() -> dict[str, str]:
+    env = dict(os.environ)
+    project_root = _get_project_root()
+    python_entries = [
+        str(project_root / "wsi-fungal-segmentation"),
+        str(project_root / "services" / "local-api"),
+        env.get("PYTHONPATH"),
+    ]
+    env["PYTHONPATH"] = os.pathsep.join(entry for entry in python_entries if entry)
+    return env
 
 
 def _resolve_managed_slide_path(slide: Slide, settings) -> Path:
@@ -338,20 +376,27 @@ def _process_inference_job(
         result = subprocess.run(
             cmd,
             cwd=str(script_path.parent.parent),
+            env=_inference_subprocess_env(),
             capture_output=True,
             text=True,
             timeout=3600,
         )
 
         if result.returncode != 0:
-            logger.warning("Inference subprocess failed for run %s with exit code %s", run_id, result.returncode)
+            diagnostic = _subprocess_diagnostic(result)
+            logger.warning(
+                "Inference subprocess failed for run %s with exit code %s: %s",
+                run_id,
+                result.returncode,
+                diagnostic,
+            )
             run.error_code = "inference_failed"
             run.error_message = "Inference failed. Check server logs for details."
             _record_inference_run_transition(
                 db,
                 run,
                 InferenceStatus.failed,
-                detail="Inference subprocess returned non-zero exit code",
+                detail=f"Inference subprocess returned non-zero exit code {result.returncode}.\n{diagnostic}",
                 error="inference_failed",
             )
             db.commit()
@@ -430,17 +475,18 @@ def _process_inference_job(
         _record_inference_run_transition(db, run, InferenceStatus.succeeded)
         db.commit()
         _inference_queue.ack(job.id)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         logger.warning("Inference timed out for run %s", run_id)
         run = run or db.get(InferenceRun, run_id)
         if run:
+            diagnostic = _subprocess_diagnostic(exc)
             run.error_code = "timeout"
             run.error_message = "Inference timed out after 1 hour"
             _record_inference_run_transition(
                 db,
                 run,
                 InferenceStatus.failed,
-                detail="Inference subprocess timed out",
+                detail=f"Inference subprocess timed out.\n{diagnostic}",
                 error="timeout",
             )
             db.commit()

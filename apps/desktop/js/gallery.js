@@ -298,9 +298,25 @@ function createSlideCard(s, fav) {
   meta.textContent = formatDate(s.created_at);
   const status = document.createElement("div");
   const result = s.inference_result || "unchecked";
+  const review = s.review_status || "unreviewed";
   status.className = `gallery-card-status gallery-card-status--${result}`;
-  status.textContent =
-    result === "positive" ? "Positive" : result === "negative" ? "Negative" : "Unchecked";
+  const resultText =
+    result === "positive"
+      ? "AI positive"
+      : result === "negative"
+        ? "AI negative"
+        : result === "indecisive"
+          ? "AI indecisive"
+          : "Unchecked";
+  const reviewText =
+    review === "positive"
+      ? "Reviewed positive"
+      : review === "negative"
+        ? "Reviewed negative"
+        : review === "indeterminate"
+          ? "Needs review"
+          : "";
+  status.textContent = reviewText ? `${reviewText} · ${resultText}` : resultText;
   info.appendChild(label);
   info.appendChild(meta);
   info.appendChild(status);
@@ -588,11 +604,13 @@ function loadGallery() {
 
 window.galleryRefresh = loadGallery;
 window.galleryGetOrderedSlideIds = () => getOrderedSlides().map((s) => s.id);
+window.galleryGetSlideById = (id) => allSlides.find((s) => s.id === id) || null;
 window.galleryTrackInferenceRuns = trackInferenceRuns;
 if (galleryApp?.registerFeature) {
   galleryApp.registerFeature("gallery", {
     refresh: loadGallery,
     getOrderedSlideIds: () => getOrderedSlides().map((s) => s.id),
+    getSlideById: (id) => allSlides.find((s) => s.id === id) || null,
     trackInferenceRuns,
   });
 }

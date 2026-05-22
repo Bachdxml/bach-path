@@ -29,7 +29,10 @@ def _install_synchronous_inference(
     *,
     output_payload: dict[str, object] | None,
     returncode: int = 0,
+    stdout: str = "",
+    stderr: str = "",
     recorded_commands: list[list[str]] | None = None,
+    recorded_run_kwargs: list[dict[str, object]] | None = None,
 ):
     checkpoint_path = app_paths["app_data_dir"] / "test-checkpoint.pth.gz"
     checkpoint_path.write_text("checkpoint", encoding="utf-8")
@@ -44,10 +47,12 @@ def _install_synchronous_inference(
     def fake_run(cmd, **kwargs):
         if recorded_commands is not None:
             recorded_commands.append(list(cmd))
+        if recorded_run_kwargs is not None:
+            recorded_run_kwargs.append(dict(kwargs))
         if output_payload is not None:
             output_path = Path(cmd[cmd.index("--output-json") + 1])
             output_path.write_text(json.dumps(output_payload), encoding="utf-8")
-        return SimpleNamespace(returncode=returncode, stdout="", stderr="")
+        return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
 
     monkeypatch.setattr(inference_routes, "_resolve_model_checkpoint", fake_resolve_model_checkpoint)
     monkeypatch.setattr(inference_routes._inference_executor, "submit", fake_submit)
@@ -147,7 +152,13 @@ def test_inference_run_persists_failure_and_is_queryable_after_restart(app_paths
 
     script_path = app_paths["app_data_dir"] / "run_inference_api.py"
     script_path.write_text("# test stub\n", encoding="utf-8")
-    _install_synchronous_inference(app_paths, monkeypatch, output_payload=None, returncode=1)
+    _install_synchronous_inference(
+        app_paths,
+        monkeypatch,
+        output_payload=None,
+        returncode=1,
+        stderr="ModuleNotFoundError: No module named 'torchvision'\napi_key=super-secret",
+    )
     monkeypatch.setattr(inference_routes, "_get_script_path", lambda: script_path)
 
     app = create_app()
@@ -183,6 +194,10 @@ def test_inference_run_persists_failure_and_is_queryable_after_restart(app_paths
     assert lifecycle_response.status_code == 200, lifecycle_response.text
     lifecycle = lifecycle_response.json()["events"]
     assert [event["to_status"] for event in lifecycle] == ["queued", "running", "failed"]
+    assert "ModuleNotFoundError" in lifecycle[-1]["detail"]
+    assert "torchvision" in lifecycle[-1]["detail"]
+    assert "super-secret" not in lifecycle[-1]["detail"]
+    assert "[redacted]" in lifecycle[-1]["detail"]
 
 
 def test_inference_subprocess_invocation_includes_model_metadata_and_optional_threshold(
@@ -195,11 +210,13 @@ def test_inference_subprocess_invocation_includes_model_metadata_and_optional_th
     script_path = app_paths["app_data_dir"] / "run_inference_api.py"
     script_path.write_text("# test stub\n", encoding="utf-8")
     recorded_commands: list[list[str]] = []
+    recorded_run_kwargs: list[dict[str, object]] = []
     _install_synchronous_inference(
         app_paths,
         monkeypatch,
         output_payload={"regions": []},
         recorded_commands=recorded_commands,
+        recorded_run_kwargs=recorded_run_kwargs,
     )
     monkeypatch.setattr(inference_routes, "_get_script_path", lambda: script_path)
 
@@ -226,10 +243,12 @@ def test_inference_subprocess_invocation_includes_model_metadata_and_optional_th
     assert with_threshold.status_code == 200, with_threshold.text
     assert without_threshold.status_code == 200, without_threshold.text
     assert len(recorded_commands) == 2
+    assert len(recorded_run_kwargs) == 2
 
     with_threshold_payload = with_threshold.json()
     without_threshold_payload = without_threshold.json()
     first_command, second_command = recorded_commands
+    first_kwargs = recorded_run_kwargs[0]
 
     assert "--checkpoint" in first_command
     assert first_command[first_command.index("--checkpoint") + 1] == str(
@@ -238,6 +257,11 @@ def test_inference_subprocess_invocation_includes_model_metadata_and_optional_th
     assert first_command[first_command.index("--model-name") + 1] == with_threshold_payload["model_name"]
     assert first_command[first_command.index("--model-version") + 1] == with_threshold_payload["model_version"]
     assert first_command[first_command.index("--threshold") + 1] == "0.35"
+    assert first_kwargs["cwd"] == str(script_path.parent.parent)
+    assert first_kwargs["capture_output"] is True
+    assert first_kwargs["text"] is True
+    assert isinstance(first_kwargs["env"], dict)
+    assert str(Path(__file__).resolve().parents[3] / "wsi-fungal-segmentation") in first_kwargs["env"]["PYTHONPATH"]
 
     assert "--checkpoint" in second_command
     assert second_command[second_command.index("--checkpoint") + 1] == str(
