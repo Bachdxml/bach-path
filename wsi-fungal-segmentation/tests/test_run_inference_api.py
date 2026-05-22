@@ -109,6 +109,59 @@ def test_main_calls_model_without_explicit_density_label(tmp_path, monkeypatch, 
     assert recorded_calls[0][0].shape == (1, 3, 64, 64)
 
 
+def test_raster_size_guard_runs_before_rgb_decode(tmp_path, monkeypatch, inference_module):
+    slide_path = tmp_path / "huge.png"
+    output_path = tmp_path / "output.json"
+    checkpoint_path = tmp_path / "checkpoint.pth.gz"
+    slide_path.write_text("stub image", encoding="utf-8")
+    checkpoint_path.write_text("checkpoint", encoding="utf-8")
+
+    class FakeImage:
+        size = (10_000, 10_000)
+
+        def convert(self, mode):
+            raise AssertionError("large raster should be rejected before RGB decode")
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(inference_module.Image, "open", lambda path: FakeImage())
+    monkeypatch.setattr(inference_module, "_max_raster_pixels", lambda: 1_000)
+    class FakeModel:
+        def load_state_dict(self, state_dict):
+            return None
+
+        def to(self, device):
+            return self
+
+        def eval(self):
+            return self
+
+    monkeypatch.setattr(inference_module, "ResidualAttentionUNet", lambda **kwargs: FakeModel())
+    monkeypatch.setattr(inference_module, "_load_checkpoint_dict", lambda path, device: {"mock": "checkpoint"})
+    monkeypatch.setattr(
+        inference_module,
+        "_extract_model_state_dict",
+        lambda checkpoint: ({"weight": torch.ones(1)}, {"cfg": {"model": {}}}),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_inference_api.py",
+            "--slide-path",
+            str(slide_path),
+            "--output-json",
+            str(output_path),
+            "--checkpoint",
+            str(checkpoint_path),
+        ],
+    )
+
+    assert inference_module.main() == inference_module.EXIT_SLIDE
+    assert not output_path.exists()
+
+
 def test_openslide_path_calls_model_without_explicit_density_label(tmp_path, monkeypatch, inference_module):
     slide_path = tmp_path / "slide.svs"
     output_path = tmp_path / "output.json"
@@ -192,6 +245,191 @@ def test_openslide_path_calls_model_without_explicit_density_label(tmp_path, mon
     assert len(recorded_calls) == 1
     assert len(recorded_calls[0]) == 1
     assert recorded_calls[0][0].shape == (1, 3, 64, 64)
+
+
+def test_openslide_path_skips_background_tiles_before_model(tmp_path, monkeypatch, inference_module):
+    slide_path = tmp_path / "slide.svs"
+    output_path = tmp_path / "output.json"
+    checkpoint_path = tmp_path / "checkpoint.pth.gz"
+    slide_path.write_text("stub slide", encoding="utf-8")
+    checkpoint_path.write_text("checkpoint", encoding="utf-8")
+
+    recorded_calls: list[tuple[torch.Tensor, ...]] = []
+    read_locations: list[tuple[int, int]] = []
+
+    class FakeModel:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def load_state_dict(self, state_dict):
+            self.state_dict = state_dict
+
+        def to(self, device):
+            self.device = device
+            return self
+
+        def eval(self):
+            return self
+
+        def __call__(self, *args):
+            recorded_calls.append(args)
+            batch = args[0]
+            batch_size, _, height, width = batch.shape
+            return (
+                torch.zeros((batch_size, 1, height, width), dtype=torch.float32),
+                torch.zeros((batch_size, 4), dtype=torch.float32),
+                torch.zeros((batch_size, 1, max(1, height // 8), max(1, width // 8)), dtype=torch.float32),
+                torch.zeros((batch_size, 1, max(1, height // 4), max(1, width // 4)), dtype=torch.float32),
+            )
+
+    class FakeOpenSlide:
+        level_count = 1
+        level_dimensions = [(128, 64)]
+        dimensions = (128, 64)
+        level_downsamples = [1.0]
+
+        def __init__(self, path):
+            self.path = path
+
+        def get_thumbnail(self, size):
+            thumb = Image.new("RGB", (128, 64), color=(255, 255, 255))
+            for x in range(64, 128):
+                for y in range(64):
+                    thumb.putpixel((x, y), (150, 90, 160))
+            return thumb
+
+        def read_region(self, location, level, size):
+            read_locations.append(location)
+            return Image.new("RGB", size, color=(120, 90, 150))
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(inference_module, "ResidualAttentionUNet", FakeModel)
+    monkeypatch.setattr(inference_module, "_load_checkpoint_dict", lambda path, device: {"mock": "checkpoint"})
+    monkeypatch.setattr(
+        inference_module,
+        "_extract_model_state_dict",
+        lambda checkpoint: ({"weight": torch.ones(1)}, {"cfg": {"model": {}}}),
+    )
+    monkeypatch.setattr(inference_module.torch.cuda, "is_available", lambda: False)
+    monkeypatch.setitem(sys.modules, "openslide", types.SimpleNamespace(OpenSlide=FakeOpenSlide))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_inference_api.py",
+            "--slide-path",
+            str(slide_path),
+            "--output-json",
+            str(output_path),
+            "--checkpoint",
+            str(checkpoint_path),
+            "--tile-size",
+            "64",
+            "--stride",
+            "64",
+            "--batch-size",
+            "1",
+        ],
+    )
+
+    assert inference_module.main() == 0
+    assert read_locations == [(64, 0)]
+    assert len(recorded_calls) == 1
+
+
+def test_openslide_auto_level_uses_tile_budget_and_level_zero_coordinates(
+    tmp_path,
+    monkeypatch,
+    inference_module,
+):
+    slide_path = tmp_path / "slide.svs"
+    output_path = tmp_path / "output.json"
+    checkpoint_path = tmp_path / "checkpoint.pth.gz"
+    slide_path.write_text("stub slide", encoding="utf-8")
+    checkpoint_path.write_text("checkpoint", encoding="utf-8")
+
+    read_calls: list[tuple[tuple[int, int], int, tuple[int, int]]] = []
+
+    class FakeModel:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def load_state_dict(self, state_dict):
+            self.state_dict = state_dict
+
+        def to(self, device):
+            self.device = device
+            return self
+
+        def eval(self):
+            return self
+
+        def __call__(self, *args):
+            batch = args[0]
+            batch_size, _, height, width = batch.shape
+            return (
+                torch.ones((batch_size, 1, height, width), dtype=torch.float32),
+                torch.zeros((batch_size, 4), dtype=torch.float32),
+                torch.zeros((batch_size, 1, max(1, height // 8), max(1, width // 8)), dtype=torch.float32),
+                torch.zeros((batch_size, 1, max(1, height // 4), max(1, width // 4)), dtype=torch.float32),
+            )
+
+    class FakeOpenSlide:
+        level_count = 3
+        level_dimensions = [(4096, 4096), (1024, 1024), (256, 256)]
+        dimensions = (4096, 4096)
+        level_downsamples = [1.0, 4.0, 16.3]
+
+        def __init__(self, path):
+            self.path = path
+
+        def get_thumbnail(self, size):
+            return Image.new("RGB", size, color=(120, 90, 150))
+
+        def read_region(self, location, level, size):
+            read_calls.append((location, level, size))
+            return Image.new("RGB", size, color=(120, 90, 150))
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(inference_module, "ResidualAttentionUNet", FakeModel)
+    monkeypatch.setattr(inference_module, "_load_checkpoint_dict", lambda path, device: {"mock": "checkpoint"})
+    monkeypatch.setattr(
+        inference_module,
+        "_extract_model_state_dict",
+        lambda checkpoint: ({"weight": torch.ones(1)}, {"cfg": {"model": {}}}),
+    )
+    monkeypatch.setattr(inference_module.torch.cuda, "is_available", lambda: False)
+    monkeypatch.setitem(sys.modules, "openslide", types.SimpleNamespace(OpenSlide=FakeOpenSlide))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_inference_api.py",
+            "--slide-path",
+            str(slide_path),
+            "--output-json",
+            str(output_path),
+            "--checkpoint",
+            str(checkpoint_path),
+            "--tile-size",
+            "128",
+            "--stride",
+            "128",
+            "--target-tiles",
+            "10",
+        ],
+    )
+
+    assert inference_module.main() == 0
+    output = __import__("json").loads(output_path.read_text(encoding="utf-8"))
+    assert output["level"] == 2
+    assert output["summary"]["total_tiles"] == 4
+    assert all(call[1] == 2 for call in read_calls)
+    assert output["regions"][0]["w"] == 2086
 
 
 def test_compute_hotspot_stays_centered_for_centered_synthetic_map(inference_module):

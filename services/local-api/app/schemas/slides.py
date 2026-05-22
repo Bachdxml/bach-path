@@ -100,7 +100,7 @@ class SlideListItem(BaseModel):
     id: int
     original_path: str | None = Field(default=None, description="Original slide filename only")
     created_at: datetime
-    inference_result: Literal["positive", "negative", "indecisive", "unchecked"] = "unchecked"
+    inference_result: Literal["positive", "negative", "needs_review", "unchecked"] = "unchecked"
     review_status: Literal["unreviewed", "positive", "negative", "indeterminate"] = "unreviewed"
     folder_label: str = "Uncategorized"
     folder_key: str = "uncategorized"

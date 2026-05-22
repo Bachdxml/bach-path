@@ -116,6 +116,9 @@ function toggleFavorite(id) {
 }
 
 function compareSlides(a, b, sort) {
+  const reviewDelta = getReviewSortPriority(a) - getReviewSortPriority(b);
+  if (reviewDelta !== 0) return reviewDelta;
+
   const nameA = filenameFromPath(a.original_path).toLowerCase();
   const nameB = filenameFromPath(b.original_path).toLowerCase();
   const tA = new Date(a.created_at || 0).getTime();
@@ -130,6 +133,19 @@ function compareSlides(a, b, sort) {
     case "date-desc":
     default:
       return tB - tA;
+  }
+}
+
+function getReviewSortPriority(slide) {
+  switch (slide?.review_status || "unreviewed") {
+    case "positive":
+      return 0;
+    case "negative":
+      return 1;
+    case "indeterminate":
+      return 2;
+    default:
+      return 3;
   }
 }
 
@@ -299,14 +315,16 @@ function createSlideCard(s, fav) {
   const status = document.createElement("div");
   const result = s.inference_result || "unchecked";
   const review = s.review_status || "unreviewed";
-  status.className = `gallery-card-status gallery-card-status--${result}`;
+  status.className = review === "unreviewed"
+    ? `gallery-card-status gallery-card-status--${result}`
+    : `gallery-card-status gallery-card-status--review gallery-card-status--review-${review}`;
   const resultText =
     result === "positive"
       ? "AI positive"
       : result === "negative"
         ? "AI negative"
-        : result === "indecisive"
-          ? "AI indecisive"
+        : result === "needs_review"
+          ? "AI needs review"
           : "Unchecked";
   const reviewText =
     review === "positive"

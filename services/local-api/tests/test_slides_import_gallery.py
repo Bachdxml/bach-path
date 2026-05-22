@@ -141,11 +141,11 @@ def test_collection_import_rejects_generated_tile_atomically(app_paths):
     assert gallery_response.json()["slides"] == []
 
 
-def test_gallery_distinguishes_negative_and_indecisive_slide_inference(app_paths):
+def test_gallery_distinguishes_negative_and_needs_review_slide_inference(app_paths):
     negative_slide_path = app_paths["source_dir"] / "ai-negative.png"
-    indecisive_slide_path = app_paths["source_dir"] / "ai-indecisive.png"
+    needs_review_slide_path = app_paths["source_dir"] / "ai-needs-review.png"
     _create_sample_slide(negative_slide_path)
-    _create_sample_slide(indecisive_slide_path)
+    _create_sample_slide(needs_review_slide_path)
 
     app = create_app()
     with TestClient(app) as client:
@@ -153,9 +153,9 @@ def test_gallery_distinguishes_negative_and_indecisive_slide_inference(app_paths
         assert negative_import.status_code == 200, negative_import.text
         negative_slide_id = negative_import.json()["slide_id"]
 
-        indecisive_import = client.post("/slides/import", json={"file_path": str(indecisive_slide_path)})
-        assert indecisive_import.status_code == 200, indecisive_import.text
-        indecisive_slide_id = indecisive_import.json()["slide_id"]
+        needs_review_import = client.post("/slides/import", json={"file_path": str(needs_review_slide_path)})
+        assert needs_review_import.status_code == 200, needs_review_import.text
+        needs_review_slide_id = needs_review_import.json()["slide_id"]
 
         db = app.state.SessionLocal()
         try:
@@ -180,7 +180,7 @@ def test_gallery_distinguishes_negative_and_indecisive_slide_inference(app_paths
             )
             db.add(
                 InferenceRun(
-                    slide_id=indecisive_slide_id,
+                    slide_id=needs_review_slide_id,
                     model_name="ResidualAttentionUNet",
                     model_version="test",
                     status="succeeded",
@@ -195,4 +195,4 @@ def test_gallery_distinguishes_negative_and_indecisive_slide_inference(app_paths
         gallery_by_id = {item["id"]: item for item in gallery_response.json()["slides"]}
 
     assert gallery_by_id[negative_slide_id]["inference_result"] == "negative"
-    assert gallery_by_id[indecisive_slide_id]["inference_result"] == "indecisive"
+    assert gallery_by_id[needs_review_slide_id]["inference_result"] == "needs_review"

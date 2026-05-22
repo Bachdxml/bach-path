@@ -29,6 +29,55 @@ def test_load_settings_defaults_to_local_profile(app_paths, monkeypatch):
     assert settings.training_runs_dir == app_paths["app_data_dir"].resolve() / "training_runs"
     assert settings.tiles_cache_dir == app_paths["app_data_dir"].resolve() / "tiles_cache"
     assert settings.sqlite_path == app_paths["app_data_dir"].resolve() / "app.db"
+    assert settings.inference_tile_batch_size == 4
+    assert settings.inference_device == "auto"
+    assert settings.inference_level == "auto"
+    assert settings.inference_target_tiles == 1500
+
+
+def test_load_settings_accepts_inference_tile_batch_size_override(app_paths, monkeypatch):
+    _set_base_env(monkeypatch, app_paths["app_data_dir"])
+    monkeypatch.setenv("APP_INFERENCE_TILE_BATCH_SIZE", "4")
+
+    settings = load_settings()
+
+    assert settings.inference_tile_batch_size == 4
+
+
+def test_load_settings_accepts_inference_device_override(app_paths, monkeypatch):
+    _set_base_env(monkeypatch, app_paths["app_data_dir"])
+    monkeypatch.setenv("APP_INFERENCE_DEVICE", "mps")
+
+    settings = load_settings()
+
+    assert settings.inference_device == "mps"
+
+
+def test_load_settings_rejects_invalid_inference_device(app_paths, monkeypatch):
+    _set_base_env(monkeypatch, app_paths["app_data_dir"])
+    monkeypatch.setenv("APP_INFERENCE_DEVICE", "quantum")
+
+    with pytest.raises(RuntimeError, match="APP_INFERENCE_DEVICE"):
+        load_settings()
+
+
+def test_load_settings_accepts_inference_level_and_target_tiles(app_paths, monkeypatch):
+    _set_base_env(monkeypatch, app_paths["app_data_dir"])
+    monkeypatch.setenv("APP_INFERENCE_LEVEL", "2")
+    monkeypatch.setenv("APP_INFERENCE_TARGET_TILES", "900")
+
+    settings = load_settings()
+
+    assert settings.inference_level == "2"
+    assert settings.inference_target_tiles == 900
+
+
+def test_load_settings_rejects_invalid_inference_level(app_paths, monkeypatch):
+    _set_base_env(monkeypatch, app_paths["app_data_dir"])
+    monkeypatch.setenv("APP_INFERENCE_LEVEL", "-1")
+
+    with pytest.raises(RuntimeError, match="APP_INFERENCE_LEVEL"):
+        load_settings()
 
 
 def test_load_settings_requires_app_data_dir(monkeypatch):

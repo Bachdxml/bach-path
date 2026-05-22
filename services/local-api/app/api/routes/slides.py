@@ -33,7 +33,7 @@ from app.schemas.slides import (
     SlideReviewRequest,
     SlideReviewResponse,
 )
-from app.slides.deepzoom import deepzoom_paths, ensure_deepzoom, has_deepzoom
+from app.slides.deepzoom import deepzoom_paths, has_deepzoom
 from app.slides.metadata import RASTER_EXTENSIONS, read_openslide_metadata, read_raster_metadata
 from app.slides.storage import copy_into_managed_storage
 from app.util.exceptions import AppError, ErrorCode
@@ -111,6 +111,7 @@ def _create_import_collection(
         collection.created_at = created_at
     db.add(collection)
     db.flush()
+    db.commit()
     db.refresh(collection)
     return collection
 
@@ -195,6 +196,8 @@ def _import_slide_file(
     )
     db.add(slide)
     db.flush()
+    db.commit()
+    db.refresh(slide)
 
     dest_filename = f"{slide.id}{src.suffix.lower()}"
     dest_path = None
@@ -211,25 +214,34 @@ def _import_slide_file(
                 )
             dest_filename = f"{slide.id}-{uuid.uuid4().hex[:8]}{src.suffix.lower()}"
         except PermissionError:
+            _delete_pending_slide_row(db, slide.id)
             raise AppError(ErrorCode.SLIDE_PERMISSION, "Access denied when copying slide")
         except ValueError:
+            _delete_pending_slide_row(db, slide.id)
             raise AppError(ErrorCode.SLIDE_INVALID, "Invalid managed storage destination")
         except OSError:
             logger.exception("Failed to copy slide from %s", src)
+            _delete_pending_slide_row(db, slide.id)
             raise AppError(ErrorCode.IO_ERROR, "Failed to copy slide")
     if dest_path is None:
+        _delete_pending_slide_row(db, slide.id)
         raise AppError(ErrorCode.CONFLICT, "Managed slide already exists")
 
     slide.stored_filename = dest_filename
     slide.stored_path = str(dest_path)
-
-    try:
-        ensure_deepzoom(dest_path, settings.tiles_cache_dir, slide.id)
-    except Exception:
-        # Keep import successful even if pre-generation fails; viewer can still use dynamic tiles.
-        logger.exception("DeepZoom generation failed for slide %s", slide.id)
+    db.add(slide)
+    db.commit()
+    db.refresh(slide)
 
     return slide
+
+
+def _delete_pending_slide_row(db: Session, slide_id: int) -> None:
+    slide = db.get(Slide, slide_id)
+    if not slide:
+        return
+    db.delete(slide)
+    db.commit()
 
 
 def _raster_thumbnail_jpeg(slide_path: Path, size: int) -> bytes:
@@ -244,6 +256,10 @@ def _raster_thumbnail_jpeg(slide_path: Path, size: int) -> bytes:
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=85)
         return buf.getvalue()
+
+
+def _thumbnail_cache_path(settings, slide_id: int, size: int) -> Path:
+    return settings.tiles_cache_dir / str(slide_id) / "thumbnails" / f"{size}.jpg"
 
 
 def _raster_tile_jpeg(slide_path: Path, level: int, x: int, y: int, tile_size: int) -> bytes:
@@ -360,7 +376,7 @@ def list_slides(db: Session = Depends(get_db)):
             return "positive"
         if negative_count_by_run.get(run.id, 0) > 0:
             return "negative"
-        return "indecisive"
+        return "needs_review"
 
     items: list[SlideListItem] = []
     for s in slides:
@@ -422,7 +438,15 @@ def import_slide(payload: SlideImportRequest, request: Request, db: Session = De
             source_type="import",
         )
 
-    slide = _import_slide_file(db=db, src=src, settings=settings, collection_id=collection.id if collection else None)
+    try:
+        slide = _import_slide_file(db=db, src=src, settings=settings, collection_id=collection.id if collection else None)
+    except Exception:
+        if collection is not None and payload.collection_id is None:
+            existing_collection = db.get(ImportCollection, collection.id)
+            if existing_collection is not None:
+                db.delete(existing_collection)
+                db.commit()
+        raise
     return SlideImportResponse(slide_id=slide.id, stored_path=_managed_slide_identifier(slide.stored_filename))
 
 
@@ -463,12 +487,17 @@ def import_slide_collection(payload: SlideImportCollectionRequest, request: Requ
     except Exception:
         for slide_id in imported_slide_ids:
             shutil.rmtree(settings.tiles_cache_dir / str(slide_id), ignore_errors=True)
+            imported_slide = db.get(Slide, slide_id)
+            if imported_slide:
+                db.delete(imported_slide)
         for copied_path in copied_paths:
             if copied_path.is_file():
                 try:
                     copied_path.unlink()
                 except OSError:
                     logger.warning("Could not delete copied slide file %s after failed collection import", copied_path)
+        db.delete(collection)
+        db.commit()
         raise
 
     return SlideImportCollectionResponse(
@@ -501,6 +530,9 @@ def rename_import_collection(
         raise AppError(ErrorCode.NOT_FOUND, f"Import collection {collection_id} not found")
 
     collection.title = payload.title
+    db.add(collection)
+    db.commit()
+    db.refresh(collection)
     return _serialize_collection(collection)
 
 
@@ -543,10 +575,15 @@ def slide_thumbnail(
 
     settings = request.app.state.settings
     slide_path = _resolve_managed_slide_path(slide, settings)
+    cache_path = _thumbnail_cache_path(settings, slide_id, size)
+    if cache_path.is_file():
+        return FileResponse(path=cache_path, media_type="image/jpeg")
 
     if slide_path.suffix.lower() in RASTER_EXTENSIONS:
         try:
             jpg = _raster_thumbnail_jpeg(slide_path, size)
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_bytes(jpg)
             return Response(content=jpg, media_type="image/jpeg")
         except AppError:
             raise
@@ -578,7 +615,10 @@ def slide_thumbnail(
 
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=85)
-        return Response(content=buf.getvalue(), media_type="image/jpeg")
+        jpg = buf.getvalue()
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_bytes(jpg)
+        return Response(content=jpg, media_type="image/jpeg")
     finally:
         try:
             osr.close()

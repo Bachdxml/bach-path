@@ -620,23 +620,45 @@ body {
 }
 
 .gallery-card-status--positive {
-  background: rgba(224, 92, 92, 0.14);
-  border-color: rgba(224, 92, 92, 0.45);
-  color: #ffb5b5;
-}
-
-.gallery-card-status--negative {
   background: rgba(57, 201, 139, 0.14);
   border-color: rgba(57, 201, 139, 0.45);
   color: #9aefca;
+}
+
+.gallery-card-status--negative {
+  background: rgba(224, 92, 92, 0.14);
+  border-color: rgba(224, 92, 92, 0.45);
+  color: #ffb5b5;
 }
 
 .gallery-card-status--unchecked {
   color: var(--text-secondary);
 }
 
-.gallery-card-status--indecisive {
+.gallery-card-status--needs_review {
   color: var(--warning);
+}
+
+.gallery-card-status--review {
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.04);
+}
+
+.gallery-card-status--review-positive {
+  background: rgba(57, 201, 139, 0.18);
+  border-color: rgba(57, 201, 139, 0.58);
+  color: #9aefca;
+}
+
+.gallery-card-status--review-negative {
+  background: rgba(224, 92, 92, 0.18);
+  border-color: rgba(224, 92, 92, 0.58);
+  color: #ffb5b5;
+}
+
+.gallery-card-status--review-indeterminate {
+  background: rgba(240, 164, 53, 0.16);
+  border-color: rgba(240, 164, 53, 0.5);
+  color: #ffd491;
 }
 
 .gallery-card--selectable .gallery-card-select {

@@ -46,6 +46,8 @@ EXIT_OUTPUT = 4
 
 MAX_INFERENCE_TILES_DEFAULT = 200_000
 MAX_RASTER_PIXELS_DEFAULT = 150_000_000
+TISSUE_MASK_MAX_DIMENSION = 2048
+TARGET_INFERENCE_TILES_DEFAULT = 1500
 
 
 def _safe_torch_load(source, *, map_location):
@@ -73,6 +75,23 @@ def _load_checkpoint_dict(path: Path, device: torch.device):
         with gzip.open(path, "rb") as f:
             return _safe_torch_load(f, map_location=device)
     return _safe_torch_load(path, map_location=device)
+
+
+def _select_device(requested: str) -> torch.device:
+    value = (requested or "auto").strip().lower()
+    if value == "auto":
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        mps = getattr(torch.backends, "mps", None)
+        if mps is not None and mps.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
+    if value.startswith("cuda"):
+        return torch.device(value if torch.cuda.is_available() else "cpu")
+    if value == "mps":
+        mps = getattr(torch.backends, "mps", None)
+        return torch.device("mps" if mps is not None and mps.is_available() else "cpu")
+    return torch.device(value)
 
 
 def _extract_model_state_dict(checkpoint) -> Tuple[Mapping, dict]:
@@ -142,6 +161,93 @@ def _iter_tile_positions(level_w: int, level_h: int, tile_size: int, stride: int
 
 def _count_tile_positions(level_w: int, level_h: int, tile_size: int, stride: int) -> int:
     return sum(1 for _ in _iter_tile_positions(level_w, level_h, tile_size, stride))
+
+
+def _select_openslide_level(slide, requested_level: str, tile_size: int, stride: int, target_tiles: int) -> int:
+    value = (requested_level or "auto").strip().lower()
+    if value != "auto":
+        try:
+            return int(value)
+        except ValueError as exc:
+            raise ValueError("--level must be an integer or 'auto'") from exc
+
+    best_level = 0
+    best_tiles = None
+    for level_idx, (level_w, level_h) in enumerate(slide.level_dimensions):
+        tile_count = _count_tile_positions(level_w, level_h, tile_size, stride)
+        if tile_count <= 0:
+            continue
+        if tile_count <= target_tiles:
+            return level_idx
+        if best_tiles is None or tile_count < best_tiles:
+            best_level = level_idx
+            best_tiles = tile_count
+    return best_level
+
+
+def _tissue_mask_from_rgb_image(
+    image: Image.Image,
+    *,
+    background_threshold: int = 245,
+    min_channel_delta: int = 8,
+) -> np.ndarray:
+    """Return a coarse mask of non-background tissue from an RGB-ish image."""
+    arr = np.asarray(image.convert("RGB"), dtype=np.uint8)
+    if arr.size == 0:
+        return np.zeros((1, 1), dtype=bool)
+    min_channel = arr.min(axis=2)
+    max_channel = arr.max(axis=2)
+    saturation_proxy = max_channel.astype(np.int16) - min_channel.astype(np.int16)
+    dark_or_colored = (min_channel < background_threshold) | (saturation_proxy >= min_channel_delta)
+    return dark_or_colored.astype(bool)
+
+
+def _tile_has_tissue(
+    mask: np.ndarray | None,
+    *,
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    level_w: int,
+    level_h: int,
+    min_fraction: float,
+) -> bool:
+    if mask is None or min_fraction <= 0:
+        return True
+    mask_h, mask_w = mask.shape
+    if mask_h <= 0 or mask_w <= 0 or level_w <= 0 or level_h <= 0:
+        return True
+
+    x0 = int(np.floor(x * mask_w / level_w))
+    y0 = int(np.floor(y * mask_h / level_h))
+    x1 = int(np.ceil((x + w) * mask_w / level_w))
+    y1 = int(np.ceil((y + h) * mask_h / level_h))
+    x0 = max(0, min(mask_w - 1, x0))
+    y0 = max(0, min(mask_h - 1, y0))
+    x1 = max(x0 + 1, min(mask_w, x1))
+    y1 = max(y0 + 1, min(mask_h, y1))
+
+    tile_mask = mask[y0:y1, x0:x1]
+    if tile_mask.size == 0:
+        return True
+    return float(tile_mask.mean()) >= min_fraction
+
+
+def _build_openslide_tissue_mask(slide, *, level: int) -> np.ndarray | None:
+    """Build a small background/tissue mask for the selected inference level."""
+    try:
+        level_w, level_h = slide.level_dimensions[level]
+        scale = min(1.0, TISSUE_MASK_MAX_DIMENSION / max(level_w, level_h))
+        thumb_size = (max(1, int(level_w * scale)), max(1, int(level_h * scale)))
+        if hasattr(slide, "get_thumbnail"):
+            thumbnail = slide.get_thumbnail(thumb_size)
+        else:
+            thumbnail = slide.read_region((0, 0), level, thumb_size)
+        return _tissue_mask_from_rgb_image(thumbnail)
+    except Exception as exc:
+        print(f"Warning: could not build tissue mask; processing all tiles: {exc}", file=sys.stderr)
+        return None
 
 
 def _connected_components(mask: np.ndarray) -> list[list[tuple[int, int]]]:
@@ -326,10 +432,13 @@ def main():
     parser.add_argument("--checkpoint", required=True, help="Path to model checkpoint")
     parser.add_argument("--tile-size", type=int, default=512)
     parser.add_argument("--stride", type=int, default=512)
-    parser.add_argument("--level", type=int, default=0)
+    parser.add_argument("--level", default="auto")
+    parser.add_argument("--target-tiles", type=int, default=TARGET_INFERENCE_TILES_DEFAULT)
     parser.add_argument("--threshold", type=float, default=0.1)
-    parser.add_argument("--device", default="cpu")
+    parser.add_argument("--device", default="auto")
     parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--min-tissue-fraction", type=float, default=0.02)
+    parser.add_argument("--no-skip-background", action="store_true")
     parser.add_argument("--positive-only", action="store_true", help="Only output fungus_positive regions")
     parser.add_argument("--model-name", default="ResidualAttentionUNet")
     parser.add_argument("--model-version", default="1.0")
@@ -351,11 +460,17 @@ def main():
     if args.stride <= 0:
         print("Error: --stride must be > 0", file=sys.stderr)
         return EXIT_ARGS
+    if args.target_tiles <= 0:
+        print("Error: --target-tiles must be > 0", file=sys.stderr)
+        return EXIT_ARGS
     if args.batch_size <= 0:
         print("Error: --batch-size must be > 0", file=sys.stderr)
         return EXIT_ARGS
     if not (0.0 <= args.threshold <= 1.0):
         print("Error: --threshold must be in [0.0, 1.0]", file=sys.stderr)
+        return EXIT_ARGS
+    if not (0.0 <= args.min_tissue_fraction <= 1.0):
+        print("Error: --min-tissue-fraction must be in [0.0, 1.0]", file=sys.stderr)
         return EXIT_ARGS
     if args.tile_size > 8192:
         print("Error: --tile-size must be <= 8192", file=sys.stderr)
@@ -366,7 +481,7 @@ def main():
 
     # Load model
     try:
-        device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+        device = _select_device(args.device)
         ckpt = _load_checkpoint_dict(checkpoint_path, device)
         state_dict, ckpt_meta = _extract_model_state_dict(ckpt)
 
@@ -386,29 +501,31 @@ def main():
 
     tile_size = args.tile_size
     stride = args.stride
-    level = args.level
     max_tiles = _max_inference_tiles()
 
     # --- Raster image (PNG/JPEG): no OpenSlide ---
     if slide_path.suffix.lower() in RASTER_SLIDE_EXTENSIONS:
         try:
-            full_img = Image.open(slide_path).convert("RGB")
+            full_img = Image.open(slide_path)
+            level_w, level_h = full_img.size
+            if (level_w * level_h) > _max_raster_pixels():
+                full_img.close()
+                print(
+                    f"Error: Raster image too large ({level_w}x{level_h}); "
+                    "refusing to load into memory. Use WSI format or raise BACH_MAX_RASTER_PIXELS.",
+                    file=sys.stderr,
+                )
+                return EXIT_SLIDE
+            full_img = full_img.convert("RGB")
         except Exception as e:
             print(f"Error opening image: {e}", file=sys.stderr)
             return EXIT_SLIDE
 
-        if level != 0:
-            print("Error: Raster images only support --level 0", file=sys.stderr)
+        if str(args.level).strip().lower() not in {"0", "auto"}:
+            print("Error: Raster images only support --level 0 or auto", file=sys.stderr)
             return EXIT_SLIDE
+        level = 0
 
-        level_w, level_h = full_img.size
-        if (level_w * level_h) > _max_raster_pixels():
-            print(
-                f"Error: Raster image too large ({level_w}x{level_h}); "
-                "refusing to load into memory. Use WSI format or raise BACH_MAX_RASTER_PIXELS.",
-                file=sys.stderr,
-            )
-            return EXIT_SLIDE
         dims = (level_w, level_h)
 
         total_tiles = _count_tile_positions(level_w, level_h, tile_size, stride)
@@ -424,16 +541,37 @@ def main():
             return EXIT_SLIDE
 
         regions = []
+        skipped_background = 0
+        inferred_tiles = 0
         batch_size = args.batch_size
         tile_iter = _iter_tile_positions(level_w, level_h, tile_size, stride)
+        tissue_mask = None
+        if not args.no_skip_background:
+            scale = min(1.0, TISSUE_MASK_MAX_DIMENSION / max(level_w, level_h))
+            mask_size = (max(1, int(level_w * scale)), max(1, int(level_h * scale)))
+            tissue_mask = _tissue_mask_from_rgb_image(full_img.resize(mask_size, Image.BILINEAR))
 
         try:
-            for i in range(0, total_tiles, batch_size):
+            batch_index = 0
+            while True:
                 batch_positions = []
-                for _ in range(batch_size):
+                while len(batch_positions) < batch_size:
                     pos = next(tile_iter, None)
                     if pos is None:
                         break
+                    x, y, w, h = pos
+                    if not _tile_has_tissue(
+                        tissue_mask,
+                        x=x,
+                        y=y,
+                        w=w,
+                        h=h,
+                        level_w=level_w,
+                        level_h=level_h,
+                        min_fraction=args.min_tissue_fraction,
+                    ):
+                        skipped_background += 1
+                        continue
                     batch_positions.append(pos)
                 if not batch_positions:
                     break
@@ -449,12 +587,14 @@ def main():
                 batch = torch.cat(batch_tensors, dim=0).to(device)
 
                 try:
-                    with torch.no_grad():
+                    with torch.inference_mode():
                         seg_logits, _, _, _ = model(batch)
                     probs = torch.sigmoid(seg_logits)
                 except Exception as e:
-                    print(f"Inference error at batch {i // batch_size}: {e}", file=sys.stderr)
+                    print(f"Inference error at batch {batch_index}: {e}", file=sys.stderr)
                     return EXIT_INFERENCE
+                inferred_tiles += len(batch_positions)
+                batch_index += 1
 
                 for j, (x, y, w, h) in enumerate(batch_positions):
                     prob_map = probs[j, 0].detach().cpu().numpy()
@@ -513,6 +653,18 @@ def main():
             return EXIT_SLIDE
 
         try:
+            try:
+                level = _select_openslide_level(
+                    slide,
+                    str(args.level),
+                    tile_size,
+                    stride,
+                    args.target_tiles,
+                )
+            except ValueError as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                slide.close()
+                return EXIT_ARGS
             if level < 0 or level >= slide.level_count:
                 print(f"Error: Invalid level {level} (slide has {slide.level_count} levels)", file=sys.stderr)
                 slide.close()
@@ -535,16 +687,33 @@ def main():
                 return EXIT_SLIDE
 
             regions = []
+            skipped_background = 0
+            inferred_tiles = 0
             batch_size = args.batch_size
             downsample = float(slide.level_downsamples[level])
             tile_iter = _iter_tile_positions(level_w, level_h, tile_size, stride)
+            tissue_mask = None if args.no_skip_background else _build_openslide_tissue_mask(slide, level=level)
 
-            for i in range(0, total_tiles, batch_size):
+            batch_index = 0
+            while True:
                 batch_positions = []
-                for _ in range(batch_size):
+                while len(batch_positions) < batch_size:
                     pos = next(tile_iter, None)
                     if pos is None:
                         break
+                    x, y, w, h = pos
+                    if not _tile_has_tissue(
+                        tissue_mask,
+                        x=x,
+                        y=y,
+                        w=w,
+                        h=h,
+                        level_w=level_w,
+                        level_h=level_h,
+                        min_fraction=args.min_tissue_fraction,
+                    ):
+                        skipped_background += 1
+                        continue
                     batch_positions.append(pos)
                 if not batch_positions:
                     break
@@ -565,23 +734,27 @@ def main():
                 batch = torch.cat(batch_tensors, dim=0).to(device)
 
                 try:
-                    with torch.no_grad():
+                    with torch.inference_mode():
                         seg_logits, _, _, _ = model(batch)
                     probs = torch.sigmoid(seg_logits)
                 except Exception as e:
-                    print(f"Inference error at batch {i // batch_size}: {e}", file=sys.stderr)
+                    print(f"Inference error at batch {batch_index}: {e}", file=sys.stderr)
                     slide.close()
                     return EXIT_INFERENCE
+                inferred_tiles += len(batch_positions)
+                batch_index += 1
 
                 for j, (x, y, w, h) in enumerate(batch_positions):
                     prob_map = probs[j, 0].detach().cpu().numpy()
                     score = float(prob_map.mean())
                     label = "fungus_positive" if score >= args.threshold else "fungus_negative"
                     # Convert to level-0 coordinates for API/Region
-                    x0 = int(x * downsample)
-                    y0 = int(y * downsample)
-                    w0 = int(w * downsample)
-                    h0 = int(h * downsample)
+                    x0 = int(round(x * downsample))
+                    y0 = int(round(y * downsample))
+                    x1 = int(round((x + w) * downsample))
+                    y1 = int(round((y + h) * downsample))
+                    w0 = max(1, x1 - x0)
+                    h0 = max(1, y1 - y0)
                     if label == "fungus_positive":
                         localized = _tile_regions_from_prob_map(
                             prob_map,
@@ -637,11 +810,15 @@ def main():
         "tile_size": tile_size,
         "stride": stride,
         "level": level,
+        "requested_level": args.level,
+        "target_tiles": args.target_tiles,
         "threshold": args.threshold,
         "slide_dimensions": list(dims),
         "completed_at": datetime.now(timezone.utc).isoformat(),
         "summary": {
             "total_tiles": total_tiles,
+            "inferred_tiles": inferred_tiles,
+            "skipped_background": skipped_background,
             "fungus_positive": n_pos,
             "fungus_negative": n_neg,
         },
@@ -651,7 +828,7 @@ def main():
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, "w") as f:
-            json.dump(output, f, indent=2)
+            json.dump(output, f, separators=(",", ":"))
     except Exception as e:
         print(f"Error writing output: {e}", file=sys.stderr)
         return EXIT_OUTPUT

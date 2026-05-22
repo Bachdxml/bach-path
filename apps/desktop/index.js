@@ -3,6 +3,7 @@ const path = require("path");
 const fs = require("fs");
 const { spawn } = require("child_process");
 const http = require("http");
+const crypto = require("crypto");
 const { fileURLToPath } = require("url");
 const net = require("net");
 
@@ -325,7 +326,7 @@ function startApi() {
   const config = loadConfig();
   const port = config.apiPort ?? DEFAULT_PORT;
   const host = normalizeApiHost(config.apiHost);
-  const apiKey = normalizeApiKey(config.apiKey);
+  const apiKey = normalizeApiKey(config.apiKey) || crypto.randomBytes(32).toString("hex");
 
   const dataDir = getApiDataDir();
   const logDir = getApiLogDir();
@@ -354,12 +355,10 @@ function startApi() {
   const dyldPath = [...homebrewLibPaths, process.env.DYLD_LIBRARY_PATH].filter(Boolean).join(path.delimiter);
   const spawnEnv = { ...process.env };
   if (dyldPath) spawnEnv.DYLD_LIBRARY_PATH = dyldPath;
-  if (apiKey) {
-    spawnEnv.APP_API_KEY = apiKey;
-    // Browser-rendered <img> tile/thumbnail requests cannot include custom headers,
-    // so allow query API keys only for this local desktop-launched API process.
-    spawnEnv.APP_ALLOW_QUERY_API_KEY = "true";
-  }
+  spawnEnv.APP_API_KEY = apiKey;
+  // Browser-rendered <img> tile/thumbnail requests cannot include custom headers,
+  // so allow query API keys only for this local desktop-launched API process.
+  spawnEnv.APP_ALLOW_QUERY_API_KEY = "true";
   if (!spawnEnv.INFERENCE_PYTHON) {
     spawnEnv.INFERENCE_PYTHON = pythonPath;
   }
@@ -403,7 +402,7 @@ function startApi() {
   });
 
   return waitForHealth(port, host)
-    .then(() => buildApiReadyState({ ...config, apiPort: port, apiHost: host }))
+    .then(() => buildApiReadyState({ ...config, apiPort: port, apiHost: host, apiKey }))
     .catch((err) => {
       stopApi();
       throw err;

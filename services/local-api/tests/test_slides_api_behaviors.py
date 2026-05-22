@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import sys
+import types
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 from PIL import Image
 
+from app.api.routes import slides as slides_routes
 from app.main import create_app
 from app.models.inference_run import InferenceRun
+from app.models.import_collection import ImportCollection
 from app.models.region import Region
 from app.models.slide import Slide
 
@@ -102,6 +106,38 @@ def test_import_collection_deduplicates_and_supports_rename(app_paths):
         assert slide["collection_id"] == collection_id
         assert slide["collection_title"] == "Renamed Batch"
 
+    app = create_app()
+    with TestClient(app) as client:
+        persisted_response = client.get(f"/import-collections/{collection_id}")
+
+    assert persisted_response.status_code == 200, persisted_response.text
+    assert persisted_response.json()["title"] == "Renamed Batch"
+
+
+def test_failed_single_import_removes_auto_created_collection(app_paths, monkeypatch):
+    slide_path = app_paths["source_dir"] / "copy-fails.png"
+    _create_sample_slide(slide_path)
+
+    def fail_copy(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(slides_routes, "copy_into_managed_storage", fail_copy)
+
+    app = create_app()
+    with TestClient(app) as client:
+        response = client.post("/slides/import", json={"file_path": str(slide_path)})
+        assert response.status_code == 400
+
+        db = app.state.SessionLocal()
+        try:
+            collection_count = db.query(ImportCollection).count()
+            slide_count = db.query(Slide).count()
+        finally:
+            db.close()
+
+    assert collection_count == 0
+    assert slide_count == 0
+
 
 def test_delete_slide_removes_file_and_tile_cache(app_paths):
     slide_path = app_paths["source_dir"] / "deletable.png"
@@ -143,6 +179,31 @@ def test_delete_slide_removes_file_and_tile_cache(app_paths):
     assert not cached_tile_path.exists()
     assert metadata_response.status_code == 400
     assert metadata_response.json()["error"]["code"] == "not_found"
+
+
+def test_thumbnail_requests_are_cached(app_paths):
+    slide_path = app_paths["source_dir"] / "thumbnail-cache.png"
+    _create_sample_slide(slide_path)
+
+    app_data_dir = app_paths["app_data_dir"]
+
+    app = create_app()
+    with TestClient(app) as client:
+        import_response = client.post("/slides/import", json={"file_path": str(slide_path)})
+        assert import_response.status_code == 200, import_response.text
+        slide_id = import_response.json()["slide_id"]
+
+        first_response = client.get(f"/slides/{slide_id}/thumbnail?size=128")
+        assert first_response.status_code == 200, first_response.text
+
+        cached_path = app_data_dir / "tiles_cache" / str(slide_id) / "thumbnails" / "128.jpg"
+        assert cached_path.exists()
+        cached_path.write_bytes(b"cached-thumbnail")
+
+        second_response = client.get(f"/slides/{slide_id}/thumbnail?size=128")
+
+    assert second_response.status_code == 200, second_response.text
+    assert second_response.content == b"cached-thumbnail"
 
 
 def test_cached_raster_tile_still_rejects_invalid_coordinates(app_paths):
@@ -231,6 +292,59 @@ def test_metadata_rejects_directory_stored_path(app_paths):
         assert metadata_response.status_code == 400
         payload = metadata_response.json()
         assert payload["error"]["code"] == "storage_inconsistent"
+
+
+def test_openslide_metadata_redacts_unsafe_vendor_properties(app_paths, monkeypatch):
+    slide_path = app_paths["source_dir"] / "metadata.svs"
+    slide_path.write_text("stub slide", encoding="utf-8")
+
+    class FakeOpenSlide:
+        dimensions = (1000, 500)
+        level_dimensions = [(1000, 500), (250, 125)]
+        level_count = 2
+        properties = {
+            "openslide.vendor": "aperio",
+            "openslide.mpp-x": "0.25",
+            "openslide.mpp-y": "0.26",
+            "aperio.PatientName": "Jane Patient",
+            "aperio.Accession": "ABC-123",
+        }
+
+        def __init__(self, path):
+            self.path = path
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+    fake_openslide = types.SimpleNamespace(
+        OpenSlide=FakeOpenSlide,
+        PROPERTY_NAME_VENDOR="openslide.vendor",
+        PROPERTY_NAME_MPP_X="openslide.mpp-x",
+        PROPERTY_NAME_MPP_Y="openslide.mpp-y",
+    )
+    monkeypatch.setitem(sys.modules, "openslide", fake_openslide)
+
+    app = create_app()
+    with TestClient(app) as client:
+        import_response = client.post("/slides/import", json={"file_path": str(slide_path)})
+        assert import_response.status_code == 200, import_response.text
+        slide_id = import_response.json()["slide_id"]
+
+        metadata_response = client.get(f"/slides/{slide_id}/metadata")
+
+    assert metadata_response.status_code == 200, metadata_response.text
+    payload = metadata_response.json()
+    assert payload["vendor"] == "aperio"
+    assert payload["properties"] == {
+        "openslide.vendor": "aperio",
+        "openslide.mpp-x": "0.25",
+        "openslide.mpp-y": "0.26",
+    }
+    assert "Jane Patient" not in str(payload)
+    assert "ABC-123" not in str(payload)
 
 
 def test_batch_inference_rejects_oversized_payload(app_paths):

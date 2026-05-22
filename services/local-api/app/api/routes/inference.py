@@ -2,6 +2,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -11,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
@@ -35,12 +37,20 @@ from app.schemas.inference import (
 from app.util.exceptions import AppError, ErrorCode
 
 router = APIRouter(prefix="/inference", tags=["inference"])
-_inference_executor = ThreadPoolExecutor(max_workers=2)
+# Whole-slide inference is memory-heavy; serializing jobs avoids competing
+# OpenSlide/PyTorch subprocesses being killed by local OS memory pressure.
+_inference_executor = ThreadPoolExecutor(max_workers=1)
 _inference_queue: QueueInterface = InMemoryQueue()
 logger = logging.getLogger(__name__)
 MAX_FOLDER_INFERENCE_SLIDES = 512
 MAX_REGIONS_PER_RUN = 100_000
 MAX_SUBPROCESS_DIAGNOSTIC_CHARS = 2000
+ALLOWED_REGION_LABELS = {"fungus_positive", "fungus_negative"}
+SIGKILL_RETURN_CODE = -9
+SIGKILL_ERROR_MESSAGE = (
+    "Inference process was killed, likely due to memory pressure. "
+    "Try closing other apps or reducing APP_INFERENCE_TILE_BATCH_SIZE."
+)
 _SECRET_PATTERNS = (
     re.compile(r"(?i)(api[_-]?key|token|secret|password)(\s*[=:]\s*)([^\s,;]+)"),
 )
@@ -241,6 +251,43 @@ def _inference_subprocess_env() -> dict[str, str]:
     return env
 
 
+def _subprocess_failure_message(returncode: int | None) -> str:
+    if returncode == SIGKILL_RETURN_CODE:
+        return SIGKILL_ERROR_MESSAGE
+    return "Inference failed. Check server logs for details."
+
+
+def _parse_inference_region(raw_region: object) -> dict:
+    if not isinstance(raw_region, dict):
+        raise ValueError("Inference output region must be an object")
+    x = int(raw_region["x"])
+    y = int(raw_region["y"])
+    w = int(raw_region["w"])
+    h = int(raw_region["h"])
+    score = float(raw_region["score"])
+    label = raw_region.get("label")
+    if x < 0 or y < 0 or w <= 0 or h <= 0:
+        raise ValueError("Inference output region has invalid geometry")
+    if not math.isfinite(score) or score < 0.0 or score > 1.0:
+        raise ValueError("Inference output region has invalid score")
+    if label is not None and label not in ALLOWED_REGION_LABELS:
+        raise ValueError("Inference output region has invalid label")
+    payload = {
+        k: v
+        for k, v in raw_region.items()
+        if k not in {"x", "y", "w", "h", "score", "label"}
+    }
+    return {
+        "x": x,
+        "y": y,
+        "w": w,
+        "h": h,
+        "score": score,
+        "label": label,
+        "payload_json": json.dumps(payload, allow_nan=False) if payload else None,
+    }
+
+
 def _resolve_managed_slide_path(slide: Slide, settings) -> Path:
     path = Path(slide.stored_path).resolve(strict=False)
     slides_root = settings.slides_dir.resolve(strict=False)
@@ -369,6 +416,10 @@ def _process_inference_job(
             "--checkpoint", str(checkpoint),
             "--model-name", run.model_name,
             "--model-version", run.model_version,
+            "--batch-size", str(settings.inference_tile_batch_size),
+            "--device", settings.inference_device,
+            "--level", settings.inference_level,
+            "--target-tiles", str(settings.inference_target_tiles),
         ]
         if threshold is not None:
             cmd.extend(["--threshold", str(float(threshold))])
@@ -391,7 +442,7 @@ def _process_inference_job(
                 diagnostic,
             )
             run.error_code = "inference_failed"
-            run.error_message = "Inference failed. Check server logs for details."
+            run.error_message = _subprocess_failure_message(result.returncode)
             _record_inference_run_transition(
                 db,
                 run,
@@ -439,27 +490,24 @@ def _process_inference_job(
         if len(raw_regions) > MAX_REGIONS_PER_RUN:
             raise ValueError(f"Inference output exceeded max regions ({MAX_REGIONS_PER_RUN})")
 
-        parsed_regions = []
-        for r in raw_regions:
-            payload = {
-                k: v
-                for k, v in r.items()
-                if k not in {"x", "y", "w", "h", "score", "label"}
-            }
-            parsed_regions.append(
-                {
-                    "x": int(r["x"]),
-                    "y": int(r["y"]),
-                    "w": int(r["w"]),
-                    "h": int(r["h"]),
-                    "score": float(r["score"]),
-                    "label": r.get("label"),
-                    "payload_json": json.dumps(payload) if payload else None,
-                }
+        try:
+            parsed_regions = [_parse_inference_region(r) for r in raw_regions]
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            run.error_code = "malformed_output"
+            run.error_message = "Inference output was malformed."
+            _record_inference_run_transition(
+                db,
+                run,
+                InferenceStatus.failed,
+                detail=f"Inference output validation failed: {exc}",
+                error="malformed_output",
             )
+            db.commit()
+            _inference_queue.fail(job.id, "malformed_output")
+            return
 
-        for r in parsed_regions:
-            region = Region(
+        db.add_all(
+            Region(
                 inference_run_id=run_id,
                 x=r["x"],
                 y=r["y"],
@@ -469,7 +517,8 @@ def _process_inference_job(
                 label=r.get("label"),
                 payload_json=r.get("payload_json"),
             )
-            db.add(region)
+            for r in parsed_regions
+        )
 
         run.output_json_path = str(output_path)
         _record_inference_run_transition(db, run, InferenceStatus.succeeded)
@@ -753,16 +802,43 @@ def list_slide_inference_runs(slide_id: int, db: Session = Depends(get_db)):
     if not slide:
         raise AppError(ErrorCode.NOT_FOUND, f"Slide {slide_id} not found")
     runs = db.query(InferenceRun).filter(InferenceRun.slide_id == slide_id).order_by(InferenceRun.created_at.desc()).all()
-    return {"runs": [_run_to_response(r, db) for r in runs]}
+    summaries = _run_summaries(db, runs)
+    return {"runs": [_run_to_response(r, summary=summaries.get(r.id)) for r in runs]}
 
 
-def _run_to_response(run: InferenceRun, db: Session | None = None) -> InferenceRunResponse:
-    summary = None
-    if db and run.status == InferenceStatus.succeeded.value:
-        regions = db.query(Region).filter(Region.inference_run_id == run.id).all()
-        n_pos = sum(1 for r in regions if r.label == "fungus_positive")
-        n_neg = sum(1 for r in regions if r.label == "fungus_negative")
-        summary = {"total": len(regions), "fungus_positive": n_pos, "fungus_negative": n_neg}
+def _run_summaries(db: Session, runs: list[InferenceRun]) -> dict[int, dict]:
+    succeeded_run_ids = [run.id for run in runs if run.status == InferenceStatus.succeeded.value]
+    if not succeeded_run_ids:
+        return {}
+
+    rows = (
+        db.query(Region.inference_run_id, Region.label, func.count(Region.id))
+        .filter(Region.inference_run_id.in_(succeeded_run_ids))
+        .group_by(Region.inference_run_id, Region.label)
+        .all()
+    )
+    summaries = {
+        run_id: {"total": 0, "fungus_positive": 0, "fungus_negative": 0}
+        for run_id in succeeded_run_ids
+    }
+    for run_id, label, count in rows:
+        summary = summaries[run_id]
+        summary["total"] += int(count)
+        if label == "fungus_positive":
+            summary["fungus_positive"] = int(count)
+        elif label == "fungus_negative":
+            summary["fungus_negative"] = int(count)
+    return summaries
+
+
+def _run_to_response(
+    run: InferenceRun,
+    db: Session | None = None,
+    *,
+    summary: dict | None = None,
+) -> InferenceRunResponse:
+    if summary is None and db and run.status == InferenceStatus.succeeded.value:
+        summary = _run_summaries(db, [run]).get(run.id)
     return InferenceRunResponse(
         id=run.id,
         slide_id=run.slide_id,
