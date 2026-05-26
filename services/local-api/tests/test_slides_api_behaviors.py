@@ -181,6 +181,25 @@ def test_delete_slide_removes_file_and_tile_cache(app_paths):
     assert metadata_response.json()["error"]["code"] == "not_found"
 
 
+def test_missing_deepzoom_artifacts_return_404_while_raster_tiles_work(app_paths):
+    slide_path = app_paths["source_dir"] / "raster-fallback.png"
+    _create_sample_slide(slide_path)
+
+    app = create_app()
+    with TestClient(app) as client:
+        import_response = client.post("/slides/import", json={"file_path": str(slide_path)})
+        assert import_response.status_code == 200, import_response.text
+        slide_id = import_response.json()["slide_id"]
+
+        dzi_response = client.get(f"/slides/{slide_id}/deepzoom.dzi")
+        assert dzi_response.status_code == 404
+        assert dzi_response.json()["error"]["code"] == "not_found"
+
+        tile_response = client.get(f"/slides/{slide_id}/tiles/0/0/0.jpg")
+        assert tile_response.status_code == 200, tile_response.text
+        assert tile_response.headers["content-type"].startswith("image/jpeg")
+
+
 def test_thumbnail_requests_are_cached(app_paths):
     slide_path = app_paths["source_dir"] / "thumbnail-cache.png"
     _create_sample_slide(slide_path)

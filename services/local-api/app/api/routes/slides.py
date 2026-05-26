@@ -755,7 +755,11 @@ def slide_deepzoom_descriptor(
 
     dz_paths = deepzoom_paths(settings.tiles_cache_dir, slide_id)
     if not has_deepzoom(dz_paths):
-        raise AppError(ErrorCode.NOT_FOUND, "DeepZoom tiles not pre-generated for this slide")
+        raise AppError(
+            ErrorCode.NOT_FOUND,
+            "DeepZoom tiles not pre-generated for this slide",
+            http_status=404,
+        )
     return FileResponse(path=dz_paths.descriptor, media_type="application/xml")
 
 
@@ -777,7 +781,11 @@ def slide_deepzoom_tile(
 
     dz_paths = deepzoom_paths(settings.tiles_cache_dir, slide_id)
     if not has_deepzoom(dz_paths):
-        raise AppError(ErrorCode.NOT_FOUND, "DeepZoom tiles not pre-generated for this slide")
+        raise AppError(
+            ErrorCode.NOT_FOUND,
+            "DeepZoom tiles not pre-generated for this slide",
+            http_status=404,
+        )
     if level < 0 or x < 0 or y < 0:
         raise AppError(ErrorCode.NOT_FOUND, f"Tile out of bounds: level={level} x={x} y={y}")
     tile_path = dz_paths.tiles_dir / str(level) / f"{x}_{y}.jpg"

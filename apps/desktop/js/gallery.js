@@ -20,6 +20,13 @@ let allSlides = [];
 let selectionMode = false;
 const selectedIds = new Set();
 let galleryLoadSeq = 0;
+
+function waitForGalleryApiReady() {
+  if (typeof galleryApp?.whenApiReady === "function") {
+    return galleryApp.whenApiReady();
+  }
+  return Promise.resolve();
+}
 let inferencePollTimer = null;
 const pendingInferenceRunIds = new Set();
 
@@ -593,6 +600,7 @@ async function deleteSelectedSlides() {
 
 async function loadGalleryData() {
   if (!galleryGrid || !galleryEmpty) return;
+  await waitForGalleryApiReady();
   const requestId = ++galleryLoadSeq;
   galleryEmpty.style.display = "none";
   showSkeletons();

@@ -2,8 +2,16 @@ const modelsDeployPathsEl = document.getElementById("models-deploy-paths");
 const modelsApp = window.BachPath || null;
 const modelsSlidesApi = modelsApp?.services?.slidesApi || window.slidesApi;
 
+function waitForModelsApiReady() {
+  if (typeof modelsApp?.whenApiReady === "function") {
+    return modelsApp.whenApiReady();
+  }
+  return Promise.resolve();
+}
+
 async function loadDeployInfo() {
   if (!modelsDeployPathsEl) return;
+  await waitForModelsApiReady();
   try {
     const info = await modelsSlidesApi.getTrainingInfo();
     const lines = [];
