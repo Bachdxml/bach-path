@@ -20,7 +20,7 @@ def make_engine(sqlite_path: Path) -> Engine:
         cursor.execute("PRAGMA foreign_keys=ON;")
         cursor.execute("PRAGMA journal_mode=WAL;")      # better crash resilience + concurrency
         cursor.execute("PRAGMA synchronous=NORMAL;")    # balanced durability/perf
-        cursor.execute("PRAGMA busy_timeout=5000;")     # avoid “database is locked” spikes
+        cursor.execute("PRAGMA busy_timeout=60000;")    # wait through long WSI import/cache bursts
         cursor.close()
 
     return engine

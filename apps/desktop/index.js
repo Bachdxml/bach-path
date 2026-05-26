@@ -3,12 +3,16 @@ const path = require("path");
 const fs = require("fs");
 const { spawn } = require("child_process");
 const http = require("http");
+const crypto = require("crypto");
 const { fileURLToPath } = require("url");
 const net = require("net");
 
 const APP_DISPLAY_NAME = "Bach Path";
 const DEFAULT_PORT = 8765;
 const WSI_EXTENSIONS = new Set([".svs", ".tif", ".tiff", ".png"]);
+const GENERATED_TILE_DIR_NAMES = new Set(["mastertile", "tiles", "patches"]);
+const GENERATED_TILE_CLASS_NAMES = new Set(["high", "medium", "low", "negative", "unclassified", "images", "masks"]);
+const TILE_FILENAME_RE = /(?:^|[_-])tile[_-]?x?\d+[_-]y?\d+(?:[_-]|$)/i;
 const MAX_DROPPED_PATHS = 2048;
 const MAX_FILENAME_LENGTH = 255;
 
@@ -158,11 +162,22 @@ function validateDroppedPaths(pathStrings) {
     if (!path.isAbsolute(value)) continue;
     const resolvedPath = path.resolve(value);
     if (!WSI_EXTENSIONS.has(path.extname(resolvedPath).toLowerCase())) continue;
+    if (looksLikeGeneratedTilePath(resolvedPath)) continue;
     if (!fs.existsSync(resolvedPath)) continue;
     validPaths.push(resolvedPath);
   }
 
   return validPaths;
+}
+
+function looksLikeGeneratedTilePath(filePath) {
+  const parts = path.resolve(filePath).split(path.sep).map((part) => part.toLowerCase());
+  const base = path.basename(filePath, path.extname(filePath)).toLowerCase();
+  if (TILE_FILENAME_RE.test(base)) return true;
+  return (
+    parts.some((part) => GENERATED_TILE_DIR_NAMES.has(part)) &&
+    parts.some((part) => GENERATED_TILE_CLASS_NAMES.has(part))
+  );
 }
 
 function validateCapturePayload(payload) {
@@ -311,7 +326,7 @@ function startApi() {
   const config = loadConfig();
   const port = config.apiPort ?? DEFAULT_PORT;
   const host = normalizeApiHost(config.apiHost);
-  const apiKey = normalizeApiKey(config.apiKey);
+  const apiKey = normalizeApiKey(config.apiKey) || crypto.randomBytes(32).toString("hex");
 
   const dataDir = getApiDataDir();
   const logDir = getApiLogDir();
@@ -340,16 +355,21 @@ function startApi() {
   const dyldPath = [...homebrewLibPaths, process.env.DYLD_LIBRARY_PATH].filter(Boolean).join(path.delimiter);
   const spawnEnv = { ...process.env };
   if (dyldPath) spawnEnv.DYLD_LIBRARY_PATH = dyldPath;
-  if (apiKey) {
-    spawnEnv.APP_API_KEY = apiKey;
-    // Browser-rendered <img> tile/thumbnail requests cannot include custom headers,
-    // so allow query API keys only for this local desktop-launched API process.
-    spawnEnv.APP_ALLOW_QUERY_API_KEY = "true";
+  spawnEnv.APP_API_KEY = apiKey;
+  // Browser-rendered <img> tile/thumbnail requests cannot include custom headers,
+  // so allow query API keys only for this local desktop-launched API process.
+  spawnEnv.APP_ALLOW_QUERY_API_KEY = "true";
+  if (!spawnEnv.INFERENCE_PYTHON) {
+    spawnEnv.INFERENCE_PYTHON = pythonPath;
   }
   // Desktop renderer runs from file:// (Origin: null), so enable this explicitly for desktop launches.
   spawnEnv.APP_CORS_ALLOW_FILE_ORIGIN = "true";
   // Keep imports stable across execution contexts (dev vs packaged runtime).
-  const pythonPathEntries = [getApiBaseDir(), process.env.PYTHONPATH].filter(Boolean);
+  const pythonPathEntries = [
+    path.join(getApiBaseDir(), "..", "..", "wsi-fungal-segmentation"),
+    getApiBaseDir(),
+    process.env.PYTHONPATH,
+  ].filter(Boolean);
   spawnEnv.PYTHONPATH = pythonPathEntries.join(path.delimiter);
 
   apiProcess = spawn(
@@ -382,7 +402,7 @@ function startApi() {
   });
 
   return waitForHealth(port, host)
-    .then(() => buildApiReadyState({ ...config, apiPort: port, apiHost: host }))
+    .then(() => buildApiReadyState({ ...config, apiPort: port, apiHost: host, apiKey }))
     .catch((err) => {
       stopApi();
       throw err;
@@ -439,10 +459,11 @@ async function recursivelyFindWsiFiles(dir) {
     for (const entry of entries) {
       const fullPath = path.join(nextDir, entry.name);
       if (entry.isDirectory()) {
+        if (GENERATED_TILE_DIR_NAMES.has(entry.name.toLowerCase())) continue;
         stack.push(fullPath);
       } else if (entry.isFile()) {
         const ext = path.extname(entry.name).toLowerCase();
-        if (WSI_EXTENSIONS.has(ext)) {
+        if (WSI_EXTENSIONS.has(ext) && !looksLikeGeneratedTilePath(fullPath)) {
           results.push(fullPath);
         }
       }

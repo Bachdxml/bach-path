@@ -620,19 +620,45 @@ body {
 }
 
 .gallery-card-status--positive {
-  background: rgba(224, 92, 92, 0.14);
-  border-color: rgba(224, 92, 92, 0.45);
-  color: #ffb5b5;
-}
-
-.gallery-card-status--negative {
   background: rgba(57, 201, 139, 0.14);
   border-color: rgba(57, 201, 139, 0.45);
   color: #9aefca;
 }
 
+.gallery-card-status--negative {
+  background: rgba(224, 92, 92, 0.14);
+  border-color: rgba(224, 92, 92, 0.45);
+  color: #ffb5b5;
+}
+
 .gallery-card-status--unchecked {
   color: var(--text-secondary);
+}
+
+.gallery-card-status--needs_review {
+  color: var(--warning);
+}
+
+.gallery-card-status--review {
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.04);
+}
+
+.gallery-card-status--review-positive {
+  background: rgba(57, 201, 139, 0.18);
+  border-color: rgba(57, 201, 139, 0.58);
+  color: #9aefca;
+}
+
+.gallery-card-status--review-negative {
+  background: rgba(224, 92, 92, 0.18);
+  border-color: rgba(224, 92, 92, 0.58);
+  color: #ffb5b5;
+}
+
+.gallery-card-status--review-indeterminate {
+  background: rgba(240, 164, 53, 0.16);
+  border-color: rgba(240, 164, 53, 0.5);
+  color: #ffd491;
 }
 
 .gallery-card--selectable .gallery-card-select {
@@ -1125,17 +1151,6 @@ body {
   font-size: 12px;
 }
 
-.viewer-run-select {
-  min-width: 180px;
-  max-width: 260px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  color: var(--text);
-  border-radius: var(--radius);
-  padding: 6px 8px;
-  font-size: 12px;
-}
-
 .viewer-toggle,
 .viewer-opacity-label {
   display: inline-flex;
@@ -1218,6 +1233,17 @@ body {
   position: relative;
   flex: 1;
   min-height: 0;
+  background: #0a0a0c;
+}
+
+.viewer-canvas-wrap::before {
+  content: "";
+  position: absolute;
+  inset: 12px;
+  border: 1px dashed rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  pointer-events: none;
+  z-index: 1;
 }
 
 .viewer-canvas-wrap .viewer-container {
@@ -1240,12 +1266,17 @@ body {
   font-size: 13px;
 }
 
-.viewer-metadata-aside {
+.viewer-metadata-aside,
+.viewer-tile-review-aside {
   width: min(300px, 38vw);
   border-left: 1px solid var(--border);
   background: var(--bg-card);
   display: flex;
   flex-direction: column;
+}
+
+.viewer-tile-review-aside {
+  width: min(340px, 42vw);
 }
 
 .viewer-metadata-aside[hidden] {
@@ -1315,6 +1346,77 @@ body {
 
 .viewer-meta-empty {
   color: var(--text-secondary);
+}
+
+.viewer-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.viewer-tile-review-status {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.viewer-tile-review-content {
+  padding: 12px;
+  overflow: auto;
+  font-size: 12px;
+}
+
+.tile-review-empty {
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.tile-review-slide-label {
+  color: var(--text-muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  margin: 0 0 8px;
+  text-transform: uppercase;
+}
+
+.tile-review-card {
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  margin-bottom: 8px;
+  background: var(--bg-panel);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.tile-review-card:hover,
+.tile-review-card:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.tile-review-card.is-active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.tile-review-card-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-weight: 700;
+}
+
+.tile-review-card-meta {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+  margin-top: 6px;
 }
 
 .region-overlay {
@@ -1392,6 +1494,18 @@ textarea:focus-visible {
   .viewer-overlay-shell {
     width: 100%;
     height: min(97vh, 100%);
+  }
+
+  .viewer-layout {
+    flex-direction: column;
+  }
+
+  .viewer-tile-review-aside,
+  .viewer-metadata-aside {
+    width: 100%;
+    max-height: 36vh;
+    border-left: none;
+    border-top: 1px solid var(--border);
   }
 
   .viewer-nav {

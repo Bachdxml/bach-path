@@ -8,7 +8,7 @@ const viewerBack = document.getElementById("viewer-back");
 const viewerEmpty = document.getElementById("viewer-empty");
 const runInferenceBtn = document.getElementById("viewer-run-inference");
 const inferenceStatus = document.getElementById("viewer-inference-status");
-const viewerRunSelect = document.getElementById("viewer-run-select");
+const btnViewerFitSlide = document.getElementById("viewer-fit-slide");
 const viewerShowNegative = document.getElementById("viewer-show-negative");
 const viewerInferenceThreshold = document.getElementById("viewer-inference-threshold");
 const viewerInferenceThresholdValue = document.getElementById("viewer-inference-threshold-value");
@@ -22,6 +22,11 @@ const btnViewerSlideInfo = document.getElementById("btn-viewer-slide-info");
 const btnViewerMetadataClose = document.getElementById("btn-viewer-metadata-close");
 const btnViewerExportView = document.getElementById("viewer-export-view");
 const btnViewerExportRegions = document.getElementById("viewer-export-regions");
+const viewerTileReviewContent = document.getElementById("viewer-tile-review-content");
+const viewerTileReviewStatus = document.getElementById("viewer-tile-review-status");
+const btnViewerReviewPositive = document.getElementById("viewer-review-positive");
+const btnViewerReviewNegative = document.getElementById("viewer-review-negative");
+const btnViewerReviewIndeterminate = document.getElementById("viewer-review-indeterminate");
 const viewerApp = window.BachPath || null;
 const viewerSlidesApi = viewerApp?.services?.slidesApi || window.slidesApi;
 const viewerInferenceModelChangedEvent =
@@ -40,10 +45,18 @@ let currentRunId = null;
 let lastRegions = [];
 let currentSlideWidth = null;
 let currentSlideHeight = null;
+let currentSlideLabel = "";
+let currentReviewStatus = "unreviewed";
 let viewerRequestSeq = 0;
 let activeInferencePollToken = 0;
 let viewerSlideOrder = [];
+let selectedReviewRegionId = null;
+let viewerDisplayRotation = 0;
 const INFERENCE_THRESHOLD_KEY = "inferenceThresholdByModel";
+/** Rotate tall whole-slide scans so the long axis fits the viewer width. */
+const VIEWER_PORTRAIT_ASPECT_RATIO = 2;
+/** Padding around the slide when fitting to the viewer (fraction of viewport). */
+const VIEWER_FIT_PADDING = 0.08;
 
 function getThresholdMap() {
   try {
@@ -129,18 +142,21 @@ function closeViewer() {
   currentMpp = null;
   currentSlideWidth = null;
   currentSlideHeight = null;
+  currentSlideLabel = "";
+  currentReviewStatus = "unreviewed";
+  selectedReviewRegionId = null;
+  viewerDisplayRotation = 0;
   lastRegions = [];
   viewerContainer.innerHTML = "";
   viewerContainer.style.display = "none";
   viewerEmpty.style.display = "flex";
-  if (viewerRunSelect) {
-    viewerRunSelect.innerHTML = "";
-    viewerRunSelect.disabled = true;
-  }
+  currentRunId = null;
   if (viewerMetaContent) viewerMetaContent.innerHTML = "";
   showMetadataPanel(false);
   runInferenceBtn.disabled = false;
   setInferenceStatus("");
+  renderTileReviewPanel([]);
+  updateReviewStatusDisplay();
   if (viewerOverlay) viewerOverlay.hidden = true;
 }
 
@@ -153,6 +169,81 @@ function escapeHtml(s) {
   const d = document.createElement("div");
   d.textContent = String(s);
   return d.innerHTML;
+}
+
+function filenameFromPath(p) {
+  if (!p) return "";
+  return String(p).split(/[/\\]/).pop() || "";
+}
+
+function getGallerySlide(slideId) {
+  const getSlideById = viewerApp?.features?.gallery?.getSlideById || window.galleryGetSlideById;
+  return typeof getSlideById === "function" ? getSlideById(slideId) : null;
+}
+
+function shouldDisplaySlideHorizontally(width, height) {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0) {
+    return false;
+  }
+  return height / width >= VIEWER_PORTRAIT_ASPECT_RATIO;
+}
+
+function getPreferredViewerRotation(width, height) {
+  return shouldDisplaySlideHorizontally(width, height) ? 90 : 0;
+}
+
+function getMinZoomImageRatio(width, height) {
+  if (!shouldDisplaySlideHorizontally(width, height)) {
+    return 0.5;
+  }
+  const aspect = height / width;
+  if (aspect >= 6) return 0.01;
+  if (aspect >= 4) return 0.02;
+  return 0.05;
+}
+
+function fitSlideToViewer(immediately = true) {
+  if (!viewer?.viewport) return;
+  const item = viewer.world?.getItemAt?.(0);
+  if (!item) {
+    viewer.viewport.goHome(immediately);
+    return;
+  }
+  const bounds = item.getBounds(true);
+  if (!bounds) {
+    viewer.viewport.goHome(immediately);
+    return;
+  }
+  const pad = VIEWER_FIT_PADDING;
+  const padded = bounds.clone();
+  padded.x -= bounds.width * pad;
+  padded.y -= bounds.height * pad;
+  padded.width *= 1 + 2 * pad;
+  padded.height *= 1 + 2 * pad;
+  viewer.viewport.fitBounds(padded, immediately);
+}
+
+function applyViewerDisplayOrientation() {
+  if (!viewer) return;
+  const dims = getSlideDimensions();
+  viewerDisplayRotation = dims
+    ? getPreferredViewerRotation(dims.width, dims.height)
+    : 0;
+  viewer.viewport.setRotation(viewerDisplayRotation, true);
+  fitSlideToViewer(true);
+}
+
+function updateReviewStatusDisplay() {
+  if (!viewerTileReviewStatus) return;
+  const label =
+    currentReviewStatus === "positive"
+      ? "positive"
+      : currentReviewStatus === "negative"
+        ? "negative"
+        : currentReviewStatus === "indeterminate"
+          ? "needs review"
+          : "unreviewed";
+  viewerTileReviewStatus.textContent = `Decision: ${label}`;
 }
 
 function renderMetadataPanel(meta) {
@@ -172,6 +263,12 @@ function renderMetadataPanel(meta) {
   const levels =
     meta.level_dimensions && meta.level_dimensions.length
       ? meta.level_dimensions.map((d) => `${d[0]}×${d[1]}`).join(", ")
+      : "—";
+  const viewerOrientation =
+    meta.dimensions && meta.dimensions.length >= 2
+      ? shouldDisplaySlideHorizontally(meta.dimensions[0], meta.dimensions[1])
+        ? "Rotated horizontal (tall scan)"
+        : "Native orientation"
       : "—";
 
   const props = meta.properties || {};
@@ -195,6 +292,7 @@ function renderMetadataPanel(meta) {
       <dt>Level sizes</dt><dd style="font-size:11px">${escapeHtml(levels)}</dd>
       <dt>MPP X / Y</dt><dd>${escapeHtml(mppX)} / ${escapeHtml(mppY)}</dd>
       <dt>Vendor</dt><dd>${escapeHtml(meta.vendor || "—")}</dd>
+      <dt>Viewer</dt><dd>${escapeHtml(viewerOrientation)}</dd>
     </dl>
     ${propsHtml}
   `;
@@ -384,6 +482,88 @@ function getRegionContribution(region, dims) {
   };
 }
 
+function buildReviewTile(region, index, dims) {
+  const contribution = getRegionContribution(region, dims);
+  if (!contribution) return null;
+  const score = Number.isFinite(region.score) ? Math.max(0, Math.min(1, region.score)) : null;
+  return {
+    id: Number.isFinite(region.id) ? region.id : index + 1,
+    label: `Tile ${String(index + 1).padStart(3, "0")}`,
+    score,
+    rect: contribution,
+    coordinates: {
+      x: Math.round(contribution.x1),
+      y: Math.round(contribution.y1),
+      w: Math.round(contribution.x2 - contribution.x1),
+      h: Math.round(contribution.y2 - contribution.y1),
+    },
+  };
+}
+
+function jumpToReviewTile(tile) {
+  if (!viewer || !tile?.rect) return;
+  selectedReviewRegionId = tile.id;
+  const rect = new OpenSeadragon.Rect(
+    tile.rect.x1,
+    tile.rect.y1,
+    Math.max(1, tile.rect.x2 - tile.rect.x1),
+    Math.max(1, tile.rect.y2 - tile.rect.y1)
+  );
+  viewer.viewport.fitBounds(viewer.viewport.imageToViewportRectangle(rect), false);
+  renderTileReviewPanel(lastRegions);
+}
+
+function renderTileReviewPanel(regions) {
+  if (!viewerTileReviewContent) return;
+  updateReviewStatusDisplay();
+  const dims = getSlideDimensions();
+  if (!dims) {
+    viewerTileReviewContent.innerHTML =
+      '<p class="tile-review-empty">Slide dimensions are loading. Tiles will appear after the slide opens.</p>';
+    return;
+  }
+
+  const tiles = (regions || [])
+    .filter((r) => normalizeRegionLabel(r.label) === "fungus_positive")
+    .map((region, index) => buildReviewTile(region, index, dims))
+    .filter(Boolean)
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+
+  viewerTileReviewContent.innerHTML = "";
+  const slideLabel = document.createElement("p");
+  slideLabel.className = "tile-review-slide-label";
+  slideLabel.textContent = `Slide ${currentSlideId}${currentSlideLabel ? ` · ${currentSlideLabel}` : ""}`;
+  viewerTileReviewContent.appendChild(slideLabel);
+
+  if (!tiles.length) {
+    const empty = document.createElement("p");
+    empty.className = "tile-review-empty";
+    empty.textContent = "No model-positive tiles for the selected run. Confirm the whole slide context before marking negative.";
+    viewerTileReviewContent.appendChild(empty);
+    return;
+  }
+
+  for (const tile of tiles) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "tile-review-card";
+    if (selectedReviewRegionId === tile.id) btn.classList.add("is-active");
+    const scoreText = tile.score == null ? "n/a" : tile.score.toFixed(2);
+    btn.innerHTML = `
+      <div class="tile-review-card-title">
+        <span>${escapeHtml(tile.label)}</span>
+        <span>Score ${escapeHtml(scoreText)}</span>
+      </div>
+      <div class="tile-review-card-meta">
+        Slide ${escapeHtml(currentSlideId)} · Level-0 x=${escapeHtml(tile.coordinates.x)}, y=${escapeHtml(tile.coordinates.y)}<br />
+        Region ${escapeHtml(tile.coordinates.w)}×${escapeHtml(tile.coordinates.h)} px · Click to open in slide
+      </div>
+    `;
+    btn.addEventListener("click", () => jumpToReviewTile(tile));
+    viewerTileReviewContent.appendChild(btn);
+  }
+}
+
 function traceRoundedRect(ctx, x, y, w, h, radius) {
   const r = Math.max(0, Math.min(radius, w * 0.5, h * 0.5));
   ctx.beginPath();
@@ -513,49 +693,31 @@ function addRegionOverlays(regions, showNegative = false) {
   } catch (_) {}
 }
 
-async function populateRunSelector(slideId, requestId = null) {
-  if (!viewerRunSelect) return;
-  viewerRunSelect.innerHTML = "";
-  viewerRunSelect.disabled = true;
+async function loadLatestInferenceRun(slideId, requestId = null) {
+  const seq = requestId ?? viewerRequestSeq;
   try {
     const { runs } = await viewerSlidesApi.getSlideInferenceRuns(slideId);
-    if (
-      (requestId != null && requestId !== viewerRequestSeq) ||
-      currentSlideId !== slideId
-    ) {
+    if (seq !== viewerRequestSeq || currentSlideId !== slideId) {
       return;
     }
-    const succeeded = (runs || []).filter((r) => r.status === "succeeded");
-    if (succeeded.length === 0) {
-      const opt = document.createElement("option");
-      opt.value = "";
-      opt.textContent = "No inference runs yet";
-      viewerRunSelect.appendChild(opt);
+    const latestSucceeded = (runs || []).find((r) => r.status === "succeeded");
+    if (!latestSucceeded) {
+      currentRunId = null;
+      lastRegions = [];
+      clearOverlays();
+      renderTileReviewPanel([]);
       return;
     }
-    for (const r of succeeded) {
-      const opt = document.createElement("option");
-      opt.value = String(r.id);
-      const when = r.finished_at || r.created_at || "";
-      const short = when ? ` — ${when.slice(0, 10)}` : "";
-      opt.textContent = `Run #${r.id} (${r.model_version || "model"})${short}`;
-      viewerRunSelect.appendChild(opt);
-    }
-    viewerRunSelect.disabled = false;
-    viewerRunSelect.value = String(succeeded[0].id);
-    currentRunId = succeeded[0].id;
-    await loadRegionsForRun(currentRunId, slideId, requestId ?? viewerRequestSeq);
+    currentRunId = latestSucceeded.id;
+    await loadRegionsForRun(currentRunId, slideId, seq);
   } catch (_) {
-    if (
-      (requestId != null && requestId !== viewerRequestSeq) ||
-      currentSlideId !== slideId
-    ) {
+    if (seq !== viewerRequestSeq || currentSlideId !== slideId) {
       return;
     }
-    const opt = document.createElement("option");
-    opt.value = "";
-    opt.textContent = "Runs unavailable";
-    viewerRunSelect.appendChild(opt);
+    currentRunId = null;
+    lastRegions = [];
+    clearOverlays();
+    renderTileReviewPanel([]);
   }
 }
 
@@ -565,6 +727,7 @@ async function loadRegionsForRun(runId, slideId = currentSlideId, requestId = vi
     const { regions } = await viewerSlidesApi.getInferenceRegions(runId);
     if (requestId !== viewerRequestSeq || currentSlideId !== slideId) return;
     lastRegions = regions || [];
+    selectedReviewRegionId = null;
     const hasPositive = lastRegions.some(
       (r) => normalizeRegionLabel(r.label) === "fungus_positive"
     );
@@ -572,10 +735,12 @@ async function loadRegionsForRun(runId, slideId = currentSlideId, requestId = vi
       window.appToast?.("No positive regions found for this run.", "info", 3500);
     }
     addRegionOverlays(lastRegions, false);
+    renderTileReviewPanel(lastRegions);
   } catch (_) {
     if (requestId !== viewerRequestSeq || currentSlideId !== slideId) return;
     lastRegions = [];
     clearOverlays();
+    renderTileReviewPanel([]);
   }
 }
 
@@ -661,6 +826,10 @@ async function showViewer(slideId) {
   const requestId = ++viewerRequestSeq;
   activeInferencePollToken += 1; // cancel any in-flight inference poll from another slide
   currentSlideId = slideId;
+  const gallerySlide = getGallerySlide(slideId);
+  currentSlideLabel = filenameFromPath(gallerySlide?.original_path);
+  currentReviewStatus = gallerySlide?.review_status || "unreviewed";
+  selectedReviewRegionId = null;
   viewerSlideOrder = getViewerSlideOrder();
   updateViewerNavButtons();
   if (viewerOverlay) viewerOverlay.hidden = false;
@@ -671,6 +840,7 @@ async function showViewer(slideId) {
   viewerContainer.style.display = "block";
   clearOverlays();
   setInferenceStatus("");
+  renderTileReviewPanel([]);
   if (viewerScaleWrap) viewerScaleWrap.hidden = true;
 
   let meta = null;
@@ -679,11 +849,14 @@ async function showViewer(slideId) {
     if (requestId !== viewerRequestSeq || currentSlideId !== slideId) return;
     applyMppFromMeta(meta);
     renderMetadataPanel(meta);
-    showMetadataPanel(true);
+    const hideMetaForTallSlide =
+      meta.dimensions?.length >= 2 &&
+      shouldDisplaySlideHorizontally(meta.dimensions[0], meta.dimensions[1]);
+    showMetadataPanel(!hideMetaForTallSlide);
   } catch (err) {
     console.warn("Slide metadata:", err);
     renderMetadataPanel(null);
-    showMetadataPanel(true);
+    showMetadataPanel(false);
   }
 
   if (viewer) {
@@ -744,6 +917,14 @@ async function showViewer(slideId) {
       };
     }
 
+    const dimsForOrientation =
+      meta?.dimensions?.length >= 2
+        ? { width: meta.dimensions[0], height: meta.dimensions[1] }
+        : getSlideDimensions();
+    const minZoomImageRatio = dimsForOrientation
+      ? getMinZoomImageRatio(dimsForOrientation.width, dimsForOrientation.height)
+      : 0.5;
+
     viewer = OpenSeadragon({
       element: viewerContainer,
       tileSources: tileSource,
@@ -758,27 +939,32 @@ async function showViewer(slideId) {
       visibilityRatio: 1.0,
       wrapHorizontal: false,
       wrapVertical: false,
-      minZoomImageRatio: 0.9,
+      minZoomImageRatio,
       immediateRender: true,
       homeFillsViewer: false,
     });
 
     viewer.addHandler("open", () => {
       if (requestId !== viewerRequestSeq || currentSlideId !== slideId) return;
-      viewer.viewport.goHome(true);
+      applyViewerDisplayOrientation();
       updateScaleBar();
-      populateRunSelector(slideId, requestId);
+      loadLatestInferenceRun(slideId, requestId);
     });
 
     viewer.addHandler("animation", updateScaleBar);
-    viewer.addHandler("resize", updateScaleBar);
+    viewer.addHandler("resize", () => {
+      updateScaleBar();
+      if (viewerDisplayRotation) {
+        fitSlideToViewer(true);
+      }
+    });
     viewer.addHandler("canvas-click", (event) => {
       if (!event.quick) return;
       const homeZoom = viewer.viewport.getHomeZoom();
       const currentZoom = viewer.viewport.getZoom();
       const isZoomedIn = currentZoom > homeZoom * 1.05;
       if (isZoomedIn) {
-        viewer.viewport.goHome(true);
+        fitSlideToViewer(true);
       } else {
         const targetPoint = viewer.viewport.pointFromPixel(event.position);
         viewer.viewport.zoomTo(homeZoom * 2.5, targetPoint, true);
@@ -798,12 +984,6 @@ btnViewerSlideInfo?.addEventListener("click", () => {
 
 btnViewerMetadataClose?.addEventListener("click", () => {
   showMetadataPanel(false);
-});
-
-viewerRunSelect?.addEventListener("change", async () => {
-  const v = viewerRunSelect.value;
-  currentRunId = v ? parseInt(v, 10) : null;
-  if (currentRunId) await loadRegionsForRun(currentRunId, currentSlideId, viewerRequestSeq);
 });
 
 viewerShowNegative?.addEventListener("change", () => {
@@ -857,6 +1037,20 @@ async function exportViewerViewport() {
     if (res?.path) window.appToast?.("Saved image.", "success");
   } catch (e) {
     window.appToast?.(e?.message || "Export failed.", "error");
+  }
+}
+
+async function setSlideReviewStatus(reviewStatus) {
+  if (!currentSlideId) return;
+  try {
+    const response = await viewerSlidesApi.updateSlideReview(currentSlideId, reviewStatus);
+    currentReviewStatus = response.review_status || reviewStatus;
+    updateReviewStatusDisplay();
+    const refreshGallery = viewerApp?.features?.gallery?.refresh || window.galleryRefresh;
+    if (typeof refreshGallery === "function") refreshGallery();
+    window.appToast?.("Slide review decision saved.", "success", 2200);
+  } catch (err) {
+    window.appToast?.(err.message || "Could not save review decision.", "error");
   }
 }
 
@@ -919,7 +1113,7 @@ async function handleRunInference() {
         if (typeof refreshGallery === "function") {
           refreshGallery();
         }
-        await populateRunSelector(runSlideId, viewerRequestSeq);
+        await loadLatestInferenceRun(runSlideId, viewerRequestSeq);
         return;
       }
       if (r.status === "failed") {
@@ -970,8 +1164,15 @@ if (runInferenceBtn) {
   runInferenceBtn.addEventListener("click", handleRunInference);
 }
 
+btnViewerFitSlide?.addEventListener("click", () => {
+  applyViewerDisplayOrientation();
+  updateScaleBar();
+});
 btnViewerExportView?.addEventListener("click", () => exportViewerViewport());
 btnViewerExportRegions?.addEventListener("click", () => exportInferenceRegionsJson());
+btnViewerReviewPositive?.addEventListener("click", () => setSlideReviewStatus("positive"));
+btnViewerReviewNegative?.addEventListener("click", () => setSlideReviewStatus("negative"));
+btnViewerReviewIndeterminate?.addEventListener("click", () => setSlideReviewStatus("indeterminate"));
 loadThresholdForModel(getSelectedModelId());
 
 document.addEventListener("keydown", (e) => {

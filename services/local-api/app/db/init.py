@@ -59,6 +59,11 @@ def _upgrade_sqlite_schema(sqlite_path: Path) -> None:
                     "ALTER TABLE slides ADD COLUMN import_collection_id INTEGER "
                     "REFERENCES import_collections(id) ON DELETE SET NULL"
                 )
+            if "review_status" not in slide_columns:
+                conn.exec_driver_sql(
+                    "ALTER TABLE slides ADD COLUMN review_status VARCHAR(32) "
+                    "NOT NULL DEFAULT 'unreviewed'"
+                )
             conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_slides_import_collection_id "
                 "ON slides (import_collection_id)"

@@ -20,6 +20,13 @@ let allSlides = [];
 let selectionMode = false;
 const selectedIds = new Set();
 let galleryLoadSeq = 0;
+
+function waitForGalleryApiReady() {
+  if (typeof galleryApp?.whenApiReady === "function") {
+    return galleryApp.whenApiReady();
+  }
+  return Promise.resolve();
+}
 let inferencePollTimer = null;
 const pendingInferenceRunIds = new Set();
 
@@ -116,6 +123,9 @@ function toggleFavorite(id) {
 }
 
 function compareSlides(a, b, sort) {
+  const reviewDelta = getReviewSortPriority(a) - getReviewSortPriority(b);
+  if (reviewDelta !== 0) return reviewDelta;
+
   const nameA = filenameFromPath(a.original_path).toLowerCase();
   const nameB = filenameFromPath(b.original_path).toLowerCase();
   const tA = new Date(a.created_at || 0).getTime();
@@ -130,6 +140,19 @@ function compareSlides(a, b, sort) {
     case "date-desc":
     default:
       return tB - tA;
+  }
+}
+
+function getReviewSortPriority(slide) {
+  switch (slide?.review_status || "unreviewed") {
+    case "positive":
+      return 0;
+    case "negative":
+      return 1;
+    case "indeterminate":
+      return 2;
+    default:
+      return 3;
   }
 }
 
@@ -298,9 +321,27 @@ function createSlideCard(s, fav) {
   meta.textContent = formatDate(s.created_at);
   const status = document.createElement("div");
   const result = s.inference_result || "unchecked";
-  status.className = `gallery-card-status gallery-card-status--${result}`;
-  status.textContent =
-    result === "positive" ? "Positive" : result === "negative" ? "Negative" : "Unchecked";
+  const review = s.review_status || "unreviewed";
+  status.className = review === "unreviewed"
+    ? `gallery-card-status gallery-card-status--${result}`
+    : `gallery-card-status gallery-card-status--review gallery-card-status--review-${review}`;
+  const resultText =
+    result === "positive"
+      ? "AI positive"
+      : result === "negative"
+        ? "AI negative"
+        : result === "needs_review"
+          ? "AI needs review"
+          : "Unchecked";
+  const reviewText =
+    review === "positive"
+      ? "Reviewed positive"
+      : review === "negative"
+        ? "Reviewed negative"
+        : review === "indeterminate"
+          ? "Needs review"
+          : "";
+  status.textContent = reviewText ? `${reviewText} · ${resultText}` : resultText;
   info.appendChild(label);
   info.appendChild(meta);
   info.appendChild(status);
@@ -559,6 +600,7 @@ async function deleteSelectedSlides() {
 
 async function loadGalleryData() {
   if (!galleryGrid || !galleryEmpty) return;
+  await waitForGalleryApiReady();
   const requestId = ++galleryLoadSeq;
   galleryEmpty.style.display = "none";
   showSkeletons();
@@ -588,11 +630,13 @@ function loadGallery() {
 
 window.galleryRefresh = loadGallery;
 window.galleryGetOrderedSlideIds = () => getOrderedSlides().map((s) => s.id);
+window.galleryGetSlideById = (id) => allSlides.find((s) => s.id === id) || null;
 window.galleryTrackInferenceRuns = trackInferenceRuns;
 if (galleryApp?.registerFeature) {
   galleryApp.registerFeature("gallery", {
     refresh: loadGallery,
     getOrderedSlideIds: () => getOrderedSlides().map((s) => s.id),
+    getSlideById: (id) => allSlides.find((s) => s.id === id) || null,
     trackInferenceRuns,
   });
 }

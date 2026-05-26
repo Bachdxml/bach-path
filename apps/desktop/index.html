@@ -124,7 +124,10 @@
             <div class="page-body import-body">
               <div class="drop-zone" id="drop-zone">
                 <p class="drop-zone-text">Drag WSI files here or click to select</p>
-                <p class="drop-zone-hint">Supports .svs, .tif, .tiff, .png</p>
+                <p class="drop-zone-hint">
+                  Supports whole-slide .svs/.tif/.tiff files and large raster slide .png files.
+                  Exported MASTERTILE tile PNGs should stay in training data.
+                </p>
               </div>
               <div class="form-group import-collection-field">
                 <label for="import-collection-title">Collection title (optional)</label>
@@ -174,6 +177,7 @@
                 <option value="all">All results</option>
                 <option value="positive">Positive</option>
                 <option value="negative">Negative</option>
+                <option value="needs_review">Needs review</option>
                 <option value="unchecked">Unchecked</option>
               </select>
               <select
@@ -322,6 +326,14 @@ python scripts/export_deploy_weights.py \
             <div class="viewer-toolbar">
               <button type="button" class="btn btn-secondary" id="viewer-back">Close</button>
               <button type="button" class="btn btn-secondary btn-sm" id="btn-viewer-slide-info">Slide info</button>
+              <button
+                type="button"
+                class="btn btn-secondary btn-sm"
+                id="viewer-fit-slide"
+                title="Fit entire slide in view (rotate tall scans horizontal and reset zoom)"
+              >
+                Fit slide
+              </button>
               <button type="button" class="btn btn-secondary btn-sm" id="viewer-export-view" title="Save PNG of current viewport">
                 Export view
               </button>
@@ -335,13 +347,6 @@ python scripts/export_deploy_weights.py \
               </button>
               <button type="button" class="btn btn-primary" id="viewer-run-inference">Run inference</button>
               <span class="viewer-inference-status" id="viewer-inference-status"></span>
-              <select
-                id="viewer-run-select"
-                class="viewer-run-select"
-                title="Inference run"
-                disabled
-                aria-label="Inference run"
-              ></select>
               <label class="viewer-toggle">
                 <input type="checkbox" id="viewer-show-negative" />
                 Show negative
@@ -397,6 +402,28 @@ python scripts/export_deploy_weights.py \
               </button>
             </div>
             <div class="viewer-meta-content" id="viewer-meta-content"></div>
+          </aside>
+          <aside id="viewer-tile-review-aside" class="viewer-tile-review-aside">
+            <div class="viewer-metadata-header">
+              <h3 class="viewer-metadata-title">Review tiles</h3>
+            </div>
+            <div class="viewer-review-actions" aria-label="Slide review decision">
+              <button type="button" class="btn btn-secondary btn-sm" id="viewer-review-positive">
+                Mark positive
+              </button>
+              <button type="button" class="btn btn-secondary btn-sm" id="viewer-review-negative">
+                Mark negative
+              </button>
+              <button type="button" class="btn btn-secondary btn-sm" id="viewer-review-indeterminate">
+                Needs review
+              </button>
+            </div>
+            <div class="viewer-tile-review-status" id="viewer-tile-review-status">
+              Decision: unreviewed
+            </div>
+            <div class="viewer-tile-review-content" id="viewer-tile-review-content">
+              Run inference to populate suspicious tiles for this slide.
+            </div>
           </aside>
         </div>
       </div>

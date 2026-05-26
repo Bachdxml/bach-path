@@ -13,9 +13,6 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-from PIL import Image
-
-
 ROOT = Path(__file__).resolve().parents[1]
 API_DIR = ROOT / "services" / "local-api"
 API_VENV_PY = API_DIR / ".venv" / "bin" / "python"
@@ -25,6 +22,32 @@ PHASE1_BOARD = ROOT / "PHASE1_SPRINT_BOARD.md"
 def run(cmd: list[str], cwd: Path | None = None, env: dict[str, str] | None = None) -> None:
     print(f"+ {' '.join(cmd)}")
     subprocess.run(cmd, cwd=cwd or ROOT, env=env, check=True)
+
+
+def load_pillow_image():
+    try:
+        from PIL import Image
+    except ImportError as exc:
+        raise RuntimeError(
+            "Missing Python dependency: Pillow (PIL). "
+            f"Run this smoke test with the Python 3.13 environment that has API dependencies installed. "
+            f"Current Python: {sys.executable}"
+        ) from exc
+    return Image
+
+
+def environment_checks() -> None:
+    if not API_VENV_PY.exists():
+        raise RuntimeError(
+            f"Missing API venv python at {API_VENV_PY}. "
+            "Create the local API environment with Python 3.13 before running QA smoke."
+        )
+    if sys.version_info < (3, 13):
+        raise RuntimeError(
+            f"QA smoke requires Python 3.13 or newer; current Python is {sys.version.split()[0]} "
+            f"at {sys.executable}."
+        )
+    load_pillow_image()
 
 
 def free_port() -> int:
@@ -197,6 +220,7 @@ def _slide_collection_id(row: dict[str, object]) -> int | None:
 
 
 def _import_collection_smoke(port: int, input_dir: Path, slides_dir: Path) -> None:
+    Image = load_pillow_image()
     batch_files = []
     batch_dir = input_dir / "grouped"
     batch_dir.mkdir(parents=True, exist_ok=True)
@@ -345,6 +369,7 @@ def python_compile_checks() -> None:
 
 
 def import_collision_smoke() -> None:
+    Image = load_pillow_image()
     with tempfile.TemporaryDirectory(prefix="bp-qa-") as tmp:
         root = Path(tmp)
         input_dir = root / "input"
@@ -459,8 +484,10 @@ def phase1_board_compliance_check() -> None:
 
 
 def main() -> int:
-    if not API_VENV_PY.exists():
-        print(f"Missing API venv python at {API_VENV_PY}", file=sys.stderr)
+    try:
+        environment_checks()
+    except RuntimeError as exc:
+        print(f"Environment check failed: {exc}", file=sys.stderr)
         return 1
 
     print("== QA Smoke: JS syntax ==")

@@ -3,7 +3,7 @@
 Run this before merging `application` into `main`:
 
 ```bash
-python3 scripts/qa_smoke.py
+python3.13 scripts/qa_smoke.py
 ```
 
 What it validates:

@@ -29,6 +29,10 @@ class Settings(BaseModel):
     import_allowed_roots: tuple[Path, ...] = ()
     max_batch_inference_items: int = 64
     max_inference_output_bytes: int = 5_000_000
+    inference_tile_batch_size: int = 4
+    inference_device: str = "auto"
+    inference_level: str = "auto"
+    inference_target_tiles: int = 1500
 
 
 def _parse_deployment_mode(raw: str | None) -> DeploymentMode:
@@ -203,6 +207,28 @@ def load_settings() -> Settings:
         os.environ.get("APP_MAX_INFERENCE_OUTPUT_BYTES"),
         default=5_000_000,
     )
+    inference_tile_batch_size = _parse_positive_int(
+        os.environ.get("APP_INFERENCE_TILE_BATCH_SIZE"),
+        default=4,
+    )
+    inference_device = (os.environ.get("APP_INFERENCE_DEVICE") or "auto").strip().lower()
+    if inference_device not in {"auto", "cpu", "cuda", "mps"} and not inference_device.startswith("cuda:"):
+        raise RuntimeError(
+            "APP_INFERENCE_DEVICE must be one of auto, cpu, cuda, cuda:<index>, or mps"
+        )
+    inference_level = (os.environ.get("APP_INFERENCE_LEVEL") or "auto").strip().lower()
+    if inference_level != "auto":
+        try:
+            parsed_level = int(inference_level)
+        except ValueError as exc:
+            raise RuntimeError("APP_INFERENCE_LEVEL must be 'auto' or a non-negative integer") from exc
+        if parsed_level < 0:
+            raise RuntimeError("APP_INFERENCE_LEVEL must be 'auto' or a non-negative integer")
+        inference_level = str(parsed_level)
+    inference_target_tiles = _parse_positive_int(
+        os.environ.get("APP_INFERENCE_TARGET_TILES"),
+        default=1500,
+    )
 
     _validate_profile_settings(
         deployment_mode=deployment_mode,
@@ -230,6 +256,10 @@ def load_settings() -> Settings:
         import_allowed_roots=import_allowed_roots,
         max_batch_inference_items=max_batch_inference_items,
         max_inference_output_bytes=max_inference_output_bytes,
+        inference_tile_batch_size=inference_tile_batch_size,
+        inference_device=inference_device,
+        inference_level=inference_level,
+        inference_target_tiles=inference_target_tiles,
         remote_api_base_url=remote_api_base_url,
         remote_auth_provider_url=remote_auth_provider_url,
         remote_storage_url=remote_storage_url,

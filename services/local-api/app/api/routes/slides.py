@@ -2,6 +2,7 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
+import re
 import shutil
 import uuid
 from datetime import datetime, timezone
@@ -29,8 +30,10 @@ from app.schemas.slides import (
     SlideListItem,
     SlideListResponse,
     SlideMetadataResponse,
+    SlideReviewRequest,
+    SlideReviewResponse,
 )
-from app.slides.deepzoom import deepzoom_paths, ensure_deepzoom, has_deepzoom
+from app.slides.deepzoom import deepzoom_paths, has_deepzoom
 from app.slides.metadata import RASTER_EXTENSIONS, read_openslide_metadata, read_raster_metadata
 from app.slides.storage import copy_into_managed_storage
 from app.util.exceptions import AppError, ErrorCode
@@ -45,6 +48,9 @@ TILE_SIZE_DEFAULT = 256
 THUMBNAIL_SIZE_MIN = 32
 THUMBNAIL_SIZE_MAX = 2048
 MAX_IMPORT_COLLECTION_ITEMS = 256
+TILE_FILENAME_RE = re.compile(r"(?:^|[_-])tile[_-]?x?\d+[_-]y?\d+(?:[_-]|$)", re.IGNORECASE)
+GENERATED_TILE_PATH_PARTS = {"mastertile", "tiles", "patches"}
+GENERATED_TILE_CLASS_PARTS = {"high", "medium", "low", "negative", "unclassified", "images", "masks"}
 
 
 def _display_original_path(original_path: str | None) -> str | None:
@@ -105,6 +111,7 @@ def _create_import_collection(
         collection.created_at = created_at
     db.add(collection)
     db.flush()
+    db.commit()
     db.refresh(collection)
     return collection
 
@@ -127,7 +134,25 @@ def _ensure_import_allowed(src: Path, allowed_roots: tuple[Path, ...]) -> None:
     )
 
 
-def _validate_import_source(src: Path, allowed_roots: tuple[Path, ...]) -> None:
+def _looks_like_generated_training_tile(src: Path) -> bool:
+    suffix = src.suffix.lower()
+    if suffix not in RASTER_EXTENSIONS:
+        return False
+    parts = {part.lower() for part in src.parts}
+    stem = src.stem.lower()
+    if TILE_FILENAME_RE.search(stem):
+        return True
+    if parts.intersection(GENERATED_TILE_PATH_PARTS) and parts.intersection(GENERATED_TILE_CLASS_PARTS):
+        return True
+    return False
+
+
+def _validate_import_source(
+    src: Path,
+    allowed_roots: tuple[Path, ...],
+    *,
+    allow_tile_like_import: bool = False,
+) -> None:
     if not src.exists():
         raise AppError(ErrorCode.SLIDE_NOT_FOUND, "File not found")
     if not src.is_file():
@@ -135,6 +160,11 @@ def _validate_import_source(src: Path, allowed_roots: tuple[Path, ...]) -> None:
     _ensure_import_allowed(src, allowed_roots)
     if src.suffix.lower() not in WSI_EXTENSIONS:
         raise AppError(ErrorCode.SLIDE_INVALID, "Unsupported slide file extension")
+    if not allow_tile_like_import and _looks_like_generated_training_tile(src):
+        raise AppError(
+            ErrorCode.SLIDE_INVALID,
+            "This looks like a generated training tile, not a whole slide. Import the source .svs instead.",
+        )
 
 
 def _resolve_managed_slide_path(slide: Slide, settings, *, must_exist: bool = True) -> Path:
@@ -166,6 +196,8 @@ def _import_slide_file(
     )
     db.add(slide)
     db.flush()
+    db.commit()
+    db.refresh(slide)
 
     dest_filename = f"{slide.id}{src.suffix.lower()}"
     dest_path = None
@@ -182,25 +214,34 @@ def _import_slide_file(
                 )
             dest_filename = f"{slide.id}-{uuid.uuid4().hex[:8]}{src.suffix.lower()}"
         except PermissionError:
+            _delete_pending_slide_row(db, slide.id)
             raise AppError(ErrorCode.SLIDE_PERMISSION, "Access denied when copying slide")
         except ValueError:
+            _delete_pending_slide_row(db, slide.id)
             raise AppError(ErrorCode.SLIDE_INVALID, "Invalid managed storage destination")
         except OSError:
             logger.exception("Failed to copy slide from %s", src)
+            _delete_pending_slide_row(db, slide.id)
             raise AppError(ErrorCode.IO_ERROR, "Failed to copy slide")
     if dest_path is None:
+        _delete_pending_slide_row(db, slide.id)
         raise AppError(ErrorCode.CONFLICT, "Managed slide already exists")
 
     slide.stored_filename = dest_filename
     slide.stored_path = str(dest_path)
-
-    try:
-        ensure_deepzoom(dest_path, settings.tiles_cache_dir, slide.id)
-    except Exception:
-        # Keep import successful even if pre-generation fails; viewer can still use dynamic tiles.
-        logger.exception("DeepZoom generation failed for slide %s", slide.id)
+    db.add(slide)
+    db.commit()
+    db.refresh(slide)
 
     return slide
+
+
+def _delete_pending_slide_row(db: Session, slide_id: int) -> None:
+    slide = db.get(Slide, slide_id)
+    if not slide:
+        return
+    db.delete(slide)
+    db.commit()
 
 
 def _raster_thumbnail_jpeg(slide_path: Path, size: int) -> bytes:
@@ -215,6 +256,10 @@ def _raster_thumbnail_jpeg(slide_path: Path, size: int) -> bytes:
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=85)
         return buf.getvalue()
+
+
+def _thumbnail_cache_path(settings, slide_id: int, size: int) -> Path:
+    return settings.tiles_cache_dir / str(slide_id) / "thumbnails" / f"{size}.jpg"
 
 
 def _raster_tile_jpeg(slide_path: Path, level: int, x: int, y: int, tile_size: int) -> bytes:
@@ -291,6 +336,7 @@ def list_slides(db: Session = Depends(get_db)):
     slide_ids = [s.id for s in slides]
     latest_run_by_slide: dict[int, InferenceRun] = {}
     positive_count_by_run: dict[int, int] = {}
+    negative_count_by_run: dict[int, int] = {}
 
     if slide_ids:
         runs = (
@@ -308,21 +354,29 @@ def list_slides(db: Session = Depends(get_db)):
         run_ids = [r.id for r in latest_run_by_slide.values()]
         if run_ids:
             rows = (
-                db.query(Region.inference_run_id, func.count(Region.id))
+                db.query(Region.inference_run_id, Region.label, func.count(Region.id))
                 .filter(
                     Region.inference_run_id.in_(run_ids),
-                    Region.label == "fungus_positive",
+                    Region.label.in_(["fungus_positive", "fungus_negative"]),
                 )
-                .group_by(Region.inference_run_id)
+                .group_by(Region.inference_run_id, Region.label)
                 .all()
             )
-            positive_count_by_run = {run_id: count for run_id, count in rows}
+            for run_id, label, count in rows:
+                if label == "fungus_positive":
+                    positive_count_by_run[run_id] = count
+                elif label == "fungus_negative":
+                    negative_count_by_run[run_id] = count
 
     def _inference_result(slide_id: int) -> str:
         run = latest_run_by_slide.get(slide_id)
         if not run:
             return "unchecked"
-        return "positive" if positive_count_by_run.get(run.id, 0) > 0 else "negative"
+        if positive_count_by_run.get(run.id, 0) > 0:
+            return "positive"
+        if negative_count_by_run.get(run.id, 0) > 0:
+            return "negative"
+        return "needs_review"
 
     items: list[SlideListItem] = []
     for s in slides:
@@ -333,6 +387,7 @@ def list_slides(db: Session = Depends(get_db)):
                 original_path=_display_original_path(s.original_path),
                 created_at=s.created_at,
                 inference_result=_inference_result(s.id),
+                review_status=s.review_status or "unreviewed",
                 folder_label=folder_label,
                 folder_key=folder_key,
                 collection_id=s.import_collection.id if s.import_collection else s.import_collection_id,
@@ -343,12 +398,33 @@ def list_slides(db: Session = Depends(get_db)):
     return SlideListResponse(slides=items)
 
 
+@router.patch("/{slide_id}/review", response_model=SlideReviewResponse)
+def update_slide_review(
+    slide_id: int,
+    payload: SlideReviewRequest,
+    db: Session = Depends(get_db),
+):
+    slide = db.get(Slide, slide_id)
+    if not slide:
+        raise AppError(ErrorCode.NOT_FOUND, f"Slide {slide_id} not found")
+
+    slide.review_status = payload.review_status
+    db.add(slide)
+    db.commit()
+    db.refresh(slide)
+    return SlideReviewResponse(id=slide.id, review_status=slide.review_status)
+
+
 @router.post("/import", response_model=SlideImportResponse)
 def import_slide(payload: SlideImportRequest, request: Request, db: Session = Depends(get_db)):
     settings = request.app.state.settings
 
     src = Path(payload.file_path)
-    _validate_import_source(src, settings.import_allowed_roots)
+    _validate_import_source(
+        src,
+        settings.import_allowed_roots,
+        allow_tile_like_import=payload.allow_tile_like_import,
+    )
 
     collection: ImportCollection | None = None
     if payload.collection_id is not None:
@@ -362,7 +438,15 @@ def import_slide(payload: SlideImportRequest, request: Request, db: Session = De
             source_type="import",
         )
 
-    slide = _import_slide_file(db=db, src=src, settings=settings, collection_id=collection.id if collection else None)
+    try:
+        slide = _import_slide_file(db=db, src=src, settings=settings, collection_id=collection.id if collection else None)
+    except Exception:
+        if collection is not None and payload.collection_id is None:
+            existing_collection = db.get(ImportCollection, collection.id)
+            if existing_collection is not None:
+                db.delete(existing_collection)
+                db.commit()
+        raise
     return SlideImportResponse(slide_id=slide.id, stored_path=_managed_slide_identifier(slide.stored_filename))
 
 
@@ -381,7 +465,11 @@ def import_slide_collection(payload: SlideImportCollectionRequest, request: Requ
     deduped_file_paths = list(dict.fromkeys(payload.file_paths))
     sources = [Path(file_path) for file_path in deduped_file_paths]
     for src in sources:
-        _validate_import_source(src, settings.import_allowed_roots)
+        _validate_import_source(
+            src,
+            settings.import_allowed_roots,
+            allow_tile_like_import=payload.allow_tile_like_import,
+        )
 
     collection = _create_import_collection(
         db,
@@ -399,12 +487,17 @@ def import_slide_collection(payload: SlideImportCollectionRequest, request: Requ
     except Exception:
         for slide_id in imported_slide_ids:
             shutil.rmtree(settings.tiles_cache_dir / str(slide_id), ignore_errors=True)
+            imported_slide = db.get(Slide, slide_id)
+            if imported_slide:
+                db.delete(imported_slide)
         for copied_path in copied_paths:
             if copied_path.is_file():
                 try:
                     copied_path.unlink()
                 except OSError:
                     logger.warning("Could not delete copied slide file %s after failed collection import", copied_path)
+        db.delete(collection)
+        db.commit()
         raise
 
     return SlideImportCollectionResponse(
@@ -437,6 +530,9 @@ def rename_import_collection(
         raise AppError(ErrorCode.NOT_FOUND, f"Import collection {collection_id} not found")
 
     collection.title = payload.title
+    db.add(collection)
+    db.commit()
+    db.refresh(collection)
     return _serialize_collection(collection)
 
 
@@ -479,10 +575,15 @@ def slide_thumbnail(
 
     settings = request.app.state.settings
     slide_path = _resolve_managed_slide_path(slide, settings)
+    cache_path = _thumbnail_cache_path(settings, slide_id, size)
+    if cache_path.is_file():
+        return FileResponse(path=cache_path, media_type="image/jpeg")
 
     if slide_path.suffix.lower() in RASTER_EXTENSIONS:
         try:
             jpg = _raster_thumbnail_jpeg(slide_path, size)
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_bytes(jpg)
             return Response(content=jpg, media_type="image/jpeg")
         except AppError:
             raise
@@ -514,7 +615,10 @@ def slide_thumbnail(
 
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=85)
-        return Response(content=buf.getvalue(), media_type="image/jpeg")
+        jpg = buf.getvalue()
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_bytes(jpg)
+        return Response(content=jpg, media_type="image/jpeg")
     finally:
         try:
             osr.close()
@@ -554,11 +658,14 @@ def slide_tile(
         / f"{x}_{y}.jpg"
     )
 
-    if tile_path.exists():
-        return Response(content=tile_path.read_bytes(), media_type="image/jpeg")
-
     if slide_path.suffix.lower() in RASTER_EXTENSIONS:
         try:
+            if tile_path.exists():
+                with Image.open(slide_path) as img:
+                    iw, ih = img.size
+                if x < 0 or y < 0 or x * TILE_SIZE >= iw or y * TILE_SIZE >= ih or level != 0:
+                    raise AppError(ErrorCode.NOT_FOUND, f"Tile out of bounds: level={level} x={x} y={y}")
+                return Response(content=tile_path.read_bytes(), media_type="image/jpeg")
             jpg_bytes = _raster_tile_jpeg(slide_path, level, x, y, TILE_SIZE)
             tile_path.parent.mkdir(parents=True, exist_ok=True)
             tile_path.write_bytes(jpg_bytes)
@@ -590,6 +697,9 @@ def slide_tile(
         # Reject completely out-of-bounds tiles (avoids doing work for nonsense coords)
         if px_level >= level_w or py_level >= level_h or x < 0 or y < 0:
             raise AppError(ErrorCode.NOT_FOUND, f"Tile out of bounds: level={level} x={x} y={y}")
+
+        if tile_path.exists():
+            return Response(content=tile_path.read_bytes(), media_type="image/jpeg")
 
         # OpenSlide read_region location is in level-0 coordinates
         downsample = float(osr.level_downsamples[level])
@@ -645,7 +755,11 @@ def slide_deepzoom_descriptor(
 
     dz_paths = deepzoom_paths(settings.tiles_cache_dir, slide_id)
     if not has_deepzoom(dz_paths):
-        raise AppError(ErrorCode.NOT_FOUND, "DeepZoom tiles not pre-generated for this slide")
+        raise AppError(
+            ErrorCode.NOT_FOUND,
+            "DeepZoom tiles not pre-generated for this slide",
+            http_status=404,
+        )
     return FileResponse(path=dz_paths.descriptor, media_type="application/xml")
 
 
@@ -667,7 +781,13 @@ def slide_deepzoom_tile(
 
     dz_paths = deepzoom_paths(settings.tiles_cache_dir, slide_id)
     if not has_deepzoom(dz_paths):
-        raise AppError(ErrorCode.NOT_FOUND, "DeepZoom tiles not pre-generated for this slide")
+        raise AppError(
+            ErrorCode.NOT_FOUND,
+            "DeepZoom tiles not pre-generated for this slide",
+            http_status=404,
+        )
+    if level < 0 or x < 0 or y < 0:
+        raise AppError(ErrorCode.NOT_FOUND, f"Tile out of bounds: level={level} x={x} y={y}")
     tile_path = dz_paths.tiles_dir / str(level) / f"{x}_{y}.jpg"
     if not tile_path.exists():
         raise AppError(ErrorCode.NOT_FOUND, f"Tile out of bounds: level={level} x={x} y={y}")
