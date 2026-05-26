@@ -1233,6 +1233,17 @@ body {
   position: relative;
   flex: 1;
   min-height: 0;
+  background: #0a0a0c;
+}
+
+.viewer-canvas-wrap::before {
+  content: "";
+  position: absolute;
+  inset: 12px;
+  border: 1px dashed rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  pointer-events: none;
+  z-index: 1;
 }
 
 .viewer-canvas-wrap .viewer-container {

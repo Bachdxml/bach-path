@@ -8,6 +8,7 @@ const viewerBack = document.getElementById("viewer-back");
 const viewerEmpty = document.getElementById("viewer-empty");
 const runInferenceBtn = document.getElementById("viewer-run-inference");
 const inferenceStatus = document.getElementById("viewer-inference-status");
+const btnViewerFitSlide = document.getElementById("viewer-fit-slide");
 const viewerShowNegative = document.getElementById("viewer-show-negative");
 const viewerInferenceThreshold = document.getElementById("viewer-inference-threshold");
 const viewerInferenceThresholdValue = document.getElementById("viewer-inference-threshold-value");
@@ -50,7 +51,12 @@ let viewerRequestSeq = 0;
 let activeInferencePollToken = 0;
 let viewerSlideOrder = [];
 let selectedReviewRegionId = null;
+let viewerDisplayRotation = 0;
 const INFERENCE_THRESHOLD_KEY = "inferenceThresholdByModel";
+/** Rotate tall whole-slide scans so the long axis fits the viewer width. */
+const VIEWER_PORTRAIT_ASPECT_RATIO = 2;
+/** Padding around the slide when fitting to the viewer (fraction of viewport). */
+const VIEWER_FIT_PADDING = 0.08;
 
 function getThresholdMap() {
   try {
@@ -139,6 +145,7 @@ function closeViewer() {
   currentSlideLabel = "";
   currentReviewStatus = "unreviewed";
   selectedReviewRegionId = null;
+  viewerDisplayRotation = 0;
   lastRegions = [];
   viewerContainer.innerHTML = "";
   viewerContainer.style.display = "none";
@@ -174,6 +181,58 @@ function getGallerySlide(slideId) {
   return typeof getSlideById === "function" ? getSlideById(slideId) : null;
 }
 
+function shouldDisplaySlideHorizontally(width, height) {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0) {
+    return false;
+  }
+  return height / width >= VIEWER_PORTRAIT_ASPECT_RATIO;
+}
+
+function getPreferredViewerRotation(width, height) {
+  return shouldDisplaySlideHorizontally(width, height) ? 90 : 0;
+}
+
+function getMinZoomImageRatio(width, height) {
+  if (!shouldDisplaySlideHorizontally(width, height)) {
+    return 0.5;
+  }
+  const aspect = height / width;
+  if (aspect >= 6) return 0.01;
+  if (aspect >= 4) return 0.02;
+  return 0.05;
+}
+
+function fitSlideToViewer(immediately = true) {
+  if (!viewer?.viewport) return;
+  const item = viewer.world?.getItemAt?.(0);
+  if (!item) {
+    viewer.viewport.goHome(immediately);
+    return;
+  }
+  const bounds = item.getBounds(true);
+  if (!bounds) {
+    viewer.viewport.goHome(immediately);
+    return;
+  }
+  const pad = VIEWER_FIT_PADDING;
+  const padded = bounds.clone();
+  padded.x -= bounds.width * pad;
+  padded.y -= bounds.height * pad;
+  padded.width *= 1 + 2 * pad;
+  padded.height *= 1 + 2 * pad;
+  viewer.viewport.fitBounds(padded, immediately);
+}
+
+function applyViewerDisplayOrientation() {
+  if (!viewer) return;
+  const dims = getSlideDimensions();
+  viewerDisplayRotation = dims
+    ? getPreferredViewerRotation(dims.width, dims.height)
+    : 0;
+  viewer.viewport.setRotation(viewerDisplayRotation, true);
+  fitSlideToViewer(true);
+}
+
 function updateReviewStatusDisplay() {
   if (!viewerTileReviewStatus) return;
   const label =
@@ -205,6 +264,12 @@ function renderMetadataPanel(meta) {
     meta.level_dimensions && meta.level_dimensions.length
       ? meta.level_dimensions.map((d) => `${d[0]}×${d[1]}`).join(", ")
       : "—";
+  const viewerOrientation =
+    meta.dimensions && meta.dimensions.length >= 2
+      ? shouldDisplaySlideHorizontally(meta.dimensions[0], meta.dimensions[1])
+        ? "Rotated horizontal (tall scan)"
+        : "Native orientation"
+      : "—";
 
   const props = meta.properties || {};
   const propKeys = Object.keys(props).sort();
@@ -227,6 +292,7 @@ function renderMetadataPanel(meta) {
       <dt>Level sizes</dt><dd style="font-size:11px">${escapeHtml(levels)}</dd>
       <dt>MPP X / Y</dt><dd>${escapeHtml(mppX)} / ${escapeHtml(mppY)}</dd>
       <dt>Vendor</dt><dd>${escapeHtml(meta.vendor || "—")}</dd>
+      <dt>Viewer</dt><dd>${escapeHtml(viewerOrientation)}</dd>
     </dl>
     ${propsHtml}
   `;
@@ -783,11 +849,14 @@ async function showViewer(slideId) {
     if (requestId !== viewerRequestSeq || currentSlideId !== slideId) return;
     applyMppFromMeta(meta);
     renderMetadataPanel(meta);
-    showMetadataPanel(true);
+    const hideMetaForTallSlide =
+      meta.dimensions?.length >= 2 &&
+      shouldDisplaySlideHorizontally(meta.dimensions[0], meta.dimensions[1]);
+    showMetadataPanel(!hideMetaForTallSlide);
   } catch (err) {
     console.warn("Slide metadata:", err);
     renderMetadataPanel(null);
-    showMetadataPanel(true);
+    showMetadataPanel(false);
   }
 
   if (viewer) {
@@ -848,6 +917,14 @@ async function showViewer(slideId) {
       };
     }
 
+    const dimsForOrientation =
+      meta?.dimensions?.length >= 2
+        ? { width: meta.dimensions[0], height: meta.dimensions[1] }
+        : getSlideDimensions();
+    const minZoomImageRatio = dimsForOrientation
+      ? getMinZoomImageRatio(dimsForOrientation.width, dimsForOrientation.height)
+      : 0.5;
+
     viewer = OpenSeadragon({
       element: viewerContainer,
       tileSources: tileSource,
@@ -862,27 +939,32 @@ async function showViewer(slideId) {
       visibilityRatio: 1.0,
       wrapHorizontal: false,
       wrapVertical: false,
-      minZoomImageRatio: 0.9,
+      minZoomImageRatio,
       immediateRender: true,
       homeFillsViewer: false,
     });
 
     viewer.addHandler("open", () => {
       if (requestId !== viewerRequestSeq || currentSlideId !== slideId) return;
-      viewer.viewport.goHome(true);
+      applyViewerDisplayOrientation();
       updateScaleBar();
       loadLatestInferenceRun(slideId, requestId);
     });
 
     viewer.addHandler("animation", updateScaleBar);
-    viewer.addHandler("resize", updateScaleBar);
+    viewer.addHandler("resize", () => {
+      updateScaleBar();
+      if (viewerDisplayRotation) {
+        fitSlideToViewer(true);
+      }
+    });
     viewer.addHandler("canvas-click", (event) => {
       if (!event.quick) return;
       const homeZoom = viewer.viewport.getHomeZoom();
       const currentZoom = viewer.viewport.getZoom();
       const isZoomedIn = currentZoom > homeZoom * 1.05;
       if (isZoomedIn) {
-        viewer.viewport.goHome(true);
+        fitSlideToViewer(true);
       } else {
         const targetPoint = viewer.viewport.pointFromPixel(event.position);
         viewer.viewport.zoomTo(homeZoom * 2.5, targetPoint, true);
@@ -1082,6 +1164,10 @@ if (runInferenceBtn) {
   runInferenceBtn.addEventListener("click", handleRunInference);
 }
 
+btnViewerFitSlide?.addEventListener("click", () => {
+  applyViewerDisplayOrientation();
+  updateScaleBar();
+});
 btnViewerExportView?.addEventListener("click", () => exportViewerViewport());
 btnViewerExportRegions?.addEventListener("click", () => exportInferenceRegionsJson());
 btnViewerReviewPositive?.addEventListener("click", () => setSlideReviewStatus("positive"));
