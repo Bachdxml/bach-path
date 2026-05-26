@@ -8,7 +8,6 @@ const viewerBack = document.getElementById("viewer-back");
 const viewerEmpty = document.getElementById("viewer-empty");
 const runInferenceBtn = document.getElementById("viewer-run-inference");
 const inferenceStatus = document.getElementById("viewer-inference-status");
-const viewerRunSelect = document.getElementById("viewer-run-select");
 const viewerShowNegative = document.getElementById("viewer-show-negative");
 const viewerInferenceThreshold = document.getElementById("viewer-inference-threshold");
 const viewerInferenceThresholdValue = document.getElementById("viewer-inference-threshold-value");
@@ -144,10 +143,7 @@ function closeViewer() {
   viewerContainer.innerHTML = "";
   viewerContainer.style.display = "none";
   viewerEmpty.style.display = "flex";
-  if (viewerRunSelect) {
-    viewerRunSelect.innerHTML = "";
-    viewerRunSelect.disabled = true;
-  }
+  currentRunId = null;
   if (viewerMetaContent) viewerMetaContent.innerHTML = "";
   showMetadataPanel(false);
   runInferenceBtn.disabled = false;
@@ -631,52 +627,30 @@ function addRegionOverlays(regions, showNegative = false) {
   } catch (_) {}
 }
 
-async function populateRunSelector(slideId, requestId = null) {
-  if (!viewerRunSelect) return;
-  viewerRunSelect.innerHTML = "";
-  viewerRunSelect.disabled = true;
+async function loadLatestInferenceRun(slideId, requestId = null) {
+  const seq = requestId ?? viewerRequestSeq;
   try {
     const { runs } = await viewerSlidesApi.getSlideInferenceRuns(slideId);
-    if (
-      (requestId != null && requestId !== viewerRequestSeq) ||
-      currentSlideId !== slideId
-    ) {
+    if (seq !== viewerRequestSeq || currentSlideId !== slideId) {
       return;
     }
-    const succeeded = (runs || []).filter((r) => r.status === "succeeded");
-    if (succeeded.length === 0) {
-      const opt = document.createElement("option");
-      opt.value = "";
-      opt.textContent = "No inference runs yet";
-      viewerRunSelect.appendChild(opt);
+    const latestSucceeded = (runs || []).find((r) => r.status === "succeeded");
+    if (!latestSucceeded) {
+      currentRunId = null;
       lastRegions = [];
+      clearOverlays();
       renderTileReviewPanel([]);
       return;
     }
-    for (const r of succeeded) {
-      const opt = document.createElement("option");
-      opt.value = String(r.id);
-      const when = r.finished_at || r.created_at || "";
-      const short = when ? ` — ${when.slice(0, 10)}` : "";
-      opt.textContent = `Run #${r.id} (${r.model_version || "model"})${short}`;
-      viewerRunSelect.appendChild(opt);
-    }
-    viewerRunSelect.disabled = false;
-    viewerRunSelect.value = String(succeeded[0].id);
-    currentRunId = succeeded[0].id;
-    await loadRegionsForRun(currentRunId, slideId, requestId ?? viewerRequestSeq);
+    currentRunId = latestSucceeded.id;
+    await loadRegionsForRun(currentRunId, slideId, seq);
   } catch (_) {
-    if (
-      (requestId != null && requestId !== viewerRequestSeq) ||
-      currentSlideId !== slideId
-    ) {
+    if (seq !== viewerRequestSeq || currentSlideId !== slideId) {
       return;
     }
-    const opt = document.createElement("option");
-    opt.value = "";
-    opt.textContent = "Runs unavailable";
-    viewerRunSelect.appendChild(opt);
+    currentRunId = null;
     lastRegions = [];
+    clearOverlays();
     renderTileReviewPanel([]);
   }
 }
@@ -897,7 +871,7 @@ async function showViewer(slideId) {
       if (requestId !== viewerRequestSeq || currentSlideId !== slideId) return;
       viewer.viewport.goHome(true);
       updateScaleBar();
-      populateRunSelector(slideId, requestId);
+      loadLatestInferenceRun(slideId, requestId);
     });
 
     viewer.addHandler("animation", updateScaleBar);
@@ -928,12 +902,6 @@ btnViewerSlideInfo?.addEventListener("click", () => {
 
 btnViewerMetadataClose?.addEventListener("click", () => {
   showMetadataPanel(false);
-});
-
-viewerRunSelect?.addEventListener("change", async () => {
-  const v = viewerRunSelect.value;
-  currentRunId = v ? parseInt(v, 10) : null;
-  if (currentRunId) await loadRegionsForRun(currentRunId, currentSlideId, viewerRequestSeq);
 });
 
 viewerShowNegative?.addEventListener("change", () => {
@@ -1063,7 +1031,7 @@ async function handleRunInference() {
         if (typeof refreshGallery === "function") {
           refreshGallery();
         }
-        await populateRunSelector(runSlideId, viewerRequestSeq);
+        await loadLatestInferenceRun(runSlideId, viewerRequestSeq);
         return;
       }
       if (r.status === "failed") {

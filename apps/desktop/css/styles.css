@@ -1151,17 +1151,6 @@ body {
   font-size: 12px;
 }
 
-.viewer-run-select {
-  min-width: 180px;
-  max-width: 260px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  color: var(--text);
-  border-radius: var(--radius);
-  padding: 6px 8px;
-  font-size: 12px;
-}
-
 .viewer-toggle,
 .viewer-opacity-label {
   display: inline-flex;
