@@ -21,11 +21,18 @@ class Settings(BaseModel):
     training_runs_dir: Path
     tiles_cache_dir: Path
     sqlite_path: Path
+    database_url: str | None = None
     api_key: str | None = None
     allow_query_api_key: bool = False
     remote_api_base_url: str | None = None
     remote_auth_provider_url: str | None = None
     remote_storage_url: str | None = None
+    cognito_issuer: str | None = None
+    cognito_audience: str | None = None
+    s3_bucket: str | None = None
+    s3_region: str | None = None
+    stripe_secret_key: str | None = None
+    stripe_webhook_secret: str | None = None
     import_allowed_roots: tuple[Path, ...] = ()
     max_batch_inference_items: int = 64
     max_inference_output_bytes: int = 5_000_000
@@ -71,6 +78,10 @@ def _validate_remote_url(
     if not value:
         return
     parsed = urlparse(value)
+    if parsed.scheme.startswith("sqlite"):
+        if parsed.scheme not in set(allowed_schemes) or not parsed.path:
+            errors.append(f"{name} must be an absolute SQLite URL")
+        return
     if parsed.scheme not in set(allowed_schemes) or not parsed.netloc:
         scheme_label = "|".join(allowed_schemes)
         errors.append(f"{name} must be an absolute URL with scheme {scheme_label}")
@@ -120,6 +131,13 @@ def _validate_profile_settings(
     remote_api_base_url: str | None,
     remote_auth_provider_url: str | None,
     remote_storage_url: str | None,
+    database_url: str | None,
+    cognito_issuer: str | None,
+    cognito_audience: str | None,
+    s3_bucket: str | None,
+    s3_region: str | None,
+    stripe_secret_key: str | None,
+    stripe_webhook_secret: str | None,
 ) -> None:
     errors: list[str] = []
 
@@ -134,6 +152,8 @@ def _validate_profile_settings(
             errors.append("APP_API_KEY is required for hybrid mode")
         if allow_query_api_key:
             errors.append("APP_ALLOW_QUERY_API_KEY must be false in hybrid mode")
+        if database_url:
+            _validate_remote_url("APP_DATABASE_URL", database_url, errors, allowed_schemes=("postgresql", "postgresql+psycopg", "postgresql+psycopg2", "sqlite", "sqlite+pysqlite"))
         if not remote_api_base_url:
             errors.append("APP_REMOTE_API_BASE_URL is required for hybrid mode")
         if not remote_auth_provider_url:
@@ -145,6 +165,20 @@ def _validate_profile_settings(
             errors.append("APP_API_KEY is required for cloud mode")
         if allow_query_api_key:
             errors.append("APP_ALLOW_QUERY_API_KEY must be false in cloud mode")
+        if not database_url:
+            errors.append("APP_DATABASE_URL is required for cloud mode")
+        if not cognito_issuer:
+            errors.append("APP_COGNITO_ISSUER is required for cloud mode")
+        if not cognito_audience:
+            errors.append("APP_COGNITO_AUDIENCE is required for cloud mode")
+        if not s3_bucket:
+            errors.append("APP_S3_BUCKET is required for cloud mode")
+        if not s3_region:
+            errors.append("APP_S3_REGION is required for cloud mode")
+        if not stripe_secret_key:
+            errors.append("STRIPE_SECRET_KEY is required for cloud mode")
+        if not stripe_webhook_secret:
+            errors.append("STRIPE_WEBHOOK_SECRET is required for cloud mode")
         if not remote_api_base_url:
             errors.append("APP_REMOTE_API_BASE_URL is required for cloud mode")
         if not remote_auth_provider_url:
@@ -153,6 +187,13 @@ def _validate_profile_settings(
             errors.append("APP_REMOTE_STORAGE_URL is required for cloud mode")
         _validate_remote_url("APP_REMOTE_API_BASE_URL", remote_api_base_url, errors)
         _validate_remote_url("APP_REMOTE_AUTH_PROVIDER_URL", remote_auth_provider_url, errors)
+        _validate_remote_url(
+            "APP_DATABASE_URL",
+            database_url,
+            errors,
+            allowed_schemes=("postgresql", "postgresql+psycopg", "postgresql+psycopg2", "sqlite", "sqlite+pysqlite"),
+        )
+        _validate_remote_url("APP_COGNITO_ISSUER", cognito_issuer, errors)
         _validate_remote_url(
             "APP_REMOTE_STORAGE_URL",
             remote_storage_url,
@@ -188,6 +229,7 @@ def load_settings() -> Settings:
     training_runs_dir = app_data_dir / "training_runs"
     tiles_cache_dir = app_data_dir / "tiles_cache"
     sqlite_path = app_data_dir / "app.db"
+    database_url = _optional_env("APP_DATABASE_URL")
     api_key = _optional_env("APP_API_KEY")
     allow_query_api_key = (os.environ.get("APP_ALLOW_QUERY_API_KEY") or "").strip().lower() in {
         "1",
@@ -198,6 +240,12 @@ def load_settings() -> Settings:
     remote_api_base_url = _optional_env("APP_REMOTE_API_BASE_URL")
     remote_auth_provider_url = _optional_env("APP_REMOTE_AUTH_PROVIDER_URL")
     remote_storage_url = _optional_env("APP_REMOTE_STORAGE_URL")
+    cognito_issuer = _optional_env("APP_COGNITO_ISSUER")
+    cognito_audience = _optional_env("APP_COGNITO_AUDIENCE")
+    s3_bucket = _optional_env("APP_S3_BUCKET")
+    s3_region = _optional_env("APP_S3_REGION")
+    stripe_secret_key = _optional_env("STRIPE_SECRET_KEY")
+    stripe_webhook_secret = _optional_env("STRIPE_WEBHOOK_SECRET")
     import_allowed_roots = _parse_allowed_roots(os.environ.get("APP_IMPORT_ALLOWED_ROOTS"))
     max_batch_inference_items = _parse_positive_int(
         os.environ.get("APP_MAX_BATCH_INFERENCE_ITEMS"),
@@ -239,6 +287,13 @@ def load_settings() -> Settings:
         remote_api_base_url=remote_api_base_url,
         remote_auth_provider_url=remote_auth_provider_url,
         remote_storage_url=remote_storage_url,
+        database_url=database_url,
+        cognito_issuer=cognito_issuer,
+        cognito_audience=cognito_audience,
+        s3_bucket=s3_bucket,
+        s3_region=s3_region,
+        stripe_secret_key=stripe_secret_key,
+        stripe_webhook_secret=stripe_webhook_secret,
     )
 
     return Settings(
@@ -251,6 +306,7 @@ def load_settings() -> Settings:
         training_runs_dir=training_runs_dir,
         tiles_cache_dir=tiles_cache_dir,
         sqlite_path=sqlite_path,
+        database_url=database_url,
         api_key=api_key,
         allow_query_api_key=allow_query_api_key,
         import_allowed_roots=import_allowed_roots,
@@ -263,4 +319,10 @@ def load_settings() -> Settings:
         remote_api_base_url=remote_api_base_url,
         remote_auth_provider_url=remote_auth_provider_url,
         remote_storage_url=remote_storage_url,
+        cognito_issuer=cognito_issuer,
+        cognito_audience=cognito_audience,
+        s3_bucket=s3_bucket,
+        s3_region=s3_region,
+        stripe_secret_key=stripe_secret_key,
+        stripe_webhook_secret=stripe_webhook_secret,
     )

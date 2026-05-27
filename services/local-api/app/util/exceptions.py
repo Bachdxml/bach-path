@@ -12,6 +12,8 @@ class ErrorCode:
     STORAGE_INCONSISTENT = "storage_inconsistent"
     DB_ERROR = "db_error"
     INTERNAL = "internal"
+    UNAUTHORIZED = "unauthorized"
+    FORBIDDEN = "forbidden"
 
 @dataclass
 class AppError(Exception):

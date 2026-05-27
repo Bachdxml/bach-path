@@ -139,9 +139,16 @@ def test_hybrid_and_cloud_profiles_reject_missing_required_env(
             "cloud",
             {
                 "APP_API_KEY": "cloud-key",
+                "APP_DATABASE_URL": "postgresql+psycopg://db.example.test/bach_path",
+                "APP_COGNITO_ISSUER": "https://cognito-idp.us-east-1.amazonaws.com/pool",
+                "APP_COGNITO_AUDIENCE": "client-id",
+                "APP_S3_BUCKET": "bach-path-slides",
+                "APP_S3_REGION": "us-east-1",
                 "APP_REMOTE_API_BASE_URL": "https://api.example.test",
                 "APP_REMOTE_AUTH_PROVIDER_URL": "https://auth.example.test",
                 "APP_REMOTE_STORAGE_URL": "s3://bucket/path",
+                "STRIPE_SECRET_KEY": "sk_test_key",
+                "STRIPE_WEBHOOK_SECRET": "whsec_test",
             },
         ),
     ],
@@ -178,9 +185,16 @@ def test_cloud_rejects_remote_url_with_embedded_credentials(app_paths, monkeypat
     _set_base_env(monkeypatch, app_paths["app_data_dir"])
     monkeypatch.setenv("APP_DEPLOYMENT_MODE", "cloud")
     monkeypatch.setenv("APP_API_KEY", "cloud-key")
+    monkeypatch.setenv("APP_DATABASE_URL", "postgresql+psycopg://db.example.test/bach_path")
+    monkeypatch.setenv("APP_COGNITO_ISSUER", "https://cognito-idp.us-east-1.amazonaws.com/pool")
+    monkeypatch.setenv("APP_COGNITO_AUDIENCE", "client-id")
+    monkeypatch.setenv("APP_S3_BUCKET", "bach-path-slides")
+    monkeypatch.setenv("APP_S3_REGION", "us-east-1")
     monkeypatch.setenv("APP_REMOTE_API_BASE_URL", "https://api.example.test")
     monkeypatch.setenv("APP_REMOTE_AUTH_PROVIDER_URL", "https://user:pass@auth.example.test")
     monkeypatch.setenv("APP_REMOTE_STORAGE_URL", "https://storage.example.test")
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_key")
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_test")
 
     with pytest.raises(RuntimeError, match="APP_REMOTE_AUTH_PROVIDER_URL must not include embedded credentials"):
         load_settings()

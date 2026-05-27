@@ -6,7 +6,8 @@ from typing import Generator
 from fastapi import Header, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
-from app.db.session import make_engine, make_session_factory
+from app.settings import DeploymentMode
+from app.db.session import make_engine, make_engine_from_url, make_session_factory
 
 _db_init_lock = threading.Lock()
 
@@ -16,7 +17,10 @@ def get_db(request: Request) -> Generator[Session, None, None]:
     if not hasattr(request.app.state, "engine"):
         with _db_init_lock:
             if not hasattr(request.app.state, "engine"):
-                request.app.state.engine = make_engine(settings.sqlite_path)
+                if settings.deployment_mode is DeploymentMode.LOCAL or not settings.database_url:
+                    request.app.state.engine = make_engine(settings.sqlite_path)
+                else:
+                    request.app.state.engine = make_engine_from_url(settings.database_url)
                 request.app.state.SessionLocal = make_session_factory(request.app.state.engine)
 
     db: Session = request.app.state.SessionLocal()

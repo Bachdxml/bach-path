@@ -20,6 +20,10 @@ def migrations_available() -> bool:
     return alembic_ini.is_file() and script_location.is_dir()
 
 def run_migrations(sqlite_path: Path) -> None:
+    run_migrations_url(f"sqlite+pysqlite:///{sqlite_path.as_posix()}")
+
+
+def run_migrations_url(database_url: str) -> None:
     from alembic import command
     from alembic.config import Config
 
@@ -32,7 +36,7 @@ def run_migrations(sqlite_path: Path) -> None:
 
     cfg = Config(str(alembic_ini))
     cfg.set_main_option("script_location", str(script_location))
-    cfg.set_main_option("sqlalchemy.url", f"sqlite+pysqlite:///{sqlite_path.as_posix()}")
+    cfg.set_main_option("sqlalchemy.url", database_url)
 
     # Upgrade to head at startup
     command.upgrade(cfg, "head")

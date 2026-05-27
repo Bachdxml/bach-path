@@ -4,6 +4,7 @@ from app.api.routes.health import router as health_router
 from app.api.routes.slides import collections_router, router as slides_router
 from app.api.routes.inference import router as inference_router
 from app.api.routes.training import router as training_router
+from app.api.routes.cloud import router as cloud_router, webhooks_router
 
 api_router = APIRouter()
 api_router.include_router(health_router)
@@ -11,3 +12,5 @@ api_router.include_router(slides_router, dependencies=[Depends(require_api_key)]
 api_router.include_router(collections_router, dependencies=[Depends(require_api_key)])
 api_router.include_router(inference_router, dependencies=[Depends(require_api_key)])
 api_router.include_router(training_router, dependencies=[Depends(require_api_key)])
+api_router.include_router(cloud_router)
+api_router.include_router(webhooks_router)

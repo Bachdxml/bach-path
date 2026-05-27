@@ -5,3 +5,13 @@ from app.models.inference_run import InferenceRun
 from app.models.inference_run_event import InferenceRunEvent
 from app.models.region import Region
 from app.models.audit_log import AuditLog
+from app.models.marketplace import (
+    Dataset,
+    DatasetSlide,
+    License,
+    Membership,
+    Order,
+    Organization,
+    SlideAsset,
+    Submission,
+)

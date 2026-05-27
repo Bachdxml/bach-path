@@ -5,10 +5,10 @@ from datetime import datetime, timezone
 
 from sqlalchemy import inspect
 
-from app.settings import Settings
-from app.db.session import make_engine, make_session_factory
+from app.settings import DeploymentMode, Settings
+from app.db.session import make_engine, make_engine_from_url, make_session_factory
 from app.db.base import Base
-from app.db.migrations_runner import migrations_available, run_migrations
+from app.db.migrations_runner import migrations_available, run_migrations, run_migrations_url
 
 # Explicitly import all model modules so tables are registered
 from app.models import (
@@ -20,6 +20,7 @@ from app.models import (
     region,
     slide,
     user,
+    marketplace,
 )
 from app.models.enums import InferenceStatus
 from app.models.inference_run import InferenceRun
@@ -136,14 +137,68 @@ def _reconcile_orphaned_inference_runs(sqlite_path: Path) -> int:
 
     return repaired_count
 
+
+def _database_url(settings: Settings) -> str:
+    if settings.deployment_mode is DeploymentMode.LOCAL or not settings.database_url:
+        return f"sqlite+pysqlite:///{settings.sqlite_path.as_posix()}"
+    return settings.database_url
+
+
+def _reconcile_orphaned_inference_runs_for_url(database_url: str) -> int:
+    engine = make_engine_from_url(database_url)
+    session_factory = make_session_factory(engine)
+    now = datetime.now(timezone.utc)
+    repaired_count = 0
+
+    with session_factory() as db:
+        orphaned_runs = (
+            db.query(InferenceRun)
+            .filter(InferenceRun.status.in_([InferenceStatus.queued.value, InferenceStatus.running.value]))
+            .order_by(InferenceRun.id.asc())
+            .all()
+        )
+        if not orphaned_runs:
+            return 0
+
+        for run in orphaned_runs:
+            previous_status = run.status
+            run.status = InferenceStatus.failed.value
+            run.finished_at = now
+            if _is_blank(run.error_code):
+                run.error_code = _STARTUP_FAILURE_CODE
+            if _is_blank(run.error_message):
+                run.error_message = _STARTUP_FAILURE_MESSAGE
+            db.add(
+                InferenceRunEvent(
+                    run_id=run.id,
+                    from_status=previous_status,
+                    to_status=InferenceStatus.failed.value,
+                    changed_at=now,
+                    detail="Startup reconciliation recovered an interrupted inference run.",
+                    error=run.error_code,
+                )
+            )
+            repaired_count += 1
+
+        db.commit()
+
+    return repaired_count
+
 def init_database(settings: Settings) -> int:
     ensure_dirs(settings)
+    database_url = _database_url(settings)
     if migrations_available():
-        run_migrations(settings.sqlite_path)
+        if settings.deployment_mode is DeploymentMode.LOCAL or not settings.database_url:
+            run_migrations(settings.sqlite_path)
+        else:
+            run_migrations_url(database_url)
     else:
         logger.warning("Alembic assets not found; falling back to metadata.create_all().")
-    _upgrade_sqlite_schema(settings.sqlite_path)
-    repaired_count = _reconcile_orphaned_inference_runs(settings.sqlite_path)
+    if settings.deployment_mode is DeploymentMode.LOCAL:
+        _upgrade_sqlite_schema(settings.sqlite_path)
+        repaired_count = _reconcile_orphaned_inference_runs(settings.sqlite_path)
+    else:
+        repaired_count = _reconcile_orphaned_inference_runs_for_url(database_url)
     if repaired_count:
         logger.info(
             "Startup reconciliation marked %d orphaned inference run(s) as failed.",
