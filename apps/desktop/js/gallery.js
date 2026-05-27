@@ -72,32 +72,42 @@ function formatDate(iso) {
   }
 }
 
-function getTimestamp(value) {
-  if (!value) return 0;
-  const ts = new Date(value).getTime();
-  return Number.isFinite(ts) ? ts : 0;
-}
-
-function getSlideCollectionKey(slide) {
-  if (slide && slide.collection_id != null) {
-    return `collection:${slide.collection_id}`;
-  }
-  return "legacy-imports";
-}
-
-function getSlideCollectionTitle(slide) {
-  const title = typeof slide?.collection_title === "string" ? slide.collection_title.trim() : "";
-  if (title) return title;
-  return slide?.collection_id != null ? "Untitled collection" : "Legacy imports";
-}
-
-function getSlideCollectionSortTime(slide) {
+function getImportDateValue(slide) {
   return (
-    getTimestamp(slide?.collection_imported_at) ||
-    getTimestamp(slide?.collection_created_at) ||
-    getTimestamp(slide?.imported_at) ||
-    getTimestamp(slide?.created_at)
+    slide?.collection_imported_at ||
+    slide?.collection_created_at ||
+    slide?.imported_at ||
+    slide?.created_at ||
+    null
   );
+}
+
+function getImportDayGroup(slide) {
+  const value = getImportDateValue(slide);
+  if (!value) {
+    return {
+      key: "import-day:unknown",
+      title: "Unknown import date",
+      importedAt: 0,
+    };
+  }
+  const d = new Date(value);
+  const ts = d.getTime();
+  if (!Number.isFinite(ts)) {
+    return {
+      key: "import-day:unknown",
+      title: "Unknown import date",
+      importedAt: 0,
+    };
+  }
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return {
+    key: `import-day:${year}-${month}-${day}`,
+    title: d.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" }),
+    importedAt: new Date(year, d.getMonth(), d.getDate()).getTime(),
+  };
 }
 
 function getFavorites() {
@@ -122,38 +132,10 @@ function toggleFavorite(id) {
   renderCards();
 }
 
-function compareSlides(a, b, sort) {
-  const reviewDelta = getReviewSortPriority(a) - getReviewSortPriority(b);
-  if (reviewDelta !== 0) return reviewDelta;
-
+function compareSlidesByName(a, b) {
   const nameA = filenameFromPath(a.original_path).toLowerCase();
   const nameB = filenameFromPath(b.original_path).toLowerCase();
-  const tA = new Date(a.created_at || 0).getTime();
-  const tB = new Date(b.created_at || 0).getTime();
-  switch (sort) {
-    case "date-asc":
-      return tA - tB;
-    case "name-asc":
-      return nameA.localeCompare(nameB);
-    case "name-desc":
-      return nameB.localeCompare(nameA);
-    case "date-desc":
-    default:
-      return tB - tA;
-  }
-}
-
-function getReviewSortPriority(slide) {
-  switch (slide?.review_status || "unreviewed") {
-    case "positive":
-      return 0;
-    case "negative":
-      return 1;
-    case "indeterminate":
-      return 2;
-    default:
-      return 3;
-  }
+  return nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: "base" });
 }
 
 function filterSlides() {
@@ -179,33 +161,22 @@ function filterSlides() {
 }
 
 function getVisibleGroups() {
-  const sort = gallerySort?.value || "date-desc";
   const filteredSlides = filterSlides();
   const groups = new Map();
   for (const slide of filteredSlides) {
-    const key = getSlideCollectionKey(slide);
+    const dayGroup = getImportDayGroup(slide);
+    const key = dayGroup.key;
     if (!groups.has(key)) {
       groups.set(key, {
         key,
-        collectionId: slide.collection_id ?? null,
-        isLegacy: slide.collection_id == null,
-        title: getSlideCollectionTitle(slide),
-        importedAt: getSlideCollectionSortTime(slide),
+        collectionId: null,
+        isLegacy: true,
+        title: dayGroup.title,
+        importedAt: dayGroup.importedAt,
         slides: [],
       });
     }
     const group = groups.get(key);
-    group.importedAt = Math.max(group.importedAt, getSlideCollectionSortTime(slide));
-    if (!group.collectionId && slide.collection_id != null) {
-      group.collectionId = slide.collection_id;
-      group.isLegacy = false;
-    }
-    if (slide.collection_id != null) {
-      const title = getSlideCollectionTitle(slide);
-      if (title && (group.title === "Untitled collection" || group.title === "Legacy imports")) {
-        group.title = title;
-      }
-    }
     group.slides.push(slide);
   }
   const orderedGroups = [...groups.values()].sort((a, b) => {
@@ -214,7 +185,7 @@ function getVisibleGroups() {
     return a.title.localeCompare(b.title);
   });
   for (const group of orderedGroups) {
-    group.slides.sort((a, b) => compareSlides(a, b, sort));
+    group.slides.sort(compareSlidesByName);
   }
   return orderedGroups;
 }
@@ -642,6 +613,16 @@ if (galleryApp?.registerFeature) {
 }
 
 function initGallery() {
+  if (gallerySort) {
+    gallerySort.innerHTML = "";
+    const opt = document.createElement("option");
+    opt.value = "import-day-name";
+    opt.textContent = "Import day, A-Z";
+    gallerySort.appendChild(opt);
+    gallerySort.value = "import-day-name";
+    gallerySort.disabled = true;
+    gallerySort.title = "Slides are grouped by import day and sorted A-Z within each day";
+  }
   btnGalleryRefresh?.addEventListener("click", () => loadGalleryData());
   btnGalleryCollapseToggle?.addEventListener("click", () => {
     const groups = getVisibleGroups().map((group) => group.key);
