@@ -30,6 +30,7 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 from src.model import ResidualAttentionUNet
+from src.inference_utils import infer_with_neighborhood
 
 # Formats OpenSlide cannot open — run tile inference from a raster in memory.
 RASTER_SLIDE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
@@ -425,6 +426,65 @@ def _compute_hotspot(prob_map: torch.Tensor, *, x: int, y: int, w: int, h: int) 
     }
 
 
+def _score_seg_masks(seg_masks, tile_dims, args, tile_size, downsample=1.0):
+    """
+    Convert seg_masks dict from infer_with_neighborhood into a regions list.
+
+    seg_masks  : {(x, y): prob_tensor [1, 1, H, W]}  — CPU tensors, probs 0-1
+    tile_dims  : {(x, y): (w, h)}  — original tile dimensions before resize
+    downsample : level-0 scale factor (1.0 for raster images)
+    """
+    regions = []
+    for (x, y), prob_tensor in seg_masks.items():
+        w, h = tile_dims[(x, y)]
+        # prob_tensor is [1, 1, H, W]; squeeze to [H, W] for numpy ops
+        prob_map = prob_tensor[0, 0].numpy()
+        score = float(prob_map.mean())
+        label = "fungus_positive" if score >= args.threshold else "fungus_negative"
+
+        # Scale to level-0 coordinates (no-op for raster where downsample=1.0)
+        x0 = int(round(x * downsample))
+        y0 = int(round(y * downsample))
+        x1 = int(round((x + w) * downsample))
+        y1 = int(round((y + h) * downsample))
+        w0 = max(1, x1 - x0)
+        h0 = max(1, y1 - y0)
+
+        if label == "fungus_positive":
+            localized = _tile_regions_from_prob_map(
+                prob_map,
+                tile_w=w0,
+                tile_h=h0,
+                tile_size=tile_size,
+                threshold=max(args.threshold, 0.20),
+            )
+            if localized:
+                for loc in localized:
+                    regions.append(
+                        {
+                            "x": int(x0 + loc["x"]),
+                            "y": int(y0 + loc["y"]),
+                            "w": int(loc["w"]),
+                            "h": int(loc["h"]),
+                            "score": float(loc["score"]),
+                            "label": "fungus_positive",
+                        }
+                    )
+                continue
+
+        if args.positive_only and label != "fungus_positive":
+            continue
+
+        region = {"x": x0, "y": y0, "w": w0, "h": h0, "score": round(score, 4), "label": label}
+        # prob_tensor[0] is [1, H, W] — shape expected by _compute_hotspot
+        hotspot_payload = _compute_hotspot(prob_tensor[0], x=x0, y=y0, w=w0, h=h0)
+        if hotspot_payload:
+            region.update(hotspot_payload)
+        regions.append(region)
+
+    return regions
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run fungus inference on a WSI")
     parser.add_argument("--slide-path", required=True, help="Path to slide (SVS/TIF/TIFF)")
@@ -503,7 +563,9 @@ def main():
     stride = args.stride
     max_tiles = _max_inference_tiles()
 
-    # --- Raster image (PNG/JPEG): no OpenSlide ---
+    # ----------------------------------------------------------------
+    # Raster image (PNG/JPEG): no OpenSlide
+    # ----------------------------------------------------------------
     if slide_path.suffix.lower() in RASTER_SLIDE_EXTENSIONS:
         try:
             full_img = Image.open(slide_path)
@@ -525,7 +587,6 @@ def main():
             print("Error: Raster images only support --level 0 or auto", file=sys.stderr)
             return EXIT_SLIDE
         level = 0
-
         dims = (level_w, level_h)
 
         total_tiles = _count_tile_positions(level_w, level_h, tile_size, stride)
@@ -540,107 +601,56 @@ def main():
             )
             return EXIT_SLIDE
 
-        regions = []
-        skipped_background = 0
-        inferred_tiles = 0
-        batch_size = args.batch_size
-        tile_iter = _iter_tile_positions(level_w, level_h, tile_size, stride)
         tissue_mask = None
         if not args.no_skip_background:
             scale = min(1.0, TISSUE_MASK_MAX_DIMENSION / max(level_w, level_h))
             mask_size = (max(1, int(level_w * scale)), max(1, int(level_h * scale)))
             tissue_mask = _tissue_mask_from_rgb_image(full_img.resize(mask_size, Image.BILINEAR))
 
+        # ── Collect all tissue tiles ──────────────────────────────
+        tiles = {}       # (x, y) → tensor [1, 3, H, W]
+        tile_dims = {}   # (x, y) → (w, h) — preserves edge tile dimensions
+        skipped_background = 0
+
         try:
-            batch_index = 0
-            while True:
-                batch_positions = []
-                while len(batch_positions) < batch_size:
-                    pos = next(tile_iter, None)
-                    if pos is None:
-                        break
-                    x, y, w, h = pos
-                    if not _tile_has_tissue(
-                        tissue_mask,
-                        x=x,
-                        y=y,
-                        w=w,
-                        h=h,
-                        level_w=level_w,
-                        level_h=level_h,
-                        min_fraction=args.min_tissue_fraction,
-                    ):
-                        skipped_background += 1
-                        continue
-                    batch_positions.append(pos)
-                if not batch_positions:
-                    break
-                batch_tensors = []
-
-                for x, y, w, h in batch_positions:
-                    region = full_img.crop((x, y, x + w, y + h))
-                    if w != tile_size or h != tile_size:
-                        region = region.resize((tile_size, tile_size), Image.BILINEAR)
-                    tensor = preprocess_tile(region, tile_size)
-                    batch_tensors.append(tensor)
-
-                batch = torch.cat(batch_tensors, dim=0).to(device)
-
-                try:
-                    with torch.inference_mode():
-                        seg_logits, _, _, _ = model(batch)
-                    probs = torch.sigmoid(seg_logits)
-                except Exception as e:
-                    print(f"Inference error at batch {batch_index}: {e}", file=sys.stderr)
-                    return EXIT_INFERENCE
-                inferred_tiles += len(batch_positions)
-                batch_index += 1
-
-                for j, (x, y, w, h) in enumerate(batch_positions):
-                    prob_map = probs[j, 0].detach().cpu().numpy()
-                    score = float(prob_map.mean())
-                    label = "fungus_positive" if score >= args.threshold else "fungus_negative"
-                    if label == "fungus_positive":
-                        localized = _tile_regions_from_prob_map(
-                            prob_map,
-                            tile_w=w,
-                            tile_h=h,
-                            tile_size=tile_size,
-                            threshold=max(args.threshold, 0.20),
-                        )
-                        if localized:
-                            for loc in localized:
-                                regions.append(
-                                    {
-                                        "x": int(x + loc["x"]),
-                                        "y": int(y + loc["y"]),
-                                        "w": int(loc["w"]),
-                                        "h": int(loc["h"]),
-                                        "score": float(loc["score"]),
-                                        "label": "fungus_positive",
-                                    }
-                                )
-                            continue
-                    if args.positive_only and label != "fungus_positive":
-                        continue
-                    region = {
-                        "x": int(x),
-                        "y": int(y),
-                        "w": int(w),
-                        "h": int(h),
-                        "score": round(score, 4),
-                        "label": label,
-                    }
-                    hotspot_payload = _compute_hotspot(probs[j], x=int(x), y=int(y), w=int(w), h=int(h))
-                    if hotspot_payload:
-                        region.update(hotspot_payload)
-                    regions.append(region)
+            for x, y, w, h in _iter_tile_positions(level_w, level_h, tile_size, stride):
+                if not _tile_has_tissue(
+                    tissue_mask, x=x, y=y, w=w, h=h,
+                    level_w=level_w, level_h=level_h,
+                    min_fraction=args.min_tissue_fraction,
+                ):
+                    skipped_background += 1
+                    continue
+                region = full_img.crop((x, y, x + w, y + h))
+                if w != tile_size or h != tile_size:
+                    region = region.resize((tile_size, tile_size), Image.BILINEAR)
+                tiles[(x, y)] = preprocess_tile(region, tile_size)
+                tile_dims[(x, y)] = (w, h)
         except Exception as e:
-            print(f"Error processing image: {e}", file=sys.stderr)
+            print(f"Error collecting tiles: {e}", file=sys.stderr)
             return EXIT_SLIDE
 
+        inferred_tiles = len(tiles)
+
+        # ── Two-pass neighbourhood inference ─────────────────────
+        try:
+            seg_masks = infer_with_neighborhood(
+                model, tiles, device,
+                tile_size=tile_size,
+                stride=stride,
+                batch_size=args.batch_size,
+            )
+        except Exception as e:
+            print(f"Inference error: {e}", file=sys.stderr)
+            return EXIT_INFERENCE
+
+        # ── Score results (downsample=1.0 for raster) ─────────────
+        regions = _score_seg_masks(seg_masks, tile_dims, args, tile_size, downsample=1.0)
+
+    # ----------------------------------------------------------------
+    # OpenSlide WSI
+    # ----------------------------------------------------------------
     else:
-        # --- OpenSlide WSI ---
         try:
             import openslide
         except Exception as e:
@@ -655,16 +665,13 @@ def main():
         try:
             try:
                 level = _select_openslide_level(
-                    slide,
-                    str(args.level),
-                    tile_size,
-                    stride,
-                    args.target_tiles,
+                    slide, str(args.level), tile_size, stride, args.target_tiles,
                 )
             except ValueError as exc:
                 print(f"Error: {exc}", file=sys.stderr)
                 slide.close()
                 return EXIT_ARGS
+
             if level < 0 or level >= slide.level_count:
                 print(f"Error: Invalid level {level} (slide has {slide.level_count} levels)", file=sys.stderr)
                 slide.close()
@@ -686,112 +693,49 @@ def main():
                 slide.close()
                 return EXIT_SLIDE
 
-            regions = []
-            skipped_background = 0
-            inferred_tiles = 0
-            batch_size = args.batch_size
             downsample = float(slide.level_downsamples[level])
-            tile_iter = _iter_tile_positions(level_w, level_h, tile_size, stride)
             tissue_mask = None if args.no_skip_background else _build_openslide_tissue_mask(slide, level=level)
 
-            batch_index = 0
-            while True:
-                batch_positions = []
-                while len(batch_positions) < batch_size:
-                    pos = next(tile_iter, None)
-                    if pos is None:
-                        break
-                    x, y, w, h = pos
-                    if not _tile_has_tissue(
-                        tissue_mask,
-                        x=x,
-                        y=y,
-                        w=w,
-                        h=h,
-                        level_w=level_w,
-                        level_h=level_h,
-                        min_fraction=args.min_tissue_fraction,
-                    ):
-                        skipped_background += 1
-                        continue
-                    batch_positions.append(pos)
-                if not batch_positions:
-                    break
-                batch_tensors = []
+            # ── Collect all tissue tiles ──────────────────────────
+            tiles = {}       # (x, y) → tensor [1, 3, H, W]
+            tile_dims = {}   # (x, y) → (w, h) — preserves edge tile dimensions
+            skipped_background = 0
 
-                for x, y, w, h in batch_positions:
-                    # read_region uses level-0 coordinates
-                    x0 = int(x * downsample)
-                    y0 = int(y * downsample)
-                    region = slide.read_region((x0, y0), level, (w, h))
-                    region = region.convert("RGB")
-                    # Pad/resize to tile_size if needed
-                    if w != tile_size or h != tile_size:
-                        region = region.resize((tile_size, tile_size), Image.BILINEAR)
-                    tensor = preprocess_tile(region, tile_size)
-                    batch_tensors.append(tensor)
+            for x, y, w, h in _iter_tile_positions(level_w, level_h, tile_size, stride):
+                if not _tile_has_tissue(
+                    tissue_mask, x=x, y=y, w=w, h=h,
+                    level_w=level_w, level_h=level_h,
+                    min_fraction=args.min_tissue_fraction,
+                ):
+                    skipped_background += 1
+                    continue
+                x0, y0 = int(x * downsample), int(y * downsample)
+                region = slide.read_region((x0, y0), level, (w, h)).convert("RGB")
+                if w != tile_size or h != tile_size:
+                    region = region.resize((tile_size, tile_size), Image.BILINEAR)
+                tiles[(x, y)] = preprocess_tile(region, tile_size)
+                tile_dims[(x, y)] = (w, h)
 
-                batch = torch.cat(batch_tensors, dim=0).to(device)
+            inferred_tiles = len(tiles)
 
-                try:
-                    with torch.inference_mode():
-                        seg_logits, _, _, _ = model(batch)
-                    probs = torch.sigmoid(seg_logits)
-                except Exception as e:
-                    print(f"Inference error at batch {batch_index}: {e}", file=sys.stderr)
-                    slide.close()
-                    return EXIT_INFERENCE
-                inferred_tiles += len(batch_positions)
-                batch_index += 1
+            # ── Two-pass neighbourhood inference ─────────────────
+            try:
+                seg_masks = infer_with_neighborhood(
+                    model, tiles, device,
+                    tile_size=tile_size,
+                    stride=stride,
+                    batch_size=args.batch_size,
+                )
+            except Exception as e:
+                slide.close()
+                print(f"Inference error: {e}", file=sys.stderr)
+                return EXIT_INFERENCE
 
-                for j, (x, y, w, h) in enumerate(batch_positions):
-                    prob_map = probs[j, 0].detach().cpu().numpy()
-                    score = float(prob_map.mean())
-                    label = "fungus_positive" if score >= args.threshold else "fungus_negative"
-                    # Convert to level-0 coordinates for API/Region
-                    x0 = int(round(x * downsample))
-                    y0 = int(round(y * downsample))
-                    x1 = int(round((x + w) * downsample))
-                    y1 = int(round((y + h) * downsample))
-                    w0 = max(1, x1 - x0)
-                    h0 = max(1, y1 - y0)
-                    if label == "fungus_positive":
-                        localized = _tile_regions_from_prob_map(
-                            prob_map,
-                            tile_w=w0,
-                            tile_h=h0,
-                            tile_size=tile_size,
-                            threshold=max(args.threshold, 0.20),
-                        )
-                        if localized:
-                            for loc in localized:
-                                regions.append(
-                                    {
-                                        "x": int(x0 + loc["x"]),
-                                        "y": int(y0 + loc["y"]),
-                                        "w": int(loc["w"]),
-                                        "h": int(loc["h"]),
-                                        "score": float(loc["score"]),
-                                        "label": "fungus_positive",
-                                    }
-                                )
-                            continue
-                    if args.positive_only and label != "fungus_positive":
-                        continue
-                    region = {
-                        "x": x0,
-                        "y": y0,
-                        "w": w0,
-                        "h": h0,
-                        "score": round(score, 4),
-                        "label": label,
-                    }
-                    hotspot_payload = _compute_hotspot(probs[j], x=x0, y=y0, w=w0, h=h0)
-                    if hotspot_payload:
-                        region.update(hotspot_payload)
-                    regions.append(region)
+            # ── Score results (with level-0 downsample) ───────────
+            regions = _score_seg_masks(seg_masks, tile_dims, args, tile_size, downsample=downsample)
 
             slide.close()
+
         except Exception as e:
             try:
                 slide.close()
