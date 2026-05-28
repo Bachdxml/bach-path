@@ -247,65 +247,62 @@
           <section id="tab-models" class="tab-pane">
             <div class="page-header">
               <h1 class="page-title">Models</h1>
-              <p class="page-subtitle">
-                Train outside this app, then export with
-                <code>export_deploy_weights.py</code> using required
-                <code>--checkpoint</code> and <code>--output</code> paths; place the gzip file in
-                <code>wsi-fungal-segmentation/models/</code>.
-              </p>
+              <p class="page-subtitle">Choose which deployed model the app uses for inference.</p>
             </div>
             <div class="page-body">
-              <div class="training-layout">
-                <div class="panel-card training-form">
-                  <p class="training-hint">
-                    Run training on a workstation or cluster using
-                    <code>wsi-fungal-segmentation/scripts/train.py</code> and
-                    <code>wsi-fungal-segmentation/configs/default.yaml</code> (same layout as on
-                    <code>main</code>). Export tiles with the QuPath script under
-                    <code>qu-path-scripts/</code> when building datasets. Default dataset path is
-                    <code>training_data/MASTERTILE</code> at the repository root.
+              <div class="models-layout">
+                <div class="panel-card model-picker-card">
+                  <div class="model-card-header">
+                    <div>
+                      <p class="metric-label">Active model</p>
+                      <h2>Inference model</h2>
+                    </div>
+                    <button type="button" class="btn btn-secondary" id="btn-refresh-models">Refresh</button>
+                  </div>
+                  <div class="form-group">
+                    <label for="inference-model-select">Model file</label>
+                    <select id="inference-model-select"></select>
+                    <p class="settings-hint" id="inference-model-status">Checking deployed models...</p>
+                  </div>
+                  <div class="model-ready-row" id="model-ready-row">
+                    <span class="model-ready-dot" aria-hidden="true"></span>
+                    <span id="model-ready-label">Waiting for model list</span>
+                  </div>
+                </div>
+                <div class="panel-card model-help-card">
+                  <h2>Deploy a model</h2>
+                  <p class="model-help-copy">
+                    Add compressed deploy weights, then refresh the list. The app will use the selected file when you run inference.
                   </p>
-                  <p class="training-hint">
-                    After training, export is a separate step: the script only accepts
-                    <code>--checkpoint</code> (full training <code>.pth</code> with
-                    <code>model_state_dict</code>) and <code>--output</code> (path for the gzip deploy file).
-                    Example from <code>wsi-fungal-segmentation</code>:
-                  </p>
-                  <div class="console-wrap" style="margin-top: 10px">
-                    <div class="console-header">Terminal commands (from repository root)</div>
-                    <pre class="training-log-output">cd wsi-fungal-segmentation
+                  <div class="model-path-box">
+                    <span class="metric-label">Models folder</span>
+                    <code id="models-deploy-paths">Loading...</code>
+                  </div>
+                  <p class="settings-hint">Supported files: .pth.gz and .pt.gz</p>
+                </div>
+              </div>
+              <div class="panel-card model-details-panel" id="model-details-panel">
+                <div class="model-card-header">
+                  <div>
+                    <p class="metric-label">Training and export</p>
+                    <h2>How model deployment works</h2>
+                  </div>
+                </div>
+                <p class="model-help-copy">
+                  Train outside the desktop app, export the checkpoint into a compressed deploy file, then place that file in the models folder above.
+                </p>
+                <div class="console-wrap model-command-box">
+                  <div class="console-header">Commands from repository root</div>
+                  <pre class="training-log-output">cd wsi-fungal-segmentation
 pip install -r requirements.txt
 python scripts/train.py --config configs/default.yaml
 python scripts/export_deploy_weights.py \
   --checkpoint checkpoints/best_model.pth \
   --output models/deploy-fungus.pth.gz</pre>
-                  </div>
-                  <p class="training-hint">
-                    Adjust <code>--checkpoint</code> to your saved weights. You can also write
-                    <code>--output</code> elsewhere and copy the <code>.pth.gz</code> (or
-                    <code>.pt.gz</code>) into <code>wsi-fungal-segmentation/models</code> next to the app, then
-                    refresh the list below.
-                  </p>
-                  <div class="form-group">
-                    <label for="inference-model-select">Inference model</label>
-                    <div class="settings-row">
-                      <select id="inference-model-select"></select>
-                      <button type="button" class="btn btn-secondary" id="btn-refresh-models">Refresh</button>
-                    </div>
-                    <p class="settings-hint" id="inference-model-status">
-                      Loads deployed gzip weights (.pth.gz / .pt.gz) from models/
-                    </p>
-                  </div>
                 </div>
-                <div class="panel-card training-side">
-                  <p class="training-hint">
-                    Paths and notes from the local API server.
-                  </p>
-                  <div class="console-wrap training-side-console">
-                    <div class="console-header">Paths on this system</div>
-                    <pre id="models-deploy-paths" class="training-log-output" aria-live="polite"></pre>
-                  </div>
-                </div>
+                <p class="settings-hint">
+                  Adjust the checkpoint path to the weights you want to deploy. After export, click Refresh above and select the new model file.
+                </p>
               </div>
             </div>
           </section>

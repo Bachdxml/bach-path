@@ -8,6 +8,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const tabPanes = document.querySelectorAll(".tab-pane");
   const modelSelect = document.getElementById("inference-model-select");
   const modelStatus = document.getElementById("inference-model-status");
+  const modelReadyRow = document.getElementById("model-ready-row");
+  const modelReadyLabel = document.getElementById("model-ready-label");
   const refreshModelsBtn = document.getElementById("btn-refresh-models");
   const apiStatusEl = document.getElementById("api-status");
   const apiStatusMeta = document.getElementById("api-status-meta");
@@ -106,6 +108,8 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!modelStatus) return;
     modelStatus.textContent = text;
     modelStatus.style.color = isError ? "var(--error)" : "var(--text-secondary)";
+    modelReadyRow?.classList.toggle("model-ready-row--error", isError);
+    if (modelReadyLabel) modelReadyLabel.textContent = text;
   }
 
   async function loadModelOptions() {
@@ -122,7 +126,7 @@ document.addEventListener("DOMContentLoaded", () => {
         opt.textContent = "No model files found";
         modelSelect.appendChild(opt);
         modelSelect.disabled = true;
-        setModelStatus("No deployed models found in wsi-fungal-segmentation/models (.pth.gz / .pt.gz)", true);
+        setModelStatus("No deployed models found", true);
         return;
       }
       modelSelect.disabled = false;
@@ -138,11 +142,11 @@ document.addEventListener("DOMContentLoaded", () => {
       const selected = models.some((m) => m.id === saved) ? saved : defaultId;
       modelSelect.value = selected;
       localStorage.setItem("selectedInferenceModel", selected);
-      setModelStatus(`Using model: ${selected}`);
+      setModelStatus(`Ready: ${selected}`);
       if (app?.emit) app.emit(inferenceModelChangedEvent, { modelId: selected });
       else window.dispatchEvent(new CustomEvent(inferenceModelChangedEvent, { detail: { modelId: selected } }));
     } catch (err) {
-      setModelStatus(`Failed to load models: ${err.message}`, true);
+      setModelStatus(`Could not load models: ${err.message}`, true);
     }
   }
 
@@ -337,7 +341,7 @@ document.addEventListener("DOMContentLoaded", () => {
   modelSelect?.addEventListener("change", () => {
     if (!modelSelect.value) return;
     localStorage.setItem("selectedInferenceModel", modelSelect.value);
-    setModelStatus(`Using model: ${modelSelect.value}`);
+    setModelStatus(`Ready: ${modelSelect.value}`);
     if (app?.emit) app.emit(inferenceModelChangedEvent, { modelId: modelSelect.value });
     else {
       window.dispatchEvent(new CustomEvent(inferenceModelChangedEvent, { detail: { modelId: modelSelect.value } }));

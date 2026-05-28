@@ -833,13 +833,89 @@ body {
   }
 }
 
+.models-layout,
 .training-layout {
   display: grid;
   grid-template-columns: minmax(320px, 1fr) minmax(320px, 1fr);
   gap: 14px;
   align-items: start;
-  min-height: 0;
-  height: 100%;
+}
+
+#tab-models .page-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.model-picker-card,
+.model-help-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.model-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.model-card-header h2,
+.model-help-card h2 {
+  margin: 4px 0 0;
+  font-size: 16px;
+}
+
+.model-ready-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--positive);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.model-ready-row--error {
+  color: var(--error);
+}
+
+.model-ready-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 8px currentColor;
+}
+
+.model-help-copy {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.model-path-box {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  padding: 12px;
+}
+
+.model-path-box code {
+  color: var(--text);
+  font-size: 12px;
+  word-break: break-word;
+}
+
+.model-details-panel {
+  margin-top: 0;
+}
+
+.model-command-box {
+  margin-top: 12px;
 }
 
 .training-form {
@@ -1668,6 +1744,7 @@ textarea:focus-visible {
   .metrics-grid,
   .home-grid,
   .quick-actions,
+  .models-layout,
   .training-layout {
     grid-template-columns: 1fr;
   }

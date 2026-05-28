@@ -124,6 +124,28 @@ Notes:
 - Inference model discovery uses deployed gzip checkpoints in `wsi-fungal-segmentation/models`.
 - Supported deploy formats for app/API model selection: `.pth.gz`, `.pt.gz`.
 
+### Model Deployment Notes
+
+The desktop app only needs a deployed gzip checkpoint in the models folder. Training and export happen outside the UI.
+
+Typical command flow from the repository root:
+
+```bash
+cd wsi-fungal-segmentation
+pip install -r requirements.txt
+python scripts/train.py --config configs/default.yaml
+python scripts/export_deploy_weights.py \
+  --checkpoint checkpoints/best_model.pth \
+  --output models/deploy-fungus.pth.gz
+```
+
+The export script expects:
+
+- `--checkpoint`: a full training `.pth` checkpoint containing `model_state_dict`
+- `--output`: the destination `.pth.gz` or `.pt.gz` deploy file
+
+After copying or exporting a deploy file into `wsi-fungal-segmentation/models`, open **Models** in the app and click **Refresh**.
+
 ## 5) Run the App (Development)
 
 From repo root:
