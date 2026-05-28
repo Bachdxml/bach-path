@@ -23,6 +23,10 @@ function setSessionToken(token) {
   sessionToken = typeof token === "string" && token.trim() ? token.trim() : null;
 }
 
+function clearSession() {
+  sessionToken = null;
+}
+
 function getApiBase() {
   return apiBase;
 }
@@ -245,6 +249,25 @@ async function login(username, password) {
   return data;
 }
 
+async function getCurrentUser() {
+  const res = await apiFetch("/auth/me");
+  if (!res.ok) throw new Error(await parseErrorResponse(res));
+  return res.json();
+}
+
+async function changePassword(currentPassword, newPassword) {
+  const res = await apiFetch("/auth/change-password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      current_password: currentPassword,
+      new_password: newPassword,
+    }),
+  });
+  if (!res.ok) throw new Error(await parseErrorResponse(res));
+  return res.json();
+}
+
 async function deleteSlide(slideId) {
   const res = await apiFetch(`/slides/${slideId}`, { method: "DELETE" });
   if (!res.ok) throw new Error(await parseErrorResponse(res));
@@ -265,8 +288,11 @@ const slidesApi = {
   setApiBase,
   setApiKey,
   setSessionToken,
+  clearSession,
   getApiBase,
   login,
+  getCurrentUser,
+  changePassword,
   healthCheck,
   listSlides,
   importSlide,

@@ -80,6 +80,10 @@
             <span class="nav-icon">⚙</span>
             <span class="nav-text">Settings</span>
           </button>
+          <button type="button" class="nav-item nav-sign-out" id="btn-nav-sign-out">
+            <span class="nav-icon">!</span>
+            <span class="nav-text">Sign out</span>
+          </button>
         </nav>
 
         <main id="main">
@@ -312,22 +316,58 @@ python scripts/export_deploy_weights.py \
               <p class="page-subtitle">Configure appearance and local API behavior.</p>
             </div>
             <div class="page-body settings-body">
-              <div class="panel-card settings-form">
-                <div class="form-group">
-                  <label for="ui-theme">Appearance</label>
-                  <select id="ui-theme">
-                    <option value="system">Match system</option>
-                    <option value="dark">Dark</option>
-                    <option value="light">Light</option>
-                  </select>
-                  <p class="settings-hint">Applied immediately. Saved in local storage on this device.</p>
+              <div class="settings-tabs" role="tablist" aria-label="Settings sections">
+                <button type="button" class="settings-tab active" data-settings-tab="configuration">Configuration</button>
+                <button type="button" class="settings-tab" data-settings-tab="account">Account</button>
+              </div>
+              <div class="settings-panel active" id="settings-configuration">
+                <div class="panel-card settings-form">
+                  <div class="form-group">
+                    <label for="ui-theme">Appearance</label>
+                    <select id="ui-theme">
+                      <option value="system">Match system</option>
+                      <option value="dark">Dark</option>
+                      <option value="light">Light</option>
+                    </select>
+                    <p class="settings-hint">Applied immediately. Saved in local storage on this device.</p>
+                  </div>
+                  <div class="form-group">
+                    <label for="api-port">API Port</label>
+                    <input type="number" id="api-port" min="1024" max="65535" value="8765" />
+                  </div>
+                  <p class="settings-hint">API port changes take effect after you restart the app.</p>
+                  <button type="button" class="btn btn-primary" id="btn-save-settings">Save port</button>
                 </div>
-                <div class="form-group">
-                  <label for="api-port">API Port</label>
-                  <input type="number" id="api-port" min="1024" max="65535" value="8765" />
+              </div>
+              <div class="settings-panel" id="settings-account">
+                <div class="panel-card settings-form">
+                  <div class="account-summary">
+                    <div>
+                      <p class="metric-label">Signed in as</p>
+                      <p class="account-user" id="account-current-user">-</p>
+                    </div>
+                  </div>
+                  <form id="change-password-form" class="account-form">
+                    <div class="account-password-fields">
+                      <div class="form-group">
+                        <label for="current-password">Current password</label>
+                        <input id="current-password" type="password" autocomplete="current-password" required />
+                      </div>
+                      <div class="form-group">
+                        <label for="new-password">New password</label>
+                        <input id="new-password" type="password" autocomplete="new-password" minlength="8" required />
+                      </div>
+                      <div class="form-group">
+                        <label for="confirm-new-password">Confirm new password</label>
+                        <input id="confirm-new-password" type="password" autocomplete="new-password" minlength="8" required />
+                      </div>
+                    </div>
+                    <div class="account-password-actions">
+                      <button type="submit" class="btn btn-primary">Change password</button>
+                      <p class="settings-status" id="change-password-status" aria-live="polite"></p>
+                    </div>
+                  </form>
                 </div>
-                <p class="settings-hint">API port changes take effect after you restart the app.</p>
-                <button type="button" class="btn btn-primary" id="btn-save-settings">Save port</button>
               </div>
             </div>
           </section>
@@ -482,6 +522,18 @@ python scripts/export_deploy_weights.py \
             Don’t show again
           </label>
           <button type="button" class="btn btn-primary" id="btn-help-dismiss">Got it</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="sign-out-modal" class="modal" hidden>
+      <div class="modal-backdrop" data-close-sign-out tabindex="-1"></div>
+      <div class="modal-dialog modal-dialog-sm" role="dialog" aria-modal="true" aria-labelledby="sign-out-modal-title">
+        <h2 id="sign-out-modal-title">Sign out?</h2>
+        <p class="modal-copy">You will return to the login screen.</p>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-secondary" id="btn-cancel-sign-out">Cancel</button>
+          <button type="button" class="btn btn-danger" id="btn-confirm-sign-out">Sign out</button>
         </div>
       </div>
     </div>

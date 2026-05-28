@@ -21,6 +21,14 @@ document.addEventListener("DOMContentLoaded", () => {
   const homeMetricSlides = document.getElementById("home-metric-slides");
   const homeMetricPositive = document.getElementById("home-metric-positive");
   const homeMetricModels = document.getElementById("home-metric-models");
+  const settingsTabs = document.querySelectorAll(".settings-tab");
+  const settingsPanels = document.querySelectorAll(".settings-panel");
+  const btnNavSignOut = document.getElementById("btn-nav-sign-out");
+  const signOutModal = document.getElementById("sign-out-modal");
+  const btnCancelSignOut = document.getElementById("btn-cancel-sign-out");
+  const btnConfirmSignOut = document.getElementById("btn-confirm-sign-out");
+  const changePasswordForm = document.getElementById("change-password-form");
+  const changePasswordStatus = document.getElementById("change-password-status");
 
   const THEME_KEY = "uiTheme";
   const HELP_DISMISS_KEY = "helpWelcomeDismissed";
@@ -231,9 +239,70 @@ document.addEventListener("DOMContentLoaded", () => {
     if (healthTimer) clearInterval(healthTimer);
   });
 
+  settingsTabs.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const target = btn.dataset.settingsTab;
+      settingsTabs.forEach((tab) => tab.classList.toggle("active", tab === btn));
+      settingsPanels.forEach((panel) => panel.classList.toggle("active", panel.id === `settings-${target}`));
+    });
+  });
+
+  function openSignOutModal() {
+    if (signOutModal) signOutModal.hidden = false;
+  }
+
+  function closeSignOutModal() {
+    if (signOutModal) signOutModal.hidden = true;
+  }
+
+  btnNavSignOut?.addEventListener("click", openSignOutModal);
+  btnCancelSignOut?.addEventListener("click", closeSignOutModal);
+  signOutModal?.querySelectorAll("[data-close-sign-out]").forEach((el) => {
+    el.addEventListener("click", closeSignOutModal);
+  });
+  btnConfirmSignOut?.addEventListener("click", () => {
+    closeSignOutModal();
+    window.dispatchEvent(new CustomEvent("bach-path-sign-out"));
+  });
+
+  function setChangePasswordStatus(message, type = "info") {
+    if (!changePasswordStatus) return;
+    changePasswordStatus.textContent = message;
+    changePasswordStatus.classList.toggle("settings-status--error", type === "error");
+    changePasswordStatus.classList.toggle("settings-status--success", type === "success");
+  }
+
+  changePasswordForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const currentPassword = document.getElementById("current-password")?.value || "";
+    const newPassword = document.getElementById("new-password")?.value || "";
+    const confirmPassword = document.getElementById("confirm-new-password")?.value || "";
+    if (newPassword !== confirmPassword) {
+      setChangePasswordStatus("New passwords do not match.", "error");
+      return;
+    }
+    try {
+      setChangePasswordStatus("Changing password...");
+      await slidesApi.changePassword(currentPassword, newPassword);
+      changePasswordForm.reset();
+      setChangePasswordStatus("Password updated.", "success");
+    } catch (err) {
+      setChangePasswordStatus(err?.message || "Could not change password.", "error");
+    }
+  });
+
   window.addEventListener("bach-path-authenticated", () => {
     authenticated = true;
     if (apiReady) handleApiReady();
+  });
+
+  window.addEventListener("bach-path-signed-out", () => {
+    authenticated = false;
+    apiReadyHandled = false;
+    if (healthTimer) {
+      clearInterval(healthTimer);
+      healthTimer = null;
+    }
   });
 
   window.electronAPI
@@ -317,6 +386,10 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (e.key === "Escape" && helpModal && !helpModal.hidden) {
       closeHelp();
+      return;
+    }
+    if (e.key === "Escape" && signOutModal && !signOutModal.hidden) {
+      closeSignOutModal();
       return;
     }
 

@@ -225,7 +225,8 @@ body {
   padding: 10px 14px 8px;
 }
 
-.nav-item.tab-btn {
+.nav-item.tab-btn,
+.nav-sign-out {
   appearance: none;
   border: none;
   background: transparent;
@@ -244,6 +245,12 @@ body {
 .nav-item.tab-btn:hover {
   background: var(--bg-hover);
   color: var(--text);
+}
+
+.nav-sign-out:hover,
+.nav-sign-out:focus-visible {
+  background: rgba(224, 92, 92, 0.12);
+  color: var(--error);
 }
 
 .nav-item.tab-btn.active {
@@ -974,12 +981,96 @@ body {
 }
 
 .settings-body {
-  display: flex;
-  align-items: flex-start;
+  display: block;
 }
 
 .settings-form {
   width: min(520px, 100%);
+}
+
+.settings-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-tab {
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 9px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.settings-tab:hover {
+  color: var(--text);
+}
+
+.settings-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.settings-panel {
+  display: none;
+}
+
+.settings-panel.active {
+  display: block;
+}
+
+.account-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.account-user {
+  margin: 5px 0 0 !important;
+  color: var(--text) !important;
+  font-size: 15px !important;
+  font-weight: 700;
+}
+
+.account-form {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-rows: auto minmax(120px, 1fr);
+  min-height: 310px;
+}
+
+.account-password-actions {
+  display: grid;
+  align-content: center;
+  justify-items: start;
+}
+
+.account-password-actions .btn-primary {
+  align-self: center;
+  justify-self: start;
+}
+
+.settings-status {
+  min-height: 18px;
+  margin: 10px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.settings-status--error {
+  color: var(--error);
+}
+
+.settings-status--success {
+  color: var(--positive);
 }
 
 #statusbar {
@@ -1095,6 +1186,16 @@ body {
   border-radius: 12px;
   box-shadow: 0 24px 56px var(--shadow);
   padding: 18px;
+}
+
+.modal-dialog-sm {
+  width: min(380px, 96vw);
+}
+
+.modal-copy {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
 }
 
 .modal-dialog h2 {
@@ -1546,7 +1647,8 @@ textarea:focus-visible {
     display: none;
   }
 
-  .nav-item.tab-btn {
+  .nav-item.tab-btn,
+  .nav-sign-out {
     font-size: 11px;
     padding: 12px 8px;
     text-align: center;

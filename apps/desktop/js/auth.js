@@ -8,6 +8,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const passwordInput = document.getElementById("login-password");
   const loginButton = document.getElementById("btn-login");
   const status = document.getElementById("login-status");
+  const accountUser = document.getElementById("account-current-user");
 
   function setStatus(message, isError = false) {
     if (!status) return;
@@ -18,6 +19,9 @@ document.addEventListener("DOMContentLoaded", () => {
   function revealApp(user) {
     loginScreen.hidden = true;
     appShell.hidden = false;
+    if (accountUser && user) {
+      accountUser.textContent = `${user.username} (${user.role})`;
+    }
     if (app?.registerService) {
       app.registerService("currentUser", user);
     }
@@ -26,6 +30,16 @@ document.addEventListener("DOMContentLoaded", () => {
     } else {
       window.dispatchEvent(new CustomEvent("bach-path-authenticated", { detail: { user } }));
     }
+  }
+
+  function revealLogin() {
+    slidesApi.clearSession?.();
+    appShell.hidden = true;
+    loginScreen.hidden = false;
+    form?.reset();
+    setStatus("");
+    usernameInput?.focus();
+    window.dispatchEvent(new CustomEvent("bach-path-signed-out"));
   }
 
   async function waitForApi() {
@@ -58,4 +72,6 @@ document.addEventListener("DOMContentLoaded", () => {
       loginButton.disabled = false;
     }
   });
+
+  window.addEventListener("bach-path-sign-out", revealLogin);
 });

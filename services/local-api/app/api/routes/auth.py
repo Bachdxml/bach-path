@@ -3,11 +3,11 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db
-from app.auth.passwords import verify_password
+from app.api.deps import get_current_user, get_db
+from app.auth.passwords import hash_password, verify_password
 from app.auth.tokens import create_access_token
 from app.models.user import User
-from app.schemas.auth import AuthUserResponse, LoginRequest, LoginResponse
+from app.schemas.auth import AuthUserResponse, ChangePasswordRequest, LoginRequest, LoginResponse
 from app.util.exceptions import AppError, ErrorCode
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -38,3 +38,19 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
         settings=request.app.state.settings,
     )
     return LoginResponse(access_token=token, user=_user_response(user))
+
+
+@router.get("/me", response_model=AuthUserResponse)
+def me(current_user: User = Depends(get_current_user)):
+    return _user_response(current_user)
+
+
+@router.post("/change-password")
+def change_password(
+    payload: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+):
+    if not verify_password(payload.current_password, current_user.password_hash):
+        raise AppError(ErrorCode.UNAUTHORIZED, "Current password is incorrect", http_status=401)
+    current_user.password_hash = hash_password(payload.new_password)
+    return {"ok": True}
