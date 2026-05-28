@@ -189,8 +189,12 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
+  let apiReady = false;
+  let authenticated = false;
   let apiReadyHandled = false;
   function handleApiReady() {
+    apiReady = true;
+    if (!authenticated) return;
     if (apiReadyHandled) return;
     apiReadyHandled = true;
     if (healthTimer) clearInterval(healthTimer);
@@ -225,6 +229,11 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   window.addEventListener("beforeunload", () => {
     if (healthTimer) clearInterval(healthTimer);
+  });
+
+  window.addEventListener("bach-path-authenticated", () => {
+    authenticated = true;
+    if (apiReady) handleApiReady();
   });
 
   window.electronAPI

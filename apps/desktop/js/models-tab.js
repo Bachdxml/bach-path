@@ -58,8 +58,4 @@ if (modelsApp?.registerFeature) {
   });
 }
 
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", loadDeployInfo);
-} else {
-  loadDeployInfo();
-}
+window.addEventListener("bach-path-authenticated", loadDeployInfo);

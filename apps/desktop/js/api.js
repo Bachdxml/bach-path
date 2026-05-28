@@ -1,5 +1,6 @@
 let apiBase = "http://127.0.0.1:8765";
 let apiKey = null;
+let sessionToken = null;
 
 async function parseErrorResponse(res) {
   const text = await res.text();
@@ -16,6 +17,10 @@ function setApiBase(base) {
 
 function setApiKey(key) {
   apiKey = typeof key === "string" && key.trim() ? key.trim() : null;
+}
+
+function setSessionToken(token) {
+  sessionToken = typeof token === "string" && token.trim() ? token.trim() : null;
 }
 
 function getApiBase() {
@@ -38,6 +43,9 @@ function withApiHeaders(headers = {}) {
   const nextHeaders = { ...headers };
   if (apiKey) {
     nextHeaders["x-api-key"] = apiKey;
+  }
+  if (sessionToken) {
+    nextHeaders.Authorization = `Bearer ${sessionToken}`;
   }
   return nextHeaders;
 }
@@ -225,6 +233,18 @@ async function healthCheck() {
   return res.json();
 }
 
+async function login(username, password) {
+  const res = await apiFetch("/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  if (!res.ok) throw new Error(await parseErrorResponse(res));
+  const data = await res.json();
+  setSessionToken(data.access_token);
+  return data;
+}
+
 async function deleteSlide(slideId) {
   const res = await apiFetch(`/slides/${slideId}`, { method: "DELETE" });
   if (!res.ok) throw new Error(await parseErrorResponse(res));
@@ -244,7 +264,9 @@ async function updateSlideReview(slideId, reviewStatus) {
 const slidesApi = {
   setApiBase,
   setApiKey,
+  setSessionToken,
   getApiBase,
+  login,
   healthCheck,
   listSlides,
   importSlide,

@@ -674,7 +674,6 @@ function initGallery() {
   galleryFavoritesOnly?.addEventListener("change", () => renderCards());
 
   updateSelectionUi();
-  loadGallery();
 }
 
 if (document.readyState === "loading") {

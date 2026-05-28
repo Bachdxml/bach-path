@@ -14,7 +14,34 @@
   <body>
     <div id="toast-host" class="toast-host" aria-live="polite"></div>
 
-    <div class="app-shell">
+    <section id="login-screen" class="login-screen">
+      <div class="login-panel" role="form" aria-labelledby="login-title">
+        <div class="login-brand">
+          <img src="assets/icons/icon-128.png" alt="" class="login-logo" />
+          <div>
+            <p class="login-kicker">Bach Path</p>
+            <h1 id="login-title">Sign in</h1>
+          </div>
+        </div>
+        <form id="login-form" class="login-form">
+          <div class="form-group">
+            <label for="login-username">Username</label>
+            <input id="login-username" name="username" type="text" autocomplete="username" required />
+          </div>
+          <div class="form-group">
+            <label for="login-password">Password</label>
+            <input id="login-password" name="password" type="password" autocomplete="current-password" required />
+          </div>
+          <button type="submit" class="btn btn-primary login-submit" id="btn-login">Sign in</button>
+          <p class="login-status" id="login-status" aria-live="polite"></p>
+        </form>
+        <p class="login-provisioning">
+          Accounts are issued by Bach Path administrators. Contact your program lead if you need access.
+        </p>
+      </div>
+    </section>
+
+    <div class="app-shell" id="app-shell" hidden>
       <header id="header">
         <div class="logo-wrap">
           <div class="logo-mark" aria-hidden="true">
@@ -461,6 +488,7 @@ python scripts/export_deploy_weights.py \
 
     <script src="js/core.bach-path.js"></script>
     <script src="js/api.js"></script>
+    <script src="js/auth.js"></script>
     <script src="js/import.js"></script>
     <script src="js/gallery.js"></script>
     <script src="js/viewer.js"></script>

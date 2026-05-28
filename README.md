@@ -135,7 +135,52 @@ npm start
 
 On startup, Electron launches the local API automatically.
 
-## 6) Build Desktop Distributions
+## 6) Provision User Accounts
+
+The desktop login screen does not offer public signup. Accounts are created by the Bach Path team/admins so access to sensitive slide data can be controlled and audited.
+
+Create accounts from the local API directory after activating the `services/local-api` Python environment. The command prompts for the password and stores an Argon2 hash in the `users` table.
+
+Windows (PowerShell):
+
+```powershell
+cd services/local-api
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python run_api.py create-user `
+  --data-dir "$env:APPDATA\Bach Path\api-data" `
+  --username ryan `
+  --role admin
+```
+
+macOS/Linux:
+
+```bash
+cd services/local-api
+source .venv/bin/activate
+pip install -r requirements.txt
+python run_api.py create-user \
+  --data-dir "$HOME/Library/Application Support/Bach Path/api-data" \
+  --username ryan \
+  --role admin
+```
+
+Valid roles:
+
+- `admin`
+- `pathologist`
+- `technician`
+- `viewer`
+
+Create an inactive account when you want to stage access before enabling it:
+
+```bash
+python run_api.py create-user --data-dir "/path/to/api-data" --username jane --role viewer --inactive
+```
+
+For packaged desktop builds, use the same API data directory that the app uses. On Windows this is typically `%APPDATA%\Bach Path\api-data`; on macOS it is typically `~/Library/Application Support/Bach Path/api-data`.
+
+## 7) Build Desktop Distributions
 
 From `apps/desktop`:
 
@@ -159,7 +204,7 @@ npm run pack
 
 Build artifacts are written under `apps/desktop/dist/`.
 
-## 7) Use the App
+## 8) Use the App
 
 1. Open **Import** and add slides (single files or recursive folder import)
 2. Open **Models** and confirm a deploy model is available

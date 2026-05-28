@@ -10,6 +10,8 @@ class ErrorCode:
     SLIDE_PERMISSION = "slide_permission"
     SLIDE_UNREADABLE = "slide_unreadable"
     STORAGE_INCONSISTENT = "storage_inconsistent"
+    UNAUTHORIZED = "unauthorized"
+    FORBIDDEN = "forbidden"
     DB_ERROR = "db_error"
     INTERNAL = "internal"
 
