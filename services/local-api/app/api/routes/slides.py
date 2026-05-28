@@ -1,5 +1,4 @@
 from __future__ import annotations
-import hashlib
 import io
 import logging
 import re
@@ -35,6 +34,7 @@ from app.schemas.slides import (
 )
 from app.slides.deepzoom import deepzoom_paths, has_deepzoom
 from app.slides.metadata import RASTER_EXTENSIONS, read_openslide_metadata, read_raster_metadata
+from app.slides.paths import folder_key_for_original_path
 from app.slides.storage import copy_into_managed_storage
 from app.util.exceptions import AppError, ErrorCode
 
@@ -59,21 +59,12 @@ def _display_original_path(original_path: str | None) -> str | None:
     return Path(original_path).name or original_path
 
 
-def _folder_key(original_path: str | None) -> str:
-    if not original_path:
-        return "uncategorized"
-    parent = Path(original_path).parent
-    normalized = parent.resolve(strict=False).as_posix()
-    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
-    return f"folder_{digest}"
-
-
 def _folder_info(original_path: str | None) -> tuple[str, str]:
     if not original_path:
         return "Uncategorized", "uncategorized"
     parent = Path(original_path).parent
     label = parent.name or "(root)"
-    return label, _folder_key(original_path)
+    return label, folder_key_for_original_path(original_path)
 
 
 def _managed_slide_identifier(stored_filename: str) -> str:
@@ -644,16 +635,11 @@ def slide_tile(
 
     slide_path = _resolve_managed_slide_path(slide, settings)
 
-    # Tile settings
-    TILE_SIZE = TILE_SIZE_DEFAULT
-    overlap = 0  # set to e.g. 10 for 10px overlap between tiles (helps with some viewers)
-
-    # 7) Cache tile to disk
+    tile_size = TILE_SIZE_DEFAULT
     tile_path = (
-        settings.app_data_dir
-        / "tiles_cache"
+        settings.tiles_cache_dir
         / str(slide_id)
-        / f"{TILE_SIZE}_{overlap}"
+        / str(tile_size)
         / str(level)
         / f"{x}_{y}.jpg"
     )
@@ -663,10 +649,10 @@ def slide_tile(
             if tile_path.exists():
                 with Image.open(slide_path) as img:
                     iw, ih = img.size
-                if x < 0 or y < 0 or x * TILE_SIZE >= iw or y * TILE_SIZE >= ih or level != 0:
+                if x < 0 or y < 0 or x * tile_size >= iw or y * tile_size >= ih or level != 0:
                     raise AppError(ErrorCode.NOT_FOUND, f"Tile out of bounds: level={level} x={x} y={y}")
                 return Response(content=tile_path.read_bytes(), media_type="image/jpeg")
-            jpg_bytes = _raster_tile_jpeg(slide_path, level, x, y, TILE_SIZE)
+            jpg_bytes = _raster_tile_jpeg(slide_path, level, x, y, tile_size)
             tile_path.parent.mkdir(parents=True, exist_ok=True)
             tile_path.write_bytes(jpg_bytes)
             return Response(content=jpg_bytes, media_type="image/jpeg")
@@ -690,9 +676,8 @@ def slide_tile(
 
         level_w, level_h = osr.level_dimensions[level]
 
-        # Tile location in *level coordinates*
-        px_level = x * TILE_SIZE
-        py_level = y * TILE_SIZE
+        px_level = x * tile_size
+        py_level = y * tile_size
 
         # Reject completely out-of-bounds tiles (avoids doing work for nonsense coords)
         if px_level >= level_w or py_level >= level_h or x < 0 or y < 0:
@@ -706,9 +691,8 @@ def slide_tile(
         px0 = int(px_level * downsample)
         py0 = int(py_level * downsample)
 
-        # Clip tile size at edges (right/bottom border tiles can be smaller)
-        w = min(TILE_SIZE, level_w - px_level)
-        h = min(TILE_SIZE, level_h - py_level)
+        w = min(tile_size, level_w - px_level)
+        h = min(tile_size, level_h - py_level)
 
         # 4) read_region (returns RGBA)
         img = osr.read_region((px0, py0), level, (w, h))
@@ -716,10 +700,8 @@ def slide_tile(
         # 5) Convert to RGB (JPEG needs no alpha)
         img = img.convert("RGB")
 
-        # If you want every tile to be exactly 256x256 for the client,
-        # pad edge tiles up to TILE_SIZE.
-        if w != TILE_SIZE or h != TILE_SIZE:
-            padded = Image.new("RGB", (TILE_SIZE, TILE_SIZE))
+        if w != tile_size or h != tile_size:
+            padded = Image.new("RGB", (tile_size, tile_size))
             padded.paste(img, (0, 0))
             img = padded
 
@@ -751,7 +733,7 @@ def slide_deepzoom_descriptor(
     if not slide:
         raise AppError(ErrorCode.NOT_FOUND, f"Slide {slide_id} not found")
 
-    slide_path = _resolve_managed_slide_path(slide, settings)
+    _resolve_managed_slide_path(slide, settings)
 
     dz_paths = deepzoom_paths(settings.tiles_cache_dir, slide_id)
     if not has_deepzoom(dz_paths):
@@ -777,7 +759,7 @@ def slide_deepzoom_tile(
     if not slide:
         raise AppError(ErrorCode.NOT_FOUND, f"Slide {slide_id} not found")
 
-    slide_path = _resolve_managed_slide_path(slide, settings)
+    _resolve_managed_slide_path(slide, settings)
 
     dz_paths = deepzoom_paths(settings.tiles_cache_dir, slide_id)
     if not has_deepzoom(dz_paths):

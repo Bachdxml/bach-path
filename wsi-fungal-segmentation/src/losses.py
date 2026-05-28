@@ -6,14 +6,16 @@ import torch.nn.functional as F
 class AsymmetricSimilarityLoss(nn.Module):
     """
     Density-aware Asymmetric Similarity Loss.
-    alpha : FN penalty weight — higher alpha = more sensitive (don't miss positives)
-    beta  : FP penalty weight — higher beta  = more conservative (avoid false alarms)
+
+    alpha : FN penalty weight - higher alpha = more sensitive (don't miss positives)
+    beta  : FP penalty weight - higher beta = more conservative (avoid false alarms)
     alpha + beta should sum to 1.0
+
     Density behaviour:
-        low density     → balanced α/β       (conservative — structures less likely real)
-        medium density  → slightly higher α  (mild recall bias)
-        high density    → higher α, lower β  (sensitive — don't miss structures in dense regions)
-        negative        → balanced α/β       (all-background tiles)
+        low density     -> balanced alpha/beta (conservative - structures less likely real)
+        medium density  -> slightly higher alpha (mild recall bias)
+        high density    -> higher alpha, lower beta (sensitive - don't miss structures in dense regions)
+        negative        -> balanced alpha/beta (all-background tiles)
     """
 
     _DENSITY_IDX = {"low": 0, "medium": 1, "high": 2, "negative": 3}
@@ -35,45 +37,30 @@ class AsymmetricSimilarityLoss(nn.Module):
         density_labels : [B]           long tensor, density class per tile
         """
         probs = torch.sigmoid(logits)
+
         if targets.dim() == 3:
             targets = targets.unsqueeze(1)
 
-        neg_mask = (density_labels == 3)  # negative tiles
-        pos_mask = ~neg_mask
+        dims = (1, 2, 3)
+        tp = (probs * targets).sum(dims)
+        fp = (probs * (1 - targets)).sum(dims)
+        fn = ((1 - probs) * targets).sum(dims)
 
-        loss = torch.zeros(logits.size(0), device=logits.device)
+        # Build per-sample alpha/beta tensors from density labels
+        alpha = torch.zeros(logits.size(0), device=logits.device)
+        beta  = torch.zeros(logits.size(0), device=logits.device)
 
-        # Positive tiles: asymmetric similarity as before
-        if pos_mask.any():
-            dims = (1, 2, 3)
-            tp = (probs[pos_mask] * targets[pos_mask]).sum(dims)
-            fp = (probs[pos_mask] * (1 - targets[pos_mask])).sum(dims)
-            fn = ((1 - probs[pos_mask]) * targets[pos_mask]).sum(dims)
+        for density_idx, (a, b) in self.DENSITY_PARAMS.items():
+            mask      = (density_labels == density_idx)
+            alpha[mask] = a
+            beta[mask]  = b
 
-            # Build per-sample alpha/beta tensors from density labels
-            alpha = torch.zeros(pos_mask.sum(), device=logits.device)
-            beta  = torch.zeros(pos_mask.sum(), device=logits.device)
-            pos_labels = density_labels[pos_mask]
-            for density_idx, (a, b) in self.DENSITY_PARAMS.items():
-                if density_idx == 3:
-                    continue
-                mask = (pos_labels == density_idx)
-                alpha[mask] = a
-                beta[mask]  = b
+        # Asymmetric similarity index per sample
+        similarity = (tp + self.smooth) / (
+            tp + alpha * fn + beta * fp + self.smooth
+        )
 
-            # Asymmetric similarity index per sample
-            similarity = (tp + self.smooth) / (
-                tp + alpha * fn + beta * fp + self.smooth
-            )
-            loss[pos_mask] = 1.0 - similarity
-
-        # Negative tiles: BCE — always provides meaningful gradients on empty masks
-        if neg_mask.any():
-            bce = F.binary_cross_entropy_with_logits(
-                logits[neg_mask], targets[neg_mask], reduction='none'
-            )
-            loss[neg_mask] = bce.mean(dim=(1, 2, 3))
-
+        loss = (1.0 - similarity)
         return loss.mean()
 
 
