@@ -1,5 +1,4 @@
 from __future__ import annotations
-import hashlib
 import json
 import logging
 import math
@@ -34,6 +33,7 @@ from app.schemas.inference import (
     InferenceModelInfo,
     InferenceModelListResponse,
 )
+from app.slides.paths import folder_key_for_original_path
 from app.util.exceptions import AppError, ErrorCode
 
 router = APIRouter(prefix="/inference", tags=["inference"])
@@ -85,15 +85,6 @@ def _is_deployable_weight(p: Path) -> bool:
         return False
     n = p.name.lower()
     return n.endswith((".pth.gz", ".pt.gz"))
-
-
-def _folder_key_for_slide(original_path: str | None) -> str:
-    if not original_path:
-        return "uncategorized"
-    parent = Path(original_path).parent
-    normalized = parent.resolve(strict=False).as_posix()
-    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
-    return f"folder_{digest}"
 
 
 def _get_project_root() -> Path:
@@ -203,7 +194,6 @@ def _resolve_model_checkpoint(model_file: str | None) -> tuple[Path, str]:
 
 def _get_inference_python() -> str:
     """Python executable for inference (needs torch, openslide, wsi-fungal-segmentation)"""
-    import os
     env_py = os.environ.get("INFERENCE_PYTHON")
     if env_py:
         return env_py
@@ -705,7 +695,7 @@ def run_folder_inference(
         raise AppError(ErrorCode.SLIDE_INVALID, "folder_key is required")
 
     slides = db.query(Slide).order_by(Slide.created_at.desc()).all()
-    target_slides = [s for s in slides if _folder_key_for_slide(s.original_path) == requested_key]
+    target_slides = [s for s in slides if folder_key_for_original_path(s.original_path) == requested_key]
     if not target_slides:
         raise AppError(ErrorCode.NOT_FOUND, "No slides found in that folder")
     if len(target_slides) > settings.max_batch_inference_items:

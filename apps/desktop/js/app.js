@@ -74,7 +74,7 @@ document.addEventListener("DOMContentLoaded", () => {
       apiStatusEl.textContent = "API unavailable";
     } else {
       apiStatusEl.classList.add("api-status--unknown");
-      apiStatusEl.textContent = "Checking API…";
+      apiStatusEl.textContent = "Checking API...";
     }
     if (apiStatusMeta) apiStatusMeta.textContent = meta;
   }
@@ -101,7 +101,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   async function loadModelOptions() {
-      if (!modelSelect) return;
+    if (!modelSelect) return;
     try {
       setModelStatus("Loading models...");
       const data = await slidesApi.listInferenceModels();
@@ -158,10 +158,10 @@ document.addEventListener("DOMContentLoaded", () => {
         homeStatusLine.textContent = "System online. Ready for import, inference, and review.";
       }
     } catch {
-      if (homeMetricSlides) homeMetricSlides.textContent = "—";
-      if (homeMetricPositive) homeMetricPositive.textContent = "—";
-      if (homeMetricModels) homeMetricModels.textContent = "—";
-      if (homeStatusLine) homeStatusLine.textContent = "Waiting for API connection…";
+      if (homeMetricSlides) homeMetricSlides.textContent = "-";
+      if (homeMetricPositive) homeMetricPositive.textContent = "-";
+      if (homeMetricModels) homeMetricModels.textContent = "-";
+      if (homeStatusLine) homeStatusLine.textContent = "Waiting for API connection...";
     }
   }
 
@@ -189,12 +189,10 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  const offApiReady = window.electronAPI.onApiReady(({ port, host, apiKey }) => {
-    const hostForUrl = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
-    slidesApi.setApiBase(`http://${hostForUrl}:${port}`);
-    if (typeof slidesApi.setApiKey === "function") {
-      slidesApi.setApiKey(apiKey || null);
-    }
+  let apiReadyHandled = false;
+  function handleApiReady() {
+    if (apiReadyHandled) return;
+    apiReadyHandled = true;
     if (healthTimer) clearInterval(healthTimer);
     pingApi();
     healthTimer = setInterval(pingApi, 10000);
@@ -207,9 +205,26 @@ document.addEventListener("DOMContentLoaded", () => {
     const loadDeployInfo = app?.features?.models?.loadDeployInfo || window.loadDeployInfo;
     if (typeof loadDeployInfo === "function") loadDeployInfo();
     refreshHomeMetrics();
-  });
+  }
+
+  if (typeof app?.whenApiReady === "function") {
+    app.whenApiReady().then(handleApiReady);
+    app.on?.(app.constants.events.apiReady, handleApiReady);
+  } else {
+    const offApiReady = window.electronAPI.onApiReady(({ port, host, apiKey }) => {
+      const hostForUrl = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+      slidesApi.setApiBase(`http://${hostForUrl}:${port}`);
+      if (typeof slidesApi.setApiKey === "function") {
+        slidesApi.setApiKey(apiKey || null);
+      }
+      handleApiReady();
+    });
+    window.addEventListener("beforeunload", () => {
+      if (typeof offApiReady === "function") offApiReady();
+    });
+  }
   window.addEventListener("beforeunload", () => {
-    if (typeof offApiReady === "function") offApiReady();
+    if (healthTimer) clearInterval(healthTimer);
   });
 
   window.electronAPI

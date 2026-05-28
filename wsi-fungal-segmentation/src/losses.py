@@ -7,15 +7,15 @@ class AsymmetricSimilarityLoss(nn.Module):
     """
     Density-aware Asymmetric Similarity Loss.
 
-    alpha : FN penalty weight — higher alpha = more sensitive (don't miss positives)
-    beta  : FP penalty weight — higher beta  = more conservative (avoid false alarms)
+    alpha : FN penalty weight - higher alpha = more sensitive (don't miss positives)
+    beta  : FP penalty weight - higher beta = more conservative (avoid false alarms)
     alpha + beta should sum to 1.0
 
     Density behaviour:
-        low density     → balanced α/β       (conservative — structures less likely real)
-        medium density  → slightly higher α  (mild recall bias)
-        high density    → higher α, lower β  (sensitive — don't miss structures in dense regions)
-        negative        → balanced α/β       (all-background tiles)
+        low density     -> balanced alpha/beta (conservative - structures less likely real)
+        medium density  -> slightly higher alpha (mild recall bias)
+        high density    -> higher alpha, lower beta (sensitive - don't miss structures in dense regions)
+        negative        -> balanced alpha/beta (all-background tiles)
     """
 
     _DENSITY_IDX = {"low": 0, "medium": 1, "high": 2, "negative": 3}
