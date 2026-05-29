@@ -26,9 +26,9 @@ def _client(settings: Settings):
     return boto3.client("s3", region_name=settings.s3_region)
 
 
-def slide_object_key(*, organization_id: int, submission_id: int, filename: str) -> str:
+def slide_object_key(*, account_id: int, submission_id: int, filename: str) -> str:
     safe_name = filename.replace("/", "_").replace("\\", "_")
-    return f"slides/org-{organization_id}/submission-{submission_id}/{uuid4().hex}-{safe_name}"
+    return f"slides/account-{account_id}/submission-{submission_id}/{uuid4().hex}-{safe_name}"
 
 
 def create_upload_url(settings: Settings, *, key: str, content_type: str) -> PresignedUrl:

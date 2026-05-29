@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Header, Request
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.api.cloud_deps import CloudPrincipal, get_cloud_principal, require_approved_org, require_role
+from app.api.cloud_deps import CloudPrincipal, get_cloud_principal, require_approved_account, require_role
 from app.api.deps import get_db
 from app.models.audit_log import AuditLog
 from app.models.marketplace import (
@@ -15,7 +15,7 @@ from app.models.marketplace import (
     DatasetSlide,
     License,
     Order,
-    Organization,
+    Account,
     SlideAsset,
     Submission,
 )
@@ -28,9 +28,9 @@ from app.schemas.marketplace import (
     DatasetUpdateRequest,
     DownloadUrlResponse,
     LicenseResponse,
-    OrganizationApprovalRequest,
-    OrganizationCreateRequest,
-    OrganizationResponse,
+    AccountApprovalRequest,
+    AccountCreateRequest,
+    AccountResponse,
     SlideAssetResponse,
     SlideFinalizeRequest,
     SlideReviewRequest,
@@ -77,7 +77,7 @@ def _submission_response(submission: Submission) -> SubmissionResponse:
         id=submission.id,
         title=submission.title,
         status=submission.status,
-        organization_id=submission.organization_id,
+        account_id=submission.account_id,
         created_at=submission.created_at,
     )
 
@@ -115,7 +115,7 @@ def _license_response(license_: License) -> LicenseResponse:
     return LicenseResponse(
         id=license_.id,
         dataset_id=license_.dataset_id,
-        buyer_organization_id=license_.buyer_organization_id,
+        buyer_account_id=license_.buyer_account_id,
         status=license_.status,
         expires_at=license_.expires_at,
     )
@@ -129,59 +129,61 @@ def _is_expired(expires_at: datetime | None) -> bool:
     return expires_at < datetime.now(timezone.utc)
 
 
-def _organization_response(organization: Organization) -> OrganizationResponse:
-    return OrganizationResponse(
-        id=organization.id,
-        name=organization.name,
-        org_type=organization.org_type,
-        is_approved=organization.is_approved,
+def _account_response(account: Account) -> AccountResponse:
+    return AccountResponse(
+        id=account.id,
+        name=account.name,
+        account_type=account.account_type,
+        marketplace_role=account.marketplace_role,
+        is_approved=account.is_approved,
     )
 
 
-@router.post("/admin/organizations", response_model=OrganizationResponse)
-def admin_create_organization(
-    payload: OrganizationCreateRequest,
+@router.post("/admin/accounts", response_model=AccountResponse)
+def admin_create_account(
+    payload: AccountCreateRequest,
     principal: CloudPrincipal = Depends(get_cloud_principal),
     db: Session = Depends(get_db),
 ):
     require_role(principal, "admin")
-    organization = Organization(
+    account = Account(
         name=payload.name.strip(),
-        org_type=payload.org_type,
+        account_type=payload.account_type,
+        marketplace_role=payload.marketplace_role,
         is_approved=payload.is_approved,
     )
-    db.add(organization)
+    db.add(account)
     db.flush()
-    _audit(db, principal=principal, action="organization.create", entity_type="organization", entity_id=organization.id)
+    _audit(db, principal=principal, action="account.create", entity_type="account", entity_id=account.id)
     db.commit()
-    db.refresh(organization)
-    return _organization_response(organization)
+    db.refresh(account)
+    return _account_response(account)
 
 
-@router.patch("/admin/organizations/{organization_id}/approval", response_model=OrganizationResponse)
-def admin_update_organization_approval(
-    organization_id: int,
-    payload: OrganizationApprovalRequest,
+@router.patch("/admin/accounts/{account_id}/approval", response_model=AccountResponse)
+def admin_update_account_approval(
+    account_id: int,
+    payload: AccountApprovalRequest,
     principal: CloudPrincipal = Depends(get_cloud_principal),
     db: Session = Depends(get_db),
 ):
     require_role(principal, "admin")
-    organization = db.get(Organization, organization_id)
-    if not organization:
-        raise AppError(ErrorCode.NOT_FOUND, "Organization not found", http_status=404)
-    organization.is_approved = payload.is_approved
-    db.add(organization)
+    account = db.get(Account, account_id)
+    if not account:
+        raise AppError(ErrorCode.NOT_FOUND, "Account not found", http_status=404)
+    account.is_approved = payload.is_approved
+    db.add(account)
     _audit(
         db,
         principal=principal,
-        action="organization.approval",
-        entity_type="organization",
-        entity_id=organization.id,
+        action="account.approval",
+        entity_type="account",
+        entity_id=account.id,
         details={"is_approved": payload.is_approved},
     )
     db.commit()
-    db.refresh(organization)
-    return _organization_response(organization)
+    db.refresh(account)
+    return _account_response(account)
 
 
 @router.post("/submissions", response_model=SubmissionResponse)
@@ -191,9 +193,9 @@ def create_submission(
     db: Session = Depends(get_db),
 ):
     require_role(principal, "submitter", "admin")
-    require_approved_org(principal)
+    require_approved_account(principal)
     submission = Submission(
-        organization_id=principal.organization.id,
+        account_id=principal.account.id,
         created_by_user_id=principal.user.id,
         title=payload.title,
         status="draft",
@@ -214,7 +216,7 @@ def list_submissions(
     require_role(principal, "submitter", "admin")
     submissions = (
         db.query(Submission)
-        .filter(Submission.organization_id == principal.organization.id)
+        .filter(Submission.account_id == principal.account.id)
         .order_by(Submission.created_at.desc())
         .all()
     )
@@ -228,7 +230,7 @@ def get_submission(
     db: Session = Depends(get_db),
 ):
     submission = db.get(Submission, submission_id)
-    if not submission or submission.organization_id != principal.organization.id:
+    if not submission or submission.account_id != principal.account.id:
         raise AppError(ErrorCode.NOT_FOUND, "Submission not found", http_status=404)
     return _submission_response(submission)
 
@@ -242,12 +244,12 @@ def create_submission_upload_url(
     db: Session = Depends(get_db),
 ):
     require_role(principal, "submitter", "admin")
-    require_approved_org(principal)
+    require_approved_account(principal)
     submission = db.get(Submission, submission_id)
-    if not submission or submission.organization_id != principal.organization.id:
+    if not submission or submission.account_id != principal.account.id:
         raise AppError(ErrorCode.NOT_FOUND, "Submission not found", http_status=404)
     key = slide_object_key(
-        organization_id=principal.organization.id,
+        account_id=principal.account.id,
         submission_id=submission.id,
         filename=payload.filename,
     )
@@ -272,16 +274,16 @@ def finalize_submission_slide(
     db: Session = Depends(get_db),
 ):
     require_role(principal, "submitter", "admin")
-    require_approved_org(principal)
+    require_approved_account(principal)
     submission = db.get(Submission, submission_id)
-    if not submission or submission.organization_id != principal.organization.id:
+    if not submission or submission.account_id != principal.account.id:
         raise AppError(ErrorCode.NOT_FOUND, "Submission not found", http_status=404)
-    prefix = f"slides/org-{principal.organization.id}/submission-{submission.id}/"
+    prefix = f"slides/account-{principal.account.id}/submission-{submission.id}/"
     if not payload.s3_key.startswith(prefix):
         raise AppError(ErrorCode.FORBIDDEN, "Upload key is not authorized for this submission", http_status=403)
     slide = SlideAsset(
         submission_id=submission.id,
-        organization_id=principal.organization.id,
+        account_id=principal.account.id,
         created_by_user_id=principal.user.id,
         filename=payload.filename,
         s3_key=payload.s3_key,
@@ -470,13 +472,13 @@ def create_dataset_checkout(
     db: Session = Depends(get_db),
 ):
     require_role(principal, "buyer", "admin")
-    require_approved_org(principal)
+    require_approved_account(principal)
     dataset = db.get(Dataset, dataset_id)
     if not dataset or dataset.status != "published":
         raise AppError(ErrorCode.NOT_FOUND, "Dataset not found", http_status=404)
     order = Order(
         dataset_id=dataset.id,
-        buyer_organization_id=principal.organization.id,
+        buyer_account_id=principal.account.id,
         requested_by_user_id=principal.user.id,
         amount_cents=dataset.price_cents,
         currency=dataset.currency,
@@ -510,7 +512,7 @@ def list_licenses(
     return [
         _license_response(license_)
         for license_ in db.query(License)
-        .filter(License.buyer_organization_id == principal.organization.id)
+        .filter(License.buyer_account_id == principal.account.id)
         .order_by(License.created_at.desc())
         .all()
     ]
@@ -525,7 +527,7 @@ def create_license_download_urls(
 ):
     require_role(principal, "buyer", "admin")
     license_ = db.get(License, license_id)
-    if not license_ or license_.buyer_organization_id != principal.organization.id:
+    if not license_ or license_.buyer_account_id != principal.account.id:
         raise AppError(ErrorCode.NOT_FOUND, "License not found", http_status=404)
     if license_.status != "active":
         raise AppError(ErrorCode.FORBIDDEN, "License is not active", http_status=403)
@@ -572,14 +574,14 @@ async def stripe_webhook(
         db.query(License)
         .filter(
             License.dataset_id == order.dataset_id,
-            License.buyer_organization_id == order.buyer_organization_id,
+            License.buyer_account_id == order.buyer_account_id,
         )
         .one_or_none()
     )
     if license_ is None:
         license_ = License(
             dataset_id=order.dataset_id,
-            buyer_organization_id=order.buyer_organization_id,
+            buyer_account_id=order.buyer_account_id,
             order_id=order.id,
             terms=dataset.license_terms,
             status="active",

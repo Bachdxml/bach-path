@@ -6,27 +6,30 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 
-OrgRole = Literal["submitter", "curator", "buyer", "admin"]
-OrgType = Literal["submitter", "buyer", "internal"]
+AccountRole = Literal["owner", "submitter", "curator", "buyer", "admin"]
+AccountType = Literal["individual", "organization", "internal"]
+MarketplaceRole = Literal["submitter", "buyer", "internal"]
 SlideReviewStatus = Literal["submitted", "deidentified_approved", "rejected"]
 DatasetStatus = Literal["draft", "published", "archived"]
 LicenseStatus = Literal["active", "expired", "revoked"]
 
 
-class OrganizationResponse(BaseModel):
+class AccountResponse(BaseModel):
     id: int
     name: str
-    org_type: OrgType
+    account_type: AccountType
+    marketplace_role: MarketplaceRole
     is_approved: bool
 
 
-class OrganizationCreateRequest(BaseModel):
+class AccountCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
-    org_type: OrgType
+    account_type: AccountType = "organization"
+    marketplace_role: MarketplaceRole
     is_approved: bool = False
 
 
-class OrganizationApprovalRequest(BaseModel):
+class AccountApprovalRequest(BaseModel):
     is_approved: bool
 
 
@@ -43,7 +46,7 @@ class SubmissionResponse(BaseModel):
     id: int
     title: str
     status: Literal["draft", "submitted", "reviewed", "rejected"]
-    organization_id: int
+    account_id: int
     created_at: datetime
 
 
@@ -133,7 +136,7 @@ class CheckoutResponse(BaseModel):
 class LicenseResponse(BaseModel):
     id: int
     dataset_id: int
-    buyer_organization_id: int
+    buyer_account_id: int
     status: LicenseStatus
     expires_at: datetime | None = None
 

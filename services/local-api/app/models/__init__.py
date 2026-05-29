@@ -9,9 +9,9 @@ from app.models.marketplace import (
     Dataset,
     DatasetSlide,
     License,
-    Membership,
+    AccountMembership,
     Order,
-    Organization,
+    Account,
     SlideAsset,
     Submission,
 )

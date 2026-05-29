@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
 from app.auth.cognito import verify_cognito_token
-from app.models.marketplace import Membership, Organization
+from app.models.marketplace import AccountMembership, Account
 from app.models.user import User
 from app.settings import DeploymentMode
 from app.util.exceptions import AppError, ErrorCode
@@ -16,8 +16,8 @@ from app.util.exceptions import AppError, ErrorCode
 @dataclass(frozen=True)
 class CloudPrincipal:
     user: User
-    organization: Organization
-    membership: Membership
+    account: Account
+    membership: AccountMembership
 
     @property
     def role(self) -> str:
@@ -55,25 +55,28 @@ def get_cloud_principal(
         db.refresh(user)
 
     membership = (
-        db.query(Membership)
-        .join(Organization, Organization.id == Membership.organization_id)
-        .filter(Membership.user_id == user.id)
-        .order_by(Membership.id.asc())
+        db.query(AccountMembership)
+        .join(Account, Account.id == AccountMembership.account_id)
+        .filter(AccountMembership.user_id == user.id)
+        .order_by(AccountMembership.id.asc())
         .first()
     )
     if membership is None:
-        raise AppError(ErrorCode.FORBIDDEN, "User is not a member of an organization", http_status=403)
-    organization = db.get(Organization, membership.organization_id)
-    if organization is None:
-        raise AppError(ErrorCode.FORBIDDEN, "Organization membership is invalid", http_status=403)
-    return CloudPrincipal(user=user, organization=organization, membership=membership)
+        raise AppError(ErrorCode.FORBIDDEN, "User is not a member of an account", http_status=403)
+    account = db.get(Account, membership.account_id)
+    if account is None:
+        raise AppError(ErrorCode.FORBIDDEN, "Account membership is invalid", http_status=403)
+    return CloudPrincipal(user=user, account=account, membership=membership)
 
 
 def require_role(principal: CloudPrincipal, *roles: str) -> None:
-    if principal.role not in set(roles):
+    allowed = set(roles)
+    if "submitter" in allowed or "buyer" in allowed:
+        allowed.add("owner")
+    if principal.role not in allowed:
         raise AppError(ErrorCode.FORBIDDEN, "Insufficient role for this action", http_status=403)
 
 
-def require_approved_org(principal: CloudPrincipal) -> None:
-    if not principal.organization.is_approved:
-        raise AppError(ErrorCode.FORBIDDEN, "Organization is not approved", http_status=403)
+def require_approved_account(principal: CloudPrincipal) -> None:
+    if not principal.account.is_approved:
+        raise AppError(ErrorCode.FORBIDDEN, "Account is not approved", http_status=403)

@@ -35,58 +35,60 @@ def upgrade() -> None:
         op.add_column("users", sa.Column("email", sa.String(length=255), nullable=True))
         op.create_index(op.f("ix_users_email"), "users", ["email"], unique=False)
 
-    if "organizations" not in tables:
+    if "accounts" not in tables:
         op.create_table(
-            "organizations",
+            "accounts",
             sa.Column("id", sa.Integer(), nullable=False),
             sa.Column("name", sa.String(length=255), nullable=False),
-            sa.Column("org_type", sa.String(length=32), nullable=False),
+            sa.Column("account_type", sa.String(length=32), nullable=False),
+            sa.Column("marketplace_role", sa.String(length=32), nullable=False),
             sa.Column("is_approved", sa.Boolean(), server_default=sa.text("false"), nullable=False),
             sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-            sa.CheckConstraint("org_type IN ('submitter','buyer','internal')", name=op.f("ck_organizations_org_type")),
-            sa.PrimaryKeyConstraint("id", name=op.f("pk_organizations")),
+            sa.CheckConstraint("account_type IN ('individual','organization','internal')", name=op.f("ck_accounts_account_type")),
+            sa.CheckConstraint("marketplace_role IN ('submitter','buyer','internal')", name=op.f("ck_accounts_marketplace_role")),
+            sa.PrimaryKeyConstraint("id", name=op.f("pk_accounts")),
         )
 
-    if "memberships" not in tables:
+    if "account_memberships" not in tables:
         op.create_table(
-            "memberships",
+            "account_memberships",
             sa.Column("id", sa.Integer(), nullable=False),
             sa.Column("user_id", sa.Integer(), nullable=False),
-            sa.Column("organization_id", sa.Integer(), nullable=False),
+            sa.Column("account_id", sa.Integer(), nullable=False),
             sa.Column("role", sa.String(length=32), nullable=False),
             sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-            sa.CheckConstraint("role IN ('submitter','curator','buyer','admin')", name=op.f("ck_memberships_role")),
-            sa.ForeignKeyConstraint(["organization_id"], ["organizations.id"], name=op.f("fk_memberships_organization_id_organizations"), ondelete="CASCADE"),
-            sa.ForeignKeyConstraint(["user_id"], ["users.id"], name=op.f("fk_memberships_user_id_users"), ondelete="CASCADE"),
-            sa.PrimaryKeyConstraint("id", name=op.f("pk_memberships")),
-            sa.UniqueConstraint("user_id", "organization_id", name=op.f("uq_memberships_user_org")),
+            sa.CheckConstraint("role IN ('owner','submitter','curator','buyer','admin')", name=op.f("ck_account_memberships_role")),
+            sa.ForeignKeyConstraint(["account_id"], ["accounts.id"], name=op.f("fk_account_memberships_account_id_accounts"), ondelete="CASCADE"),
+            sa.ForeignKeyConstraint(["user_id"], ["users.id"], name=op.f("fk_account_memberships_user_id_users"), ondelete="CASCADE"),
+            sa.PrimaryKeyConstraint("id", name=op.f("pk_account_memberships")),
+            sa.UniqueConstraint("user_id", "account_id", name=op.f("uq_account_memberships_user_account")),
         )
-        op.create_index(op.f("ix_memberships_organization_id"), "memberships", ["organization_id"], unique=False)
-        op.create_index(op.f("ix_memberships_user_id"), "memberships", ["user_id"], unique=False)
+        op.create_index(op.f("ix_account_memberships_account_id"), "account_memberships", ["account_id"], unique=False)
+        op.create_index(op.f("ix_account_memberships_user_id"), "account_memberships", ["user_id"], unique=False)
 
     if "submissions" not in tables:
         op.create_table(
             "submissions",
             sa.Column("id", sa.Integer(), nullable=False),
-            sa.Column("organization_id", sa.Integer(), nullable=False),
+            sa.Column("account_id", sa.Integer(), nullable=False),
             sa.Column("created_by_user_id", sa.Integer(), nullable=False),
             sa.Column("title", sa.String(length=255), nullable=False),
             sa.Column("status", sa.String(length=32), server_default="draft", nullable=False),
             sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
             sa.CheckConstraint("status IN ('draft','submitted','reviewed','rejected')", name=op.f("ck_submissions_status")),
             sa.ForeignKeyConstraint(["created_by_user_id"], ["users.id"], name=op.f("fk_submissions_created_by_user_id_users")),
-            sa.ForeignKeyConstraint(["organization_id"], ["organizations.id"], name=op.f("fk_submissions_organization_id_organizations")),
+            sa.ForeignKeyConstraint(["account_id"], ["accounts.id"], name=op.f("fk_submissions_account_id_accounts")),
             sa.PrimaryKeyConstraint("id", name=op.f("pk_submissions")),
         )
         op.create_index(op.f("ix_submissions_created_by_user_id"), "submissions", ["created_by_user_id"], unique=False)
-        op.create_index(op.f("ix_submissions_organization_id"), "submissions", ["organization_id"], unique=False)
+        op.create_index(op.f("ix_submissions_account_id"), "submissions", ["account_id"], unique=False)
 
     if "slide_assets" not in tables:
         op.create_table(
             "slide_assets",
             sa.Column("id", sa.Integer(), nullable=False),
             sa.Column("submission_id", sa.Integer(), nullable=False),
-            sa.Column("organization_id", sa.Integer(), nullable=False),
+            sa.Column("account_id", sa.Integer(), nullable=False),
             sa.Column("created_by_user_id", sa.Integer(), nullable=False),
             sa.Column("filename", sa.String(length=255), nullable=False),
             sa.Column("s3_key", sa.String(length=1024), nullable=False),
@@ -99,13 +101,13 @@ def upgrade() -> None:
             sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
             sa.CheckConstraint("review_status IN ('submitted','deidentified_approved','rejected')", name=op.f("ck_slide_assets_review_status")),
             sa.ForeignKeyConstraint(["created_by_user_id"], ["users.id"], name=op.f("fk_slide_assets_created_by_user_id_users")),
-            sa.ForeignKeyConstraint(["organization_id"], ["organizations.id"], name=op.f("fk_slide_assets_organization_id_organizations")),
+            sa.ForeignKeyConstraint(["account_id"], ["accounts.id"], name=op.f("fk_slide_assets_account_id_accounts")),
             sa.ForeignKeyConstraint(["submission_id"], ["submissions.id"], name=op.f("fk_slide_assets_submission_id_submissions")),
             sa.PrimaryKeyConstraint("id", name=op.f("pk_slide_assets")),
             sa.UniqueConstraint("s3_key", name=op.f("uq_slide_assets_s3_key")),
         )
         op.create_index(op.f("ix_slide_assets_created_by_user_id"), "slide_assets", ["created_by_user_id"], unique=False)
-        op.create_index(op.f("ix_slide_assets_organization_id"), "slide_assets", ["organization_id"], unique=False)
+        op.create_index(op.f("ix_slide_assets_account_id"), "slide_assets", ["account_id"], unique=False)
         op.create_index(op.f("ix_slide_assets_submission_id"), "slide_assets", ["submission_id"], unique=False)
 
     if "datasets" not in tables:
@@ -133,7 +135,7 @@ def upgrade() -> None:
             "orders",
             sa.Column("id", sa.Integer(), nullable=False),
             sa.Column("dataset_id", sa.Integer(), nullable=False),
-            sa.Column("buyer_organization_id", sa.Integer(), nullable=False),
+            sa.Column("buyer_account_id", sa.Integer(), nullable=False),
             sa.Column("requested_by_user_id", sa.Integer(), nullable=False),
             sa.Column("amount_cents", sa.Integer(), nullable=False),
             sa.Column("currency", sa.String(length=3), server_default="usd", nullable=False),
@@ -143,13 +145,13 @@ def upgrade() -> None:
             sa.Column("checkout_url", sa.String(length=2048), nullable=True),
             sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
             sa.CheckConstraint("status IN ('pending','paid','failed','canceled')", name=op.f("ck_orders_status")),
-            sa.ForeignKeyConstraint(["buyer_organization_id"], ["organizations.id"], name=op.f("fk_orders_buyer_organization_id_organizations")),
+            sa.ForeignKeyConstraint(["buyer_account_id"], ["accounts.id"], name=op.f("fk_orders_buyer_account_id_accounts")),
             sa.ForeignKeyConstraint(["dataset_id"], ["datasets.id"], name=op.f("fk_orders_dataset_id_datasets")),
             sa.ForeignKeyConstraint(["requested_by_user_id"], ["users.id"], name=op.f("fk_orders_requested_by_user_id_users")),
             sa.PrimaryKeyConstraint("id", name=op.f("pk_orders")),
             sa.UniqueConstraint("stripe_checkout_session_id", name=op.f("uq_orders_stripe_checkout_session_id")),
         )
-        op.create_index(op.f("ix_orders_buyer_organization_id"), "orders", ["buyer_organization_id"], unique=False)
+        op.create_index(op.f("ix_orders_buyer_account_id"), "orders", ["buyer_account_id"], unique=False)
         op.create_index(op.f("ix_orders_dataset_id"), "orders", ["dataset_id"], unique=False)
         op.create_index(op.f("ix_orders_requested_by_user_id"), "orders", ["requested_by_user_id"], unique=False)
 
@@ -173,20 +175,20 @@ def upgrade() -> None:
             "licenses",
             sa.Column("id", sa.Integer(), nullable=False),
             sa.Column("dataset_id", sa.Integer(), nullable=False),
-            sa.Column("buyer_organization_id", sa.Integer(), nullable=False),
+            sa.Column("buyer_account_id", sa.Integer(), nullable=False),
             sa.Column("order_id", sa.Integer(), nullable=True),
             sa.Column("terms", sa.Text(), nullable=False),
             sa.Column("status", sa.String(length=32), server_default="active", nullable=False),
             sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
             sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
             sa.CheckConstraint("status IN ('active','expired','revoked')", name=op.f("ck_licenses_status")),
-            sa.ForeignKeyConstraint(["buyer_organization_id"], ["organizations.id"], name=op.f("fk_licenses_buyer_organization_id_organizations")),
+            sa.ForeignKeyConstraint(["buyer_account_id"], ["accounts.id"], name=op.f("fk_licenses_buyer_account_id_accounts")),
             sa.ForeignKeyConstraint(["dataset_id"], ["datasets.id"], name=op.f("fk_licenses_dataset_id_datasets")),
             sa.ForeignKeyConstraint(["order_id"], ["orders.id"], name=op.f("fk_licenses_order_id_orders")),
             sa.PrimaryKeyConstraint("id", name=op.f("pk_licenses")),
-            sa.UniqueConstraint("dataset_id", "buyer_organization_id", name=op.f("uq_licenses_dataset_buyer")),
+            sa.UniqueConstraint("dataset_id", "buyer_account_id", name=op.f("uq_licenses_dataset_buyer")),
         )
-        op.create_index(op.f("ix_licenses_buyer_organization_id"), "licenses", ["buyer_organization_id"], unique=False)
+        op.create_index(op.f("ix_licenses_buyer_account_id"), "licenses", ["buyer_account_id"], unique=False)
         op.create_index(op.f("ix_licenses_dataset_id"), "licenses", ["dataset_id"], unique=False)
         op.create_index(op.f("ix_licenses_order_id"), "licenses", ["order_id"], unique=False)
 
@@ -199,8 +201,8 @@ def downgrade() -> None:
         "datasets",
         "slide_assets",
         "submissions",
-        "memberships",
-        "organizations",
+        "account_memberships",
+        "accounts",
     ):
         op.drop_table(table_name)
     if _has_column("users", "email"):

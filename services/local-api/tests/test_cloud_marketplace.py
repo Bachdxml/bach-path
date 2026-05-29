@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from app.auth.cognito import CognitoClaims
 from app.main import create_app
-from app.models.marketplace import Membership, Organization
+from app.models.marketplace import AccountMembership, Account, Dataset
 from app.models.user import User
 from app.db.session import make_engine_from_url, make_session_factory
 from app.storage.cloud import PresignedUrl
@@ -34,7 +34,17 @@ def _cloud_env(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_test")
 
 
-def _seed_member(app, *, sub: str, email: str, org_name: str, org_type: str, role: str, approved: bool = True):
+def _seed_member(
+    app,
+    *,
+    sub: str,
+    email: str,
+    account_name: str,
+    marketplace_role: str,
+    role: str,
+    account_type: str = "organization",
+    approved: bool = True,
+):
     session_factory = getattr(app.state, "SessionLocal", None)
     if session_factory is None:
         engine = make_engine_from_url(app.state.settings.database_url)
@@ -42,12 +52,17 @@ def _seed_member(app, *, sub: str, email: str, org_name: str, org_type: str, rol
     db = session_factory()
     try:
         user = User(username=sub[:64], password_hash="cognito", cognito_sub=sub, email=email, role="viewer")
-        org = Organization(name=org_name, org_type=org_type, is_approved=approved)
-        db.add_all([user, org])
+        account = Account(
+            name=account_name,
+            account_type=account_type,
+            marketplace_role=marketplace_role,
+            is_approved=approved,
+        )
+        db.add_all([user, account])
         db.flush()
-        db.add(Membership(user_id=user.id, organization_id=org.id, role=role))
+        db.add(AccountMembership(user_id=user.id, account_id=account.id, role=role))
         db.commit()
-        return user.id, org.id
+        return user.id, account.id
     finally:
         db.close()
 
@@ -73,7 +88,7 @@ def test_approved_submitter_can_create_submission_and_finalize_slide(monkeypatch
 
     app = create_app()
     with TestClient(app) as client:
-        _seed_member(app, sub="submitter", email="submitter@example.test", org_name="Lab", org_type="submitter", role="submitter")
+        _seed_member(app, sub="submitter", email="submitter@example.test", account_name="Lab", marketplace_role="submitter", role="submitter")
 
         create_response = client.post("/cloud/submissions", json={"title": "Batch A"}, headers=_auth("submitter"))
         assert create_response.status_code == 200, create_response.text
@@ -91,7 +106,7 @@ def test_approved_submitter_can_create_submission_and_finalize_slide(monkeypatch
         )
         assert upload_response.status_code == 200, upload_response.text
         s3_key = upload_response.json()["s3_key"]
-        assert s3_key.startswith("slides/org-")
+        assert s3_key.startswith("slides/account-")
 
         finalize_response = client.post(
             f"/cloud/submissions/{submission_id}/slides/finalize",
@@ -115,36 +130,82 @@ def test_unapproved_submitter_cannot_create_submission(monkeypatch, tmp_path):
 
     app = create_app()
     with TestClient(app) as client:
-        _seed_member(app, sub="blocked", email="blocked@example.test", org_name="Blocked", org_type="submitter", role="submitter", approved=False)
+        _seed_member(app, sub="blocked", email="blocked@example.test", account_name="Blocked", marketplace_role="submitter", role="submitter", approved=False)
         response = client.post("/cloud/submissions", json={"title": "Batch"}, headers=_auth("blocked"))
 
     assert response.status_code == 403
 
 
-def test_admin_can_create_and_approve_organization(monkeypatch, tmp_path):
+def test_admin_can_create_and_approve_account(monkeypatch, tmp_path):
     _cloud_env(monkeypatch, tmp_path)
     _patch_cognito(monkeypatch)
 
     app = create_app()
     with TestClient(app) as client:
-        _seed_member(app, sub="admin", email="admin@example.test", org_name="Internal", org_type="internal", role="admin")
+        _seed_member(app, sub="admin", email="admin@example.test", account_name="Internal", marketplace_role="internal", role="admin")
 
         create_response = client.post(
-            "/cloud/admin/organizations",
-            json={"name": "New Lab", "org_type": "submitter"},
+            "/cloud/admin/accounts",
+            json={"name": "New Lab", "account_type": "organization", "marketplace_role": "submitter"},
             headers=_auth("admin"),
         )
         assert create_response.status_code == 200, create_response.text
-        organization_id = create_response.json()["id"]
+        account_id = create_response.json()["id"]
+        assert create_response.json()["account_type"] == "organization"
         assert create_response.json()["is_approved"] is False
 
         approval_response = client.patch(
-            f"/cloud/admin/organizations/{organization_id}/approval",
+            f"/cloud/admin/accounts/{account_id}/approval",
             json={"is_approved": True},
             headers=_auth("admin"),
         )
         assert approval_response.status_code == 200, approval_response.text
         assert approval_response.json()["is_approved"] is True
+
+
+def test_individual_owner_account_can_buy_published_dataset(monkeypatch, tmp_path):
+    _cloud_env(monkeypatch, tmp_path)
+    _patch_cognito(monkeypatch)
+    monkeypatch.setattr(
+        "app.api.routes.cloud.create_checkout_session",
+        lambda settings, **kwargs: type("Session", (), {"id": "cs_individual", "url": "https://checkout.test/individual"})(),
+    )
+
+    app = create_app()
+    with TestClient(app) as client:
+        _seed_member(
+            app,
+            sub="solo",
+            email="solo@example.test",
+            account_name="Dr. Solo Practice",
+            account_type="individual",
+            marketplace_role="buyer",
+            role="owner",
+        )
+        _seed_member(app, sub="curator", email="curator@example.test", account_name="Internal", marketplace_role="internal", role="curator")
+
+        session_factory = getattr(app.state, "SessionLocal", None)
+        if session_factory is None:
+            engine = make_engine_from_url(app.state.settings.database_url)
+            session_factory = make_session_factory(engine)
+        with session_factory() as db:
+            curator = db.query(User).filter(User.cognito_sub == "curator").one()
+            dataset = Dataset(
+                title="Published cohort",
+                price_cents=1000,
+                currency="usd",
+                license_terms="research use",
+                allowed_use="model training",
+                status="published",
+                created_by_user_id=curator.id,
+            )
+            db.add(dataset)
+            db.commit()
+            dataset_id = dataset.id
+
+        checkout = client.post(f"/cloud/datasets/{dataset_id}/checkout", headers=_auth("solo"))
+        assert checkout.status_code == 200, checkout.text
+        assert checkout.json()["checkout_url"] == "https://checkout.test/individual"
 
 
 def test_dataset_requires_deidentified_approved_slide(monkeypatch, tmp_path):
@@ -153,15 +214,15 @@ def test_dataset_requires_deidentified_approved_slide(monkeypatch, tmp_path):
 
     app = create_app()
     with TestClient(app) as client:
-        _seed_member(app, sub="submitter", email="submitter@example.test", org_name="Lab", org_type="submitter", role="submitter")
-        _seed_member(app, sub="curator", email="curator@example.test", org_name="Internal", org_type="internal", role="curator")
+        _seed_member(app, sub="submitter", email="submitter@example.test", account_name="Lab", marketplace_role="submitter", role="submitter")
+        _seed_member(app, sub="curator", email="curator@example.test", account_name="Internal", marketplace_role="internal", role="curator")
 
         submission_id = client.post("/cloud/submissions", json={"title": "Batch"}, headers=_auth("submitter")).json()["id"]
         slide_response = client.post(
             f"/cloud/submissions/{submission_id}/slides/finalize",
             json={
                 "filename": "case.svs",
-                "s3_key": f"slides/org-1/submission-{submission_id}/case.svs",
+                "s3_key": f"slides/account-1/submission-{submission_id}/case.svs",
                 "checksum_sha256": "b" * 64,
                 "file_size_bytes": 100,
                 "file_type": "svs",
@@ -219,16 +280,16 @@ def test_stripe_checkout_activates_license_and_download_requires_license(monkeyp
 
     app = create_app()
     with TestClient(app) as client:
-        _seed_member(app, sub="submitter", email="submitter@example.test", org_name="Lab", org_type="submitter", role="submitter")
-        _seed_member(app, sub="curator", email="curator@example.test", org_name="Internal", org_type="internal", role="curator")
-        _seed_member(app, sub="buyer", email="buyer@example.test", org_name="Buyer", org_type="buyer", role="buyer")
+        _seed_member(app, sub="submitter", email="submitter@example.test", account_name="Lab", marketplace_role="submitter", role="submitter")
+        _seed_member(app, sub="curator", email="curator@example.test", account_name="Internal", marketplace_role="internal", role="curator")
+        _seed_member(app, sub="buyer", email="buyer@example.test", account_name="Buyer", marketplace_role="buyer", role="buyer")
 
         submission_id = client.post("/cloud/submissions", json={"title": "Batch"}, headers=_auth("submitter")).json()["id"]
         slide_id = client.post(
             f"/cloud/submissions/{submission_id}/slides/finalize",
             json={
                 "filename": "case.svs",
-                "s3_key": f"slides/org-1/submission-{submission_id}/case.svs",
+                "s3_key": f"slides/account-1/submission-{submission_id}/case.svs",
                 "checksum_sha256": "c" * 64,
                 "file_size_bytes": 100,
                 "file_type": "svs",
@@ -271,7 +332,7 @@ def test_stripe_checkout_activates_license_and_download_requires_license(monkeyp
 
         download = client.post(f"/cloud/licenses/{licenses[0]['id']}/download-url", headers=_auth("buyer"))
         assert download.status_code == 200, download.text
-        assert download.json()["urls"] == ["https://download.test/slides/org-1/submission-1/case.svs"]
+        assert download.json()["urls"] == ["https://download.test/slides/account-1/submission-1/case.svs"]
 
         replay = client.post(
             "/webhooks/stripe",

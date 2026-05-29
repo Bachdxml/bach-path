@@ -17,39 +17,41 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
 
 
-class Organization(Base):
-    __tablename__ = "organizations"
+class Account(Base):
+    __tablename__ = "accounts"
     __table_args__ = (
-        CheckConstraint("org_type IN ('submitter','buyer','internal')", name="ck_organizations_org_type"),
+        CheckConstraint("account_type IN ('individual','organization','internal')", name="ck_accounts_account_type"),
+        CheckConstraint("marketplace_role IN ('submitter','buyer','internal')", name="ck_accounts_marketplace_role"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    org_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    account_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    marketplace_role: Mapped[str] = mapped_column(String(32), nullable=False)
     is_approved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    memberships = relationship("Membership", back_populates="organization", cascade="all, delete-orphan")
+    memberships = relationship("AccountMembership", back_populates="account", cascade="all, delete-orphan")
 
 
-class Membership(Base):
-    __tablename__ = "memberships"
+class AccountMembership(Base):
+    __tablename__ = "account_memberships"
     __table_args__ = (
-        CheckConstraint("role IN ('submitter','curator','buyer','admin')", name="ck_memberships_role"),
-        UniqueConstraint("user_id", "organization_id", name="uq_memberships_user_org"),
+        CheckConstraint("role IN ('owner','submitter','curator','buyer','admin')", name="ck_account_memberships_role"),
+        UniqueConstraint("user_id", "account_id", name="uq_account_memberships_user_account"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    organization_id: Mapped[int] = mapped_column(
-        ForeignKey("organizations.id", ondelete="CASCADE"),
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("accounts.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     role: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    organization = relationship("Organization", back_populates="memberships")
+    account = relationship("Account", back_populates="memberships")
     user = relationship("User")
 
 
@@ -60,7 +62,7 @@ class Submission(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), nullable=False, index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), nullable=False, index=True)
     created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft", server_default="draft")
@@ -79,7 +81,7 @@ class SlideAsset(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     submission_id: Mapped[int] = mapped_column(ForeignKey("submissions.id"), nullable=False, index=True)
-    organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), nullable=False, index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), nullable=False, index=True)
     created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     s3_key: Mapped[str] = mapped_column(String(1024), nullable=False)
@@ -127,12 +129,12 @@ class License(Base):
     __tablename__ = "licenses"
     __table_args__ = (
         CheckConstraint("status IN ('active','expired','revoked')", name="ck_licenses_status"),
-        UniqueConstraint("dataset_id", "buyer_organization_id", name="uq_licenses_dataset_buyer"),
+        UniqueConstraint("dataset_id", "buyer_account_id", name="uq_licenses_dataset_buyer"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     dataset_id: Mapped[int] = mapped_column(ForeignKey("datasets.id"), nullable=False, index=True)
-    buyer_organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), nullable=False, index=True)
+    buyer_account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), nullable=False, index=True)
     order_id: Mapped[int | None] = mapped_column(ForeignKey("orders.id"), nullable=True, index=True)
     terms: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active", server_default="active")
@@ -149,7 +151,7 @@ class Order(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     dataset_id: Mapped[int] = mapped_column(ForeignKey("datasets.id"), nullable=False, index=True)
-    buyer_organization_id: Mapped[int] = mapped_column(ForeignKey("organizations.id"), nullable=False, index=True)
+    buyer_account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), nullable=False, index=True)
     requested_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
     amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="usd", server_default="usd")
