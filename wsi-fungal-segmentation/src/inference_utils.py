@@ -1,5 +1,4 @@
 import torch
-from torch.utils.data import DataLoader, TensorDataset
 
 def infer_with_neighborhood(model, tiles, device, tile_size=512, stride=None, k=1, batch_size=16):
     if stride is None:
@@ -9,8 +8,13 @@ def infer_with_neighborhood(model, tiles, device, tile_size=512, stride=None, k=
         return y // stride, x // stride
 
     coords = list(tiles.keys())
+    if not coords:
+        return {}
+
     tensors = torch.cat([tiles[c] for c in coords], dim=0)  # [N, 3, H, W]
 
+    # Pass 1 predicts a density class for each tile without forcing a label.
+    # These class predictions form the slide-level context used by pass 2.
     # ── Pass 1: batched density prediction ───────────────────────
     density_preds = {}
     model.eval()
@@ -23,8 +27,8 @@ def infer_with_neighborhood(model, tiles, device, tile_size=512, stride=None, k=
                 x, y = coords[i + j]
                 density_preds[to_grid(x, y)] = label
 
-    # ── Neighborhood aggregation ──────────────────────────────────
     def consensus_label(row, col):
+        # Use the most common density class in the local grid neighborhood.
         neighbors = [
             density_preds[(row + dr, col + dc)]
             for dr in range(-k, k + 1)
@@ -33,6 +37,8 @@ def infer_with_neighborhood(model, tiles, device, tile_size=512, stride=None, k=
         ]
         return max(sorted(set(neighbors)), key=neighbors.count)
 
+    # Pass 2 reruns segmentation while conditioning each tile on the
+    # neighborhood consensus density class instead of its isolated prediction.
     # ── Pass 2: batched segmentation ─────────────────────────────
     consensus_labels = torch.tensor(
         [consensus_label(*to_grid(x, y)) for x, y in coords],

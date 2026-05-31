@@ -485,6 +485,76 @@ def _score_seg_masks(seg_masks, tile_dims, args, tile_size, downsample=1.0):
     return regions
 
 
+def _infer_regions_with_neighborhood(
+    *,
+    model,
+    positions,
+    load_tensor,
+    device,
+    args,
+    tile_size,
+    stride,
+    downsample=1.0,
+    k=1,
+):
+    if not positions:
+        return []
+
+    def to_grid(x, y):
+        return y // stride, x // stride
+
+    # First pass: classify density for each tile. Only hard class labels are
+    # retained, so memory stays bounded by the current batch.
+    density_preds = {}
+    model.eval()
+    with torch.no_grad():
+        for i in range(0, len(positions), args.batch_size):
+            batch_positions = positions[i:i + args.batch_size]
+            batch = torch.cat([load_tensor(pos) for pos in batch_positions], dim=0).to(device)
+            _, density_logits, _, _ = model(batch)
+            labels = density_logits.argmax(dim=1).cpu().tolist()
+            for (x, y, _w, _h), label in zip(batch_positions, labels):
+                density_preds[to_grid(x, y)] = label
+
+    def consensus_label(row, col):
+        # Majority vote over neighboring density labels.
+        neighbors = [
+            density_preds[(row + dr, col + dc)]
+            for dr in range(-k, k + 1)
+            for dc in range(-k, k + 1)
+            if (row + dr, col + dc) in density_preds
+        ]
+        return max(sorted(set(neighbors)), key=neighbors.count)
+
+    regions = []
+    with torch.no_grad():
+        for i in range(0, len(positions), args.batch_size):
+            batch_positions = positions[i:i + args.batch_size]
+            batch = torch.cat([load_tensor(pos) for pos in batch_positions], dim=0).to(device)
+            # Second pass: segment with density conditioning from the local
+            # neighborhood, so isolated low-density tiles can inherit context.
+            batch_labels = torch.tensor(
+                [consensus_label(*to_grid(x, y)) for x, y, _w, _h in batch_positions],
+                dtype=torch.long,
+                device=device,
+            )
+            seg_logits, _, _, _ = model(batch, density_label=batch_labels)
+            probs = torch.sigmoid(seg_logits).cpu()
+            seg_masks = {
+                (x, y): probs[j:j + 1]
+                for j, (x, y, _w, _h) in enumerate(batch_positions)
+            }
+            tile_dims = {
+                (x, y): (w, h)
+                for x, y, w, h in batch_positions
+            }
+            # Score each batch immediately so segmentation masks do not
+            # accumulate for the whole slide.
+            regions.extend(_score_seg_masks(seg_masks, tile_dims, args, tile_size, downsample=downsample))
+
+    return regions
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run fungus inference on a WSI")
     parser.add_argument("--slide-path", required=True, help="Path to slide (SVS/TIF/TIFF)")
@@ -607,9 +677,9 @@ def main():
             mask_size = (max(1, int(level_w * scale)), max(1, int(level_h * scale)))
             tissue_mask = _tissue_mask_from_rgb_image(full_img.resize(mask_size, Image.BILINEAR))
 
-        # ── Collect all tissue tiles ──────────────────────────────
-        tiles = {}       # (x, y) → tensor [1, 3, H, W]
-        tile_dims = {}   # (x, y) → (w, h) — preserves edge tile dimensions
+        # Store coordinates only; tile tensors are loaded batch-by-batch during
+        # the two inference passes to avoid materializing the whole slide.
+        positions = []
         skipped_background = 0
 
         try:
@@ -621,31 +691,34 @@ def main():
                 ):
                     skipped_background += 1
                     continue
-                region = full_img.crop((x, y, x + w, y + h))
-                if w != tile_size or h != tile_size:
-                    region = region.resize((tile_size, tile_size), Image.BILINEAR)
-                tiles[(x, y)] = preprocess_tile(region, tile_size)
-                tile_dims[(x, y)] = (w, h)
+                positions.append((x, y, w, h))
         except Exception as e:
             print(f"Error collecting tiles: {e}", file=sys.stderr)
             return EXIT_SLIDE
 
-        inferred_tiles = len(tiles)
+        inferred_tiles = len(positions)
 
-        # ── Two-pass neighbourhood inference ─────────────────────
+        def load_tensor(pos):
+            x, y, w, h = pos
+            region = full_img.crop((x, y, x + w, y + h))
+            if w != tile_size or h != tile_size:
+                region = region.resize((tile_size, tile_size), Image.BILINEAR)
+            return preprocess_tile(region, tile_size)
+
         try:
-            seg_masks = infer_with_neighborhood(
-                model, tiles, device,
+            regions = _infer_regions_with_neighborhood(
+                model=model,
+                positions=positions,
+                load_tensor=load_tensor,
+                device=device,
+                args=args,
                 tile_size=tile_size,
                 stride=stride,
-                batch_size=args.batch_size,
+                downsample=1.0,
             )
         except Exception as e:
             print(f"Inference error: {e}", file=sys.stderr)
             return EXIT_INFERENCE
-
-        # ── Score results (downsample=1.0 for raster) ─────────────
-        regions = _score_seg_masks(seg_masks, tile_dims, args, tile_size, downsample=1.0)
 
     # ----------------------------------------------------------------
     # OpenSlide WSI
@@ -696,9 +769,9 @@ def main():
             downsample = float(slide.level_downsamples[level])
             tissue_mask = None if args.no_skip_background else _build_openslide_tissue_mask(slide, level=level)
 
-            # ── Collect all tissue tiles ──────────────────────────
-            tiles = {}       # (x, y) → tensor [1, 3, H, W]
-            tile_dims = {}   # (x, y) → (w, h) — preserves edge tile dimensions
+            # Store coordinates only; tile tensors are loaded batch-by-batch
+            # during each pass, which keeps memory tied to batch size.
+            positions = []
             skipped_background = 0
 
             for x, y, w, h in _iter_tile_positions(level_w, level_h, tile_size, stride):
@@ -709,30 +782,33 @@ def main():
                 ):
                     skipped_background += 1
                     continue
+                positions.append((x, y, w, h))
+
+            inferred_tiles = len(positions)
+
+            def load_tensor(pos):
+                x, y, w, h = pos
                 x0, y0 = int(x * downsample), int(y * downsample)
                 region = slide.read_region((x0, y0), level, (w, h)).convert("RGB")
                 if w != tile_size or h != tile_size:
                     region = region.resize((tile_size, tile_size), Image.BILINEAR)
-                tiles[(x, y)] = preprocess_tile(region, tile_size)
-                tile_dims[(x, y)] = (w, h)
+                return preprocess_tile(region, tile_size)
 
-            inferred_tiles = len(tiles)
-
-            # ── Two-pass neighbourhood inference ─────────────────
             try:
-                seg_masks = infer_with_neighborhood(
-                    model, tiles, device,
+                regions = _infer_regions_with_neighborhood(
+                    model=model,
+                    positions=positions,
+                    load_tensor=load_tensor,
+                    device=device,
+                    args=args,
                     tile_size=tile_size,
                     stride=stride,
-                    batch_size=args.batch_size,
+                    downsample=downsample,
                 )
             except Exception as e:
                 slide.close()
                 print(f"Inference error: {e}", file=sys.stderr)
                 return EXIT_INFERENCE
-
-            # ── Score results (with level-0 downsample) ───────────
-            regions = _score_seg_masks(seg_masks, tile_dims, args, tile_size, downsample=downsample)
 
             slide.close()
 
