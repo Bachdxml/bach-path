@@ -44,6 +44,17 @@ def log(message: str = "") -> None:
     print(message, flush=True)
 
 
+def _init_wandb(cfg: dict):
+    """Return wandb module when installed; otherwise None."""
+    try:
+        import wandb
+    except ImportError:
+        log("wandb not installed — skipping experiment tracking.")
+        return None
+    wandb.init(project="wsi-fungal-segmentation", config=cfg, mode="offline")
+    return wandb
+
+
 def _torch_shm_manager_executable() -> bool:
     shm_bin = (
         Path(torch.__file__).resolve().parent / "bin" / "torch_shm_manager"
@@ -55,6 +66,11 @@ def _configure_sharing_strategy() -> None:
     try:
         import torch.multiprocessing as mp
 
+        if platform.system() == "Windows":
+            mp.set_sharing_strategy("file_system")
+            log("⚙️  Sharing strategy: file_system (Windows)")
+            return
+
         strategies = mp.get_all_sharing_strategies()
         if "file_descriptor" in strategies:
             mp.set_sharing_strategy("file_descriptor")
@@ -64,6 +80,37 @@ def _configure_sharing_strategy() -> None:
             log("⚙️  Sharing strategy: file_system")
     except Exception as e:
         log(f"⚠️  Could not set torch sharing strategy ({e}).")
+
+
+def _resolve_num_workers(cfg: dict) -> int:
+    """Pick a safe DataLoader worker count for the current platform."""
+    loader_cfg = cfg.setdefault("loader", {})
+    requested = int(loader_cfg.get("num_workers", 0))
+    auto = bool(loader_cfg.get("auto_num_workers", False))
+
+    if platform.system() == "Windows":
+        if requested > 0:
+            log("⚙️  Windows: forcing num_workers=0 to avoid DataLoader shutdown issues.")
+        return 0
+
+    if auto and requested <= 0:
+        cpu_count = os.cpu_count() or 4
+        return min(4, max(1, cpu_count // 2))
+    return max(0, requested)
+
+
+def _shutdown_dataloader(loader) -> None:
+    if loader is None:
+        return
+    iterator = getattr(loader, "_iterator", None)
+    if iterator is not None:
+        shutdown = getattr(iterator, "_shutdown_workers", None)
+        if callable(shutdown):
+            try:
+                shutdown()
+            except Exception:
+                pass
+    loader._iterator = None
 
 
 def _publish_checkpoint_for_inference(checkpoint: str | Path) -> tuple[str, str]:
@@ -213,60 +260,75 @@ def train_one_epoch(
     log_interval = max(1, n_batches // 10)
     processed_batches = 0
 
-    for batch_idx, (imgs, masks, density_labels) in enumerate(loader):
-        if callable(should_stop) and should_stop():
-            break
-        imgs           = imgs.to(device, non_blocking=True)
-        masks          = masks.to(device, non_blocking=True)
-        density_labels = density_labels.to(device, non_blocking=True)
-        if use_channels_last:
-            imgs = imgs.contiguous(memory_format=torch.channels_last)
+    try:
+        for batch_idx, (imgs, masks, density_labels) in enumerate(loader):
+            if callable(should_stop) and should_stop():
+                break
+            imgs           = imgs.to(device, non_blocking=True)
+            masks          = masks.to(device, non_blocking=True)
+            density_labels = density_labels.to(device, non_blocking=True)
+            if use_channels_last:
+                imgs = imgs.contiguous(memory_format=torch.channels_last)
 
-        optimizer.zero_grad()
-        amp_ctx = (
-            torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=True)
-            if amp_enabled
-            else nullcontext()
-        )
-        with amp_ctx:
-            seg_logits, density_logits, aux3, aux2 = model(imgs, density_labels)
-            total, l_seg, l_density = criterion(
-                seg_logits,
-                density_logits,
-                masks,
-                density_labels,
-                aux3,
-                aux2,
+            optimizer.zero_grad()
+            amp_ctx = (
+                torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=True)
+                if amp_enabled
+                else nullcontext()
             )
+            with amp_ctx:
+                seg_logits, density_logits, aux3, aux2 = model(imgs, density_labels)
+                total, l_seg, l_density = criterion(
+                    seg_logits,
+                    density_logits,
+                    masks,
+                    density_labels,
+                    aux3,
+                    aux2,
+                )
 
-        if amp_enabled and scaler is not None:
-            scaler.scale(total).backward()
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_grad)
-            scaler.step(optimizer)
-            scaler.update()
-        else:
-            total.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_grad)
-            optimizer.step()
+            if amp_enabled and scaler is not None:
+                scaler.scale(total).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_grad)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                total.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_grad)
+                optimizer.step()
 
-        with torch.no_grad():
-            probs = torch.sigmoid(seg_logits)
-            m = compute_all_metrics(probs, masks)
+            with torch.no_grad():
+                probs = torch.sigmoid(seg_logits)
+                m = compute_all_metrics(probs, masks)
 
-        running_loss         += total.item()
-        running_density_loss += l_density.item()
-        running_dice         += m['dice']
-        running_iou          += m['iou']
-        processed_batches    += 1
+            running_loss         += total.item()
+            running_density_loss += l_density.item()
+            running_dice         += m['dice']
+            running_iou          += m['iou']
+            processed_batches    += 1
 
-        if batch_idx % log_interval == 0:
-            pct = ((batch_idx + 1) / max(1, n_batches)) * 100.0
-            log(
-                f"  [Epoch {epoch_num} | Batch {batch_idx+1}/{n_batches} | {pct:5.1f}%] "
-                f"loss={total.item():.4f}  dice={m['dice']:.4f}  "
-                f"iou={m['iou']:.4f}"
-            )
+            if batch_idx % log_interval == 0:
+                pct = ((batch_idx + 1) / max(1, n_batches)) * 100.0
+                log(
+                    f"  [Epoch {epoch_num} | Batch {batch_idx+1}/{n_batches} | {pct:5.1f}%] "
+                    f"loss={total.item():.4f}  dice={m['dice']:.4f}  "
+                    f"iou={m['iou']:.4f}"
+                )
+
+    except RuntimeError as e:
+        if not (callable(should_stop) and should_stop()):
+            raise
+        log(f"  DataLoader stopped while shutting down: {e}")
+
+    if processed_batches == 0:
+        return {
+            "loss": 0.0,
+            "dice": 0.0,
+            "iou": 0.0,
+            "density_loss": 0.0,
+            "stopped_early": True,
+        }
 
     denom = max(1, processed_batches)
     return {
@@ -368,7 +430,7 @@ def main_with_args(cfg_path: str = "configs/default.yaml",
                    flat_format: bool | None = None,
                    profile: str = "none",
                    progress_file: str | None = None):
-    with open(cfg_path) as f:
+    with open(cfg_path, encoding="utf-8-sig") as f:
         cfg = yaml.safe_load(f)
     if export_root:
         cfg["data"]["export_root"] = str(export_root)
@@ -382,6 +444,7 @@ def main_with_args(cfg_path: str = "configs/default.yaml",
 
 def _run_training(cfg: dict, progress_file: str | None = None):
     """Run training with config dict. Optionally write progress to JSON file."""
+    _configure_sharing_strategy()
     # ---- Data ----
     export_root = _resolve_export_root(cfg["data"].get("export_root"))
     if not export_root.exists():
@@ -413,7 +476,7 @@ def _run_training(cfg: dict, progress_file: str | None = None):
     # ---- Loaders ----
     img_size   = cfg["data"]["img_size"]
     batch_size = cfg["loader"]["batch_size"]
-    n_workers  = cfg["loader"]["num_workers"]
+    n_workers  = _resolve_num_workers(cfg)
     pin = torch.cuda.is_available()
 
     train_ds = AugmentedWSI_Dataset(train_pairs, img_size=img_size, augment=True)
@@ -444,8 +507,7 @@ def _run_training(cfg: dict, progress_file: str | None = None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log(f"Device: {device}")
 
-    import wandb
-    wandb.init(project="wsi-fungal-segmentation", config=cfg, mode="offline")
+    wandb = _init_wandb(cfg)
 
     model     = ResidualAttentionUNet(**cfg["model"]).to(device)
     criterion = CombinedLoss(loss_cfg=cfg["loss"])
@@ -580,20 +642,21 @@ def _run_training(cfg: dict, progress_file: str | None = None):
                            best_dice=best_val_dice)
 
             # ---- W&B logging ----
-            wandb.log({
-                "epoch":              epoch,
-                "lr":                 current_lr,
-                "train/loss":         train_m["loss"],
-                "train/dice":         train_m["dice"],
-                "train/iou":          train_m["iou"],
-                "train/density_loss": train_m["density_loss"],
-                **({"val/loss":          val_m["loss"],
-                    "val/dice":          val_m["dice"],
-                    "val/iou":           val_m["iou"],
-                    "val/precision":     val_m["precision"],
-                    "val/recall":        val_m["recall"],
-                    "val/density_loss":  val_m["density_loss"]} if val_m else {}),
-            })
+            if wandb is not None:
+                wandb.log({
+                    "epoch":              epoch,
+                    "lr":                 current_lr,
+                    "train/loss":         train_m["loss"],
+                    "train/dice":         train_m["dice"],
+                    "train/iou":          train_m["iou"],
+                    "train/density_loss": train_m["density_loss"],
+                    **({"val/loss":          val_m["loss"],
+                        "val/dice":          val_m["dice"],
+                        "val/iou":           val_m["iou"],
+                        "val/precision":     val_m["precision"],
+                        "val/recall":        val_m["recall"],
+                        "val/density_loss":  val_m["density_loss"]} if val_m else {}),
+                })
 
             log(f"\nEpoch {epoch} Summary:")
             log(f"  Train → loss={train_m['loss']:.4f}  dice={train_m['dice']:.4f}  iou={train_m['iou']:.4f}")
@@ -616,9 +679,10 @@ def _run_training(cfg: dict, progress_file: str | None = None):
                 }, checkpoint_path)
 
                 # ---- W&B artifact upload ----
-                artifact = wandb.Artifact("best-model", type="model")
-                artifact.add_file(checkpoint_path)
-                wandb.log_artifact(artifact)
+                if wandb is not None:
+                    artifact = wandb.Artifact("best-model", type="model")
+                    artifact.add_file(checkpoint_path)
+                    wandb.log_artifact(artifact)
 
                 log(f"  ✅  New best dice={best_val_dice:.4f} — checkpoint saved.")
             else:
@@ -681,11 +745,14 @@ def _run_training(cfg: dict, progress_file: str | None = None):
     finally:
         signal.signal(signal.SIGTERM, prev_sigterm)
         signal.signal(signal.SIGINT,  prev_sigint)
-        wandb.finish()
+        _shutdown_dataloader(train_loader)
+        _shutdown_dataloader(val_loader)
+        if wandb is not None:
+            wandb.finish()
 
 
 def main(cfg_path: str = "configs/default.yaml"):
-    with open(cfg_path) as f:
+    with open(cfg_path, encoding="utf-8-sig") as f:
         cfg = yaml.safe_load(f)
     return _run_training(cfg)
 

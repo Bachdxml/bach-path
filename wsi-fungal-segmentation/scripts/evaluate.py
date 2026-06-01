@@ -159,7 +159,7 @@ def plot_training_curves(history, save_path="training_curves.png"):
 def main(checkpoint_path: str, config_path: str = "configs/default.yaml",
          visualize: bool = False, n_vis: int = 2):
 
-    with open(config_path) as f:
+    with open(config_path, encoding="utf-8-sig") as f:
         cfg = yaml.safe_load(f)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
