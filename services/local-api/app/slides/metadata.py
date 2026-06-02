@@ -4,6 +4,8 @@ from typing import Any
 
 from PIL import Image
 
+from app.util.openslide_runtime import configure_openslide_runtime
+
 RASTER_EXTENSIONS = {".png"}
 SAFE_OPENSLIDE_PROPERTY_NAMES = {
     "openslide.vendor",
@@ -30,6 +32,7 @@ def read_raster_metadata(slide_path: Path) -> dict[str, Any]:
 
 
 def read_openslide_metadata(slide_path: Path) -> dict[str, Any]:
+    configure_openslide_runtime()
     import openslide
 
     with openslide.OpenSlide(str(slide_path)) as s:

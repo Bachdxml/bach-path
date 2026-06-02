@@ -37,6 +37,7 @@ from app.slides.metadata import RASTER_EXTENSIONS, read_openslide_metadata, read
 from app.slides.paths import folder_key_for_original_path
 from app.slides.storage import copy_into_managed_storage
 from app.util.exceptions import AppError, ErrorCode
+from app.util.openslide_runtime import configure_openslide_runtime
 
 router = APIRouter(prefix="/slides", tags=["slides"])
 collections_router = APIRouter(tags=["slides"])
@@ -583,6 +584,7 @@ def slide_thumbnail(
             raise AppError(ErrorCode.SLIDE_UNREADABLE, "Could not read slide image")
 
     try:
+        configure_openslide_runtime()
         import openslide
         osr = openslide.OpenSlide(str(slide_path))
     except Exception:
@@ -664,6 +666,7 @@ def slide_tile(
 
     # 2) Validate level exists + 3) compute tile region
     try:
+        configure_openslide_runtime()
         import openslide
         osr = openslide.OpenSlide(str(slide_path))
     except Exception:

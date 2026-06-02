@@ -20,7 +20,7 @@ The desktop UI lives in `apps/desktop`, and it starts a local FastAPI backend fr
 
 - macOS, Linux, or Windows
 - Node.js 18+ and npm
-- Python 3.13 (required for local API dependencies)
+- Python 3.12 for the local API dependencies
 
 Optional but recommended:
 
@@ -38,13 +38,18 @@ npm install
 
 ## 2) Set Up Local API Environment
 
-From repo root, use Python 3.13 and follow your OS-specific commands.
+From repo root, use Python 3.12 and follow your OS-specific commands.
+
+The local API currently pins several packages with native wheels (`pydantic-core`,
+`orjson`, `openslide-python`, `Pillow`, SQLAlchemy). Use Python 3.12 for this
+environment; Python 3.13 may try to build some pinned packages locally or install
+incompatible compiled extensions.
 
 macOS/Linux:
 
 ```bash
 cd services/local-api
-python3.13 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install -U pip setuptools wheel
 pip install -r requirements.txt
@@ -54,7 +59,7 @@ Windows (PowerShell):
 
 ```powershell
 cd services/local-api
-py -3.13 -m venv .venv
+py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -U pip setuptools wheel
 pip install -r requirements.txt
@@ -174,3 +179,5 @@ Build artifacts are written under `apps/desktop/dist/`.
   - Check API logs under `~/Library/Application Support/Bach Path/api-logs` on macOS.
 - DeepZoom `libvips` warning
   - Install `vips`; fallback on-demand tiles still work.
+- `ModuleNotFoundError: No module named 'pydantic_core._pydantic_core'` or Pillow/OpenSlide native import errors
+  - Recreate `services/local-api/.venv` with Python 3.12 and reinstall `services/local-api/requirements.txt`.
