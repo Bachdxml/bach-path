@@ -124,6 +124,7 @@ def test_inference_run_persists_success_and_is_queryable_after_restart(app_paths
     assert run_payload["id"] == run_id
     assert run_payload["slide_id"] == slide_id
     assert run_payload["status"] == "succeeded"
+    assert run_payload["inference_result"] == "positive"
     assert run_payload["started_at"] is not None
     assert run_payload["finished_at"] is not None
     assert run_payload["summary"] == {"total": 2, "fungus_positive": 1, "fungus_negative": 1}
@@ -133,6 +134,7 @@ def test_inference_run_persists_success_and_is_queryable_after_restart(app_paths
     runs_payload = runs_response.json()["runs"]
     assert [item["id"] for item in runs_payload] == [run_id]
     assert runs_payload[0]["status"] == "succeeded"
+    assert runs_payload[0]["inference_result"] == "positive"
     assert runs_payload[0]["summary"] == {"total": 2, "fungus_positive": 1, "fungus_negative": 1}
 
     assert persisted_output["regions"][0]["hotspot"] == expected_hotspot
@@ -178,6 +180,7 @@ def test_inference_run_persists_failure_and_is_queryable_after_restart(app_paths
     assert run_response.status_code == 200, run_response.text
     run_payload = run_response.json()
     assert run_payload["status"] == "failed"
+    assert run_payload["inference_result"] == "unchecked"
     assert run_payload["started_at"] is not None
     assert run_payload["finished_at"] is not None
     assert run_payload["error_message"] == "Inference failed. Check server logs for details."
@@ -198,6 +201,54 @@ def test_inference_run_persists_failure_and_is_queryable_after_restart(app_paths
     assert "torchvision" in lifecycle[-1]["detail"]
     assert "super-secret" not in lifecycle[-1]["detail"]
     assert "[redacted]" in lifecycle[-1]["detail"]
+
+
+def test_inference_run_response_classifies_negative_and_needs_review(app_paths, monkeypatch):
+    negative_slide_path = app_paths["source_dir"] / "run-negative.png"
+    needs_review_slide_path = app_paths["source_dir"] / "run-needs-review.png"
+    _create_sample_slide(negative_slide_path, color=(60, 70, 80))
+    _create_sample_slide(needs_review_slide_path, color=(80, 70, 60))
+
+    script_path = app_paths["app_data_dir"] / "run_inference_api.py"
+    script_path.write_text("# test stub\n", encoding="utf-8")
+
+    outputs = [
+        {"regions": [{"x": 1, "y": 2, "w": 3, "h": 4, "score": 0.01, "label": "fungus_negative"}]},
+        {"regions": []},
+    ]
+
+    def fake_run(cmd, **kwargs):
+        output_path = Path(cmd[cmd.index("--output-json") + 1])
+        output_path.write_text(json.dumps(outputs.pop(0)), encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    _install_synchronous_inference(app_paths, monkeypatch, output_payload=None)
+    monkeypatch.setattr(inference_routes, "_get_script_path", lambda: script_path)
+    monkeypatch.setattr(inference_routes.subprocess, "run", fake_run)
+
+    app = create_app()
+    with TestClient(app) as client:
+        negative_slide_id = _import_slide(client, negative_slide_path)
+        needs_review_slide_id = _import_slide(client, needs_review_slide_path)
+
+        negative_create = client.post(f"/inference/slides/{negative_slide_id}/run", json={"model_name": "fungus"})
+        needs_review_create = client.post(
+            f"/inference/slides/{needs_review_slide_id}/run",
+            json={"model_name": "fungus"},
+        )
+        assert negative_create.status_code == 200, negative_create.text
+        assert needs_review_create.status_code == 200, needs_review_create.text
+
+        negative_response = client.get(f"/inference/runs/{negative_create.json()['id']}")
+        needs_review_response = client.get(f"/inference/runs/{needs_review_create.json()['id']}")
+
+    assert negative_response.status_code == 200, negative_response.text
+    assert negative_response.json()["inference_result"] == "negative"
+    assert negative_response.json()["summary"] == {"total": 1, "fungus_positive": 0, "fungus_negative": 1}
+
+    assert needs_review_response.status_code == 200, needs_review_response.text
+    assert needs_review_response.json()["inference_result"] == "needs_review"
+    assert needs_review_response.json()["summary"] == {"total": 0, "fungus_positive": 0, "fungus_negative": 0}
 
 
 def test_inference_rejects_malformed_region_output(app_paths, monkeypatch):
@@ -342,6 +393,21 @@ def test_inference_subprocess_invocation_uses_configured_tile_batch_size(
     assert response.status_code == 200, response.text
     command = recorded_commands[0]
     assert command[command.index("--batch-size") + 1] == "3"
+
+
+def test_inference_python_prefers_wsi_runtime_before_api_runtime(monkeypatch, tmp_path):
+    project_root = tmp_path / "project"
+    wsi_python = project_root / "wsi-fungal-segmentation" / ".venv" / "Scripts" / "python.exe"
+    api_python = project_root / "services" / "local-api" / ".venv" / "Scripts" / "python.exe"
+    wsi_python.parent.mkdir(parents=True)
+    api_python.parent.mkdir(parents=True)
+    wsi_python.write_text("", encoding="utf-8")
+    api_python.write_text("", encoding="utf-8")
+
+    monkeypatch.delenv("INFERENCE_PYTHON", raising=False)
+    monkeypatch.setattr(inference_routes, "_get_project_root", lambda: project_root)
+
+    assert inference_routes._get_inference_python() == str(wsi_python)
 
 
 def test_inference_reports_memory_pressure_when_subprocess_is_sigkilled(

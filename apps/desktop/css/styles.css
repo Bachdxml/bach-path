@@ -1423,6 +1423,12 @@ body {
   box-sizing: border-box;
 }
 
+.region-overlay--negative {
+  border: 2px solid rgba(44, 156, 176, 0.72);
+  background: rgba(44, 156, 176, 0.05);
+  pointer-events: none;
+}
+
 .viewer-error {
   color: var(--error);
   padding: 18px;

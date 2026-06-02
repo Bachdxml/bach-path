@@ -34,8 +34,8 @@ const viewerInferenceModelChangedEvent =
 
 if (viewerShowNegative) {
   viewerShowNegative.checked = false;
-  viewerShowNegative.disabled = true;
-  viewerShowNegative.title = "Negative overlays are disabled";
+  viewerShowNegative.disabled = false;
+  viewerShowNegative.title = "Show model-negative tile outlines";
 }
 
 let viewer = null;
@@ -162,6 +162,13 @@ function closeViewer() {
 
 function setInferenceStatus(text) {
   if (inferenceStatus) inferenceStatus.textContent = text;
+}
+
+function formatInferenceResultLabel(result) {
+  if (result === "positive") return "AI positive";
+  if (result === "negative") return "AI negative";
+  if (result === "needs_review") return "AI needs review";
+  return "AI unchecked";
 }
 
 function escapeHtml(s) {
@@ -647,50 +654,70 @@ function addRegionOverlays(regions, showNegative = false) {
   if (!dims) return;
 
   const positives = [];
+  const negatives = [];
   for (const r of regions || []) {
     const label = normalizeRegionLabel(r.label);
-    if (label !== "fungus_positive") continue;
+    if (label !== "fungus_positive" && !(showNegative && label === "fungus_negative")) continue;
     const contribution = getRegionContribution(r, dims);
     if (!contribution) continue;
-    positives.push(contribution);
-  }
-  if (!positives.length) return;
-
-  // Build a full-slide heatmap canvas from positive detections.
-  const longSide = Math.max(dims.width, dims.height);
-  const scale = longSide > 1200 ? 1200 / longSide : 1;
-  const canvasW = Math.max(64, Math.round(dims.width * scale));
-  const canvasH = Math.max(64, Math.round(dims.height * scale));
-  const heatCanvas = document.createElement("canvas");
-  heatCanvas.width = canvasW;
-  heatCanvas.height = canvasH;
-  heatCanvas.style.width = "100%";
-  heatCanvas.style.height = "100%";
-  heatCanvas.style.display = "block";
-  heatCanvas.style.pointerEvents = "none";
-
-  const ctx = heatCanvas.getContext("2d");
-  if (!ctx) return;
-  const opacity = getOverlayOpacity();
-
-  for (const p of positives) {
-    renderHeatContribution(ctx, p, dims, canvasW, canvasH, opacity);
+    if (label === "fungus_positive") positives.push(contribution);
+    else negatives.push(contribution);
   }
 
-  const container = document.createElement("div");
-  container.className = "region-overlay region-heatmap-overlay";
-  container.style.width = "100%";
-  container.style.height = "100%";
-  container.style.pointerEvents = "none";
-  container.style.overflow = "hidden";
-  container.style.mixBlendMode = "multiply";
-  container.appendChild(heatCanvas);
+  if (positives.length) {
+    // Build a full-slide heatmap canvas from positive detections.
+    const longSide = Math.max(dims.width, dims.height);
+    const scale = longSide > 1200 ? 1200 / longSide : 1;
+    const canvasW = Math.max(64, Math.round(dims.width * scale));
+    const canvasH = Math.max(64, Math.round(dims.height * scale));
+    const heatCanvas = document.createElement("canvas");
+    heatCanvas.width = canvasW;
+    heatCanvas.height = canvasH;
+    heatCanvas.style.width = "100%";
+    heatCanvas.style.height = "100%";
+    heatCanvas.style.display = "block";
+    heatCanvas.style.pointerEvents = "none";
 
-  const imageRect = new OpenSeadragon.Rect(0, 0, dims.width, dims.height);
-  const viewportRect = viewer.viewport.imageToViewportRectangle(imageRect);
-  try {
-    viewer.addOverlay({ element: container, location: viewportRect });
-  } catch (_) {}
+    const ctx = heatCanvas.getContext("2d");
+    if (ctx) {
+      const opacity = getOverlayOpacity();
+      for (const p of positives) {
+        renderHeatContribution(ctx, p, dims, canvasW, canvasH, opacity);
+      }
+
+      const container = document.createElement("div");
+      container.className = "region-overlay region-heatmap-overlay";
+      container.style.width = "100%";
+      container.style.height = "100%";
+      container.style.pointerEvents = "none";
+      container.style.overflow = "hidden";
+      container.style.mixBlendMode = "multiply";
+      container.appendChild(heatCanvas);
+
+      const imageRect = new OpenSeadragon.Rect(0, 0, dims.width, dims.height);
+      const viewportRect = viewer.viewport.imageToViewportRectangle(imageRect);
+      try {
+        viewer.addOverlay({ element: container, location: viewportRect });
+      } catch (_) {}
+    }
+  }
+
+  for (const n of negatives) {
+    const box = document.createElement("div");
+    box.className = "region-overlay region-overlay--negative";
+    const rect = new OpenSeadragon.Rect(
+      n.x1,
+      n.y1,
+      Math.max(1, n.x2 - n.x1),
+      Math.max(1, n.y2 - n.y1)
+    );
+    try {
+      viewer.addOverlay({
+        element: box,
+        location: viewer.viewport.imageToViewportRectangle(rect),
+      });
+    } catch (_) {}
+  }
 }
 
 async function loadLatestInferenceRun(slideId, requestId = null) {
@@ -1107,7 +1134,9 @@ async function handleRunInference() {
         return;
       }
       if (r.status === "succeeded") {
-        setInferenceStatus(`Done: ${r.summary?.fungus_positive ?? 0} positive`);
+        const resultLabel = formatInferenceResultLabel(r.inference_result);
+        const positiveCount = r.summary?.fungus_positive ?? 0;
+        setInferenceStatus(`Done: ${resultLabel} (${positiveCount} positive)`);
         runInferenceBtn.disabled = false;
         const refreshGallery = viewerApp?.features?.gallery?.refresh || window.galleryRefresh;
         if (typeof refreshGallery === "function") {

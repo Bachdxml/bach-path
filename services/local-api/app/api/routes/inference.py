@@ -199,10 +199,10 @@ def _get_inference_python() -> str:
         return env_py
     base = _get_project_root()
     for venv in [
-        base / "services" / "local-api" / ".venv" / "bin" / "python",
-        base / "services" / "local-api" / ".venv" / "Scripts" / "python.exe",
         base / "wsi-fungal-segmentation" / ".venv" / "bin" / "python",
         base / "wsi-fungal-segmentation" / ".venv" / "Scripts" / "python.exe",
+        base / "services" / "local-api" / ".venv" / "bin" / "python",
+        base / "services" / "local-api" / ".venv" / "Scripts" / "python.exe",
         base / ".venv" / "bin" / "python",
         base / ".venv" / "Scripts" / "python.exe",
     ]:
@@ -835,12 +835,24 @@ def _run_to_response(
         model_name=run.model_name,
         model_version=run.model_version,
         status=run.status,
+        inference_result=_inference_result_from_run(run, summary),
         started_at=run.started_at,
         finished_at=run.finished_at,
         created_at=run.created_at,
         summary=summary,
         error_message=_public_error_message(run.error_message),
     )
+
+
+def _inference_result_from_run(run: InferenceRun, summary: dict | None) -> str:
+    if run.status != InferenceStatus.succeeded.value:
+        return "unchecked"
+    summary = summary or {}
+    if int(summary.get("fungus_positive") or 0) > 0:
+        return "positive"
+    if int(summary.get("fungus_negative") or 0) > 0:
+        return "negative"
+    return "needs_review"
 
 
 def _public_error_message(message: str | None) -> str | None:

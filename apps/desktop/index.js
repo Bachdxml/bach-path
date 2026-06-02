@@ -267,6 +267,13 @@ function getApiBaseDir() {
   return path.join(__dirname, "..", "..", "services", "local-api");
 }
 
+function getProjectRoot() {
+  if (app.isPackaged) {
+    return process.resourcesPath;
+  }
+  return path.join(__dirname, "..", "..");
+}
+
 function getApiAppDir() {
   return path.join(getApiBaseDir(), "app");
 }
@@ -281,6 +288,19 @@ function getPythonPath() {
   if (fs.existsSync(venvPythonWin)) return venvPythonWin;
   if (app.isPackaged) return null;
   return "python";
+}
+
+function getInferencePythonPath(apiPythonPath) {
+  const wsiBase = path.join(getProjectRoot(), "wsi-fungal-segmentation", ".venv");
+  const candidates = [
+    path.join(wsiBase, "bin", "python3"),
+    path.join(wsiBase, "bin", "python"),
+    path.join(wsiBase, "Scripts", "python.exe"),
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return apiPythonPath;
 }
 
 function waitForHealth(port, host = "127.0.0.1", maxAttempts = 30) {
@@ -360,7 +380,7 @@ function startApi() {
   // so allow query API keys only for this local desktop-launched API process.
   spawnEnv.APP_ALLOW_QUERY_API_KEY = "true";
   if (!spawnEnv.INFERENCE_PYTHON) {
-    spawnEnv.INFERENCE_PYTHON = pythonPath;
+    spawnEnv.INFERENCE_PYTHON = getInferencePythonPath(pythonPath);
   }
   // Desktop renderer runs from file:// (Origin: null), so enable this explicitly for desktop launches.
   spawnEnv.APP_CORS_ALLOW_FILE_ORIGIN = "true";

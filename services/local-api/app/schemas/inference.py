@@ -24,6 +24,7 @@ class InferenceRunResponse(BaseModel):
     model_name: str
     model_version: str
     status: str
+    inference_result: str = "unchecked"
     started_at: datetime | None
     finished_at: datetime | None
     created_at: datetime
