@@ -40,14 +40,14 @@ def inference_module():
     return _load_module()
 
 
-def test_main_calls_model_without_explicit_density_label(tmp_path, monkeypatch, inference_module):
+def test_main_runs_two_pass_neighborhood_inference_for_raster(tmp_path, monkeypatch, inference_module):
     slide_path = tmp_path / "slide.png"
     output_path = tmp_path / "output.json"
     checkpoint_path = tmp_path / "checkpoint.pth.gz"
     Image.new("RGB", (64, 64), color=(90, 160, 110)).save(slide_path)
     checkpoint_path.write_text("checkpoint", encoding="utf-8")
 
-    recorded_calls: list[tuple[torch.Tensor, ...]] = []
+    recorded_calls: list[tuple[tuple[torch.Tensor, ...], dict]] = []
 
     class FakeModel:
         def __init__(self, **kwargs):
@@ -63,8 +63,8 @@ def test_main_calls_model_without_explicit_density_label(tmp_path, monkeypatch, 
         def eval(self):
             return self
 
-        def __call__(self, *args):
-            recorded_calls.append(args)
+        def __call__(self, *args, **kwargs):
+            recorded_calls.append((args, kwargs))
             batch = args[0]
             batch_size, _, height, width = batch.shape
             return (
@@ -104,9 +104,11 @@ def test_main_calls_model_without_explicit_density_label(tmp_path, monkeypatch, 
 
     assert inference_module.main() == 0
     assert output_path.exists()
-    assert len(recorded_calls) == 1
-    assert len(recorded_calls[0]) == 1
-    assert recorded_calls[0][0].shape == (1, 3, 64, 64)
+    assert len(recorded_calls) == 2
+    assert recorded_calls[0][1] == {}
+    assert "density_label" in recorded_calls[1][1]
+    assert recorded_calls[0][0][0].shape == (1, 3, 64, 64)
+    assert recorded_calls[1][0][0].shape == (1, 3, 64, 64)
 
 
 def test_raster_size_guard_runs_before_rgb_decode(tmp_path, monkeypatch, inference_module):
@@ -162,14 +164,14 @@ def test_raster_size_guard_runs_before_rgb_decode(tmp_path, monkeypatch, inferen
     assert not output_path.exists()
 
 
-def test_openslide_path_calls_model_without_explicit_density_label(tmp_path, monkeypatch, inference_module):
+def test_openslide_path_runs_two_pass_neighborhood_inference(tmp_path, monkeypatch, inference_module):
     slide_path = tmp_path / "slide.svs"
     output_path = tmp_path / "output.json"
     checkpoint_path = tmp_path / "checkpoint.pth.gz"
     slide_path.write_text("stub slide", encoding="utf-8")
     checkpoint_path.write_text("checkpoint", encoding="utf-8")
 
-    recorded_calls: list[tuple[torch.Tensor, ...]] = []
+    recorded_calls: list[tuple[tuple[torch.Tensor, ...], dict]] = []
 
     class FakeModel:
         def __init__(self, **kwargs):
@@ -185,8 +187,8 @@ def test_openslide_path_calls_model_without_explicit_density_label(tmp_path, mon
         def eval(self):
             return self
 
-        def __call__(self, *args):
-            recorded_calls.append(args)
+        def __call__(self, *args, **kwargs):
+            recorded_calls.append((args, kwargs))
             batch = args[0]
             batch_size, _, height, width = batch.shape
             return (
@@ -242,9 +244,11 @@ def test_openslide_path_calls_model_without_explicit_density_label(tmp_path, mon
 
     assert inference_module.main() == 0
     assert output_path.exists()
-    assert len(recorded_calls) == 1
-    assert len(recorded_calls[0]) == 1
-    assert recorded_calls[0][0].shape == (1, 3, 64, 64)
+    assert len(recorded_calls) == 2
+    assert recorded_calls[0][1] == {}
+    assert "density_label" in recorded_calls[1][1]
+    assert recorded_calls[0][0][0].shape == (1, 3, 64, 64)
+    assert recorded_calls[1][0][0].shape == (1, 3, 64, 64)
 
 
 def test_openslide_path_skips_background_tiles_before_model(tmp_path, monkeypatch, inference_module):
@@ -254,7 +258,7 @@ def test_openslide_path_skips_background_tiles_before_model(tmp_path, monkeypatc
     slide_path.write_text("stub slide", encoding="utf-8")
     checkpoint_path.write_text("checkpoint", encoding="utf-8")
 
-    recorded_calls: list[tuple[torch.Tensor, ...]] = []
+    recorded_calls: list[tuple[tuple[torch.Tensor, ...], dict]] = []
     read_locations: list[tuple[int, int]] = []
 
     class FakeModel:
@@ -271,8 +275,8 @@ def test_openslide_path_skips_background_tiles_before_model(tmp_path, monkeypatc
         def eval(self):
             return self
 
-        def __call__(self, *args):
-            recorded_calls.append(args)
+        def __call__(self, *args, **kwargs):
+            recorded_calls.append((args, kwargs))
             batch = args[0]
             batch_size, _, height, width = batch.shape
             return (
@@ -335,8 +339,10 @@ def test_openslide_path_skips_background_tiles_before_model(tmp_path, monkeypatc
     )
 
     assert inference_module.main() == 0
-    assert read_locations == [(64, 0)]
-    assert len(recorded_calls) == 1
+    assert read_locations == [(64, 0), (64, 0)]
+    assert len(recorded_calls) == 2
+    assert recorded_calls[0][1] == {}
+    assert "density_label" in recorded_calls[1][1]
 
 
 def test_openslide_auto_level_uses_tile_budget_and_level_zero_coordinates(
@@ -366,7 +372,7 @@ def test_openslide_auto_level_uses_tile_budget_and_level_zero_coordinates(
         def eval(self):
             return self
 
-        def __call__(self, *args):
+        def __call__(self, *args, **kwargs):
             batch = args[0]
             batch_size, _, height, width = batch.shape
             return (
@@ -430,6 +436,64 @@ def test_openslide_auto_level_uses_tile_budget_and_level_zero_coordinates(
     assert output["summary"]["total_tiles"] == 4
     assert all(call[1] == 2 for call in read_calls)
     assert output["regions"][0]["w"] == 2086
+
+
+def test_infer_with_neighborhood_uses_neighbor_consensus_for_second_pass(inference_module):
+    tiles = {
+        (0, 0): torch.zeros((1, 3, 8, 8), dtype=torch.float32),
+        (8, 0): torch.zeros((1, 3, 8, 8), dtype=torch.float32),
+        (16, 0): torch.zeros((1, 3, 8, 8), dtype=torch.float32),
+        (0, 8): torch.zeros((1, 3, 8, 8), dtype=torch.float32),
+        (8, 8): torch.zeros((1, 3, 8, 8), dtype=torch.float32),
+        (16, 8): torch.zeros((1, 3, 8, 8), dtype=torch.float32),
+        (0, 16): torch.zeros((1, 3, 8, 8), dtype=torch.float32),
+        (8, 16): torch.zeros((1, 3, 8, 8), dtype=torch.float32),
+        (16, 16): torch.zeros((1, 3, 8, 8), dtype=torch.float32),
+    }
+    density_by_coord = {
+        coord: (0 if coord == (8, 8) else 2)
+        for coord in tiles
+    }
+    coords = list(tiles)
+    second_pass_labels = []
+
+    class FakeModel:
+        def eval(self):
+            return self
+
+        def __call__(self, batch, density_label=None):
+            batch_size, _, height, width = batch.shape
+            if density_label is not None:
+                second_pass_labels.extend(density_label.cpu().tolist())
+                return (
+                    torch.zeros((batch_size, 1, height, width), dtype=torch.float32),
+                    torch.zeros((batch_size, 4), dtype=torch.float32),
+                    torch.zeros((batch_size, 1, 1, 1), dtype=torch.float32),
+                    torch.zeros((batch_size, 1, 1, 1), dtype=torch.float32),
+                )
+
+            start = len(second_pass_labels)
+            logits = torch.zeros((batch_size, 4), dtype=torch.float32)
+            for row, coord in enumerate(coords[start:start + batch_size]):
+                logits[row, density_by_coord[coord]] = 1.0
+            return (
+                torch.zeros((batch_size, 1, height, width), dtype=torch.float32),
+                logits,
+                torch.zeros((batch_size, 1, 1, 1), dtype=torch.float32),
+                torch.zeros((batch_size, 1, 1, 1), dtype=torch.float32),
+            )
+
+    masks = inference_module.infer_with_neighborhood(
+        FakeModel(),
+        tiles,
+        torch.device("cpu"),
+        tile_size=8,
+        stride=8,
+        batch_size=len(tiles),
+    )
+
+    assert set(masks) == set(tiles)
+    assert second_pass_labels[coords.index((8, 8))] == 2
 
 
 def test_compute_hotspot_stays_centered_for_centered_synthetic_map(inference_module):
