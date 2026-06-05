@@ -1109,6 +1109,7 @@ async function handleRunInference() {
   runInferenceBtn.disabled = true;
   const selectedModel = getSelectedModelId();
   const threshold = getCurrentThreshold();
+  console.log('[DEBUG] Running inference with threshold:', threshold);
   setInferenceStatus(selectedModel ? `Starting... (${selectedModel})` : "Starting...");
 
   try {

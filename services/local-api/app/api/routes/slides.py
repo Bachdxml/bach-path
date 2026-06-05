@@ -32,7 +32,7 @@ from app.schemas.slides import (
     SlideReviewRequest,
     SlideReviewResponse,
 )
-from app.slides.deepzoom import deepzoom_paths, has_deepzoom
+from app.slides.deepzoom import deepzoom_paths, has_deepzoom, ensure_deepzoom
 from app.slides.metadata import RASTER_EXTENSIONS, read_openslide_metadata, read_raster_metadata
 from app.slides.paths import folder_key_for_original_path
 from app.slides.storage import copy_into_managed_storage
@@ -224,9 +224,12 @@ def _import_slide_file(
     db.add(slide)
     db.commit()
     db.refresh(slide)
-
-    return slide
-
+    try:
+        logger.warning("ATTEMPTING DEEPZOOM for slide %s at %s", slide.id, dest_path)
+        ensure_deepzoom(dest_path, settings.tiles_cache_dir, slide.id)
+        logger.warning("DEEPZOOM COMPLETE for slide %s", slide.id)
+    except Exception as e:
+        logger.warning("DeepZoom pre-generation failed for slide %s: %s", slide.id, e, exc_info=True)
 
 def _delete_pending_slide_row(db: Session, slide_id: int) -> None:
     slide = db.get(Slide, slide_id)

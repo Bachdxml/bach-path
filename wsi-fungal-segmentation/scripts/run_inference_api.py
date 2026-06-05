@@ -48,7 +48,7 @@ EXIT_OUTPUT = 4
 MAX_INFERENCE_TILES_DEFAULT = 200_000
 MAX_RASTER_PIXELS_DEFAULT = 150_000_000
 TISSUE_MASK_MAX_DIMENSION = 2048
-TARGET_INFERENCE_TILES_DEFAULT = 1500
+TARGET_INFERENCE_TILES_DEFAULT = 30000
 
 
 def _safe_torch_load(source, *, map_location):
@@ -516,28 +516,40 @@ def _infer_regions_with_neighborhood(
             for (x, y, _w, _h), label in zip(batch_positions, labels):
                 density_preds[to_grid(x, y)] = label
 
+    from collections import Counter
+    label_counts = Counter(density_preds.values())
+    print(f"[DIAG] Density distribution: {dict(label_counts)} (0=low,1=med,2=high,3=neg)", file=sys.stderr)
+
+
     def consensus_label(row, col):
-        # Majority vote over neighboring density labels.
         neighbors = [
             density_preds[(row + dr, col + dc)]
             for dr in range(-k, k + 1)
             for dc in range(-k, k + 1)
             if (row + dr, col + dc) in density_preds
         ]
-        return max(sorted(set(neighbors)), key=neighbors.count)
+        # Bias toward non-negative — if any neighbor is non-negative,
+        # use majority vote among non-negative neighbors only.
+        # Only return negative if every neighbor is negative.
+        non_neg = [l for l in neighbors if l != 3]
+        if non_neg:
+            return max(sorted(set(non_neg)), key=non_neg.count)
+        return 3
 
     regions = []
     with torch.no_grad():
         for i in range(0, len(positions), args.batch_size):
             batch_positions = positions[i:i + args.batch_size]
             batch = torch.cat([load_tensor(pos) for pos in batch_positions], dim=0).to(device)
-            # Second pass: segment with density conditioning from the local
-            # neighborhood, so isolated low-density tiles can inherit context.
+            
+            
+
             batch_labels = torch.tensor(
                 [consensus_label(*to_grid(x, y)) for x, y, _w, _h in batch_positions],
                 dtype=torch.long,
                 device=device,
             )
+            
             seg_logits, _, _, _ = model(batch, density_label=batch_labels)
             probs = torch.sigmoid(seg_logits).cpu()
             seg_masks = {
@@ -564,7 +576,7 @@ def main():
     parser.add_argument("--stride", type=int, default=512)
     parser.add_argument("--level", default="auto")
     parser.add_argument("--target-tiles", type=int, default=TARGET_INFERENCE_TILES_DEFAULT)
-    parser.add_argument("--threshold", type=float, default=0.1)
+    parser.add_argument("--threshold", type=float, default=0.04)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--min-tissue-fraction", type=float, default=0.02)

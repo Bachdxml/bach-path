@@ -32,7 +32,7 @@ def test_load_settings_defaults_to_local_profile(app_paths, monkeypatch):
     assert settings.inference_tile_batch_size == 4
     assert settings.inference_device == "auto"
     assert settings.inference_level == "auto"
-    assert settings.inference_target_tiles == 1500
+    assert settings.inference_target_tiles == 30000
 
 
 def test_load_settings_accepts_inference_tile_batch_size_override(app_paths, monkeypatch):

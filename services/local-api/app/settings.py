@@ -32,7 +32,7 @@ class Settings(BaseModel):
     inference_tile_batch_size: int = 4
     inference_device: str = "auto"
     inference_level: str = "auto"
-    inference_target_tiles: int = 1500
+    inference_target_tiles: int = 30000
 
 
 def _parse_deployment_mode(raw: str | None) -> DeploymentMode:
@@ -227,7 +227,7 @@ def load_settings() -> Settings:
         inference_level = str(parsed_level)
     inference_target_tiles = _parse_positive_int(
         os.environ.get("APP_INFERENCE_TARGET_TILES"),
-        default=1500,
+        default=30000,
     )
 
     _validate_profile_settings(
