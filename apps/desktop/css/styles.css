@@ -1191,7 +1191,7 @@ body {
 }
 
 .viewer-legend-swatch--positive {
-  background: #e74c3c;
+  background: #ff1818;
 }
 
 .viewer-legend-swatch--negative {
@@ -1424,9 +1424,8 @@ body {
 }
 
 .region-overlay--segmentation {
-  border: 2px solid rgba(25, 116, 92, 0.92);
-  background: rgba(244, 255, 249, 0.18);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.85) inset;
+  border: none;
+  background: transparent;
   pointer-events: none;
 }
 

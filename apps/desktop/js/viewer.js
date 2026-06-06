@@ -497,7 +497,261 @@ function decodePredictionMask(mask) {
   return pixels;
 }
 
-function buildPredictionMaskOverlay(region) {
+const POSITIVE_OUTLINE_GAP_PX = 3;
+const POSITIVE_OUTLINE_THICKNESS_PX = 2;
+const POSITIVE_OUTLINE_RGB = [255, 24, 24];
+const POSITIVE_OUTLINE_MIDPOINT_TOLERANCE_PX = 0.5;
+const MAX_OUTLINE_CLUSTER_CANVAS_PX = 4096;
+
+function computeChamferDistanceField(foreground, width, height) {
+  const dist = new Float32Array(foreground.length);
+  const INF = width + height + 1;
+  for (let i = 0; i < foreground.length; i += 1) {
+    dist[i] = foreground[i] ? 0 : INF;
+  }
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const i = y * width + x;
+      if (x > 0) dist[i] = Math.min(dist[i], dist[i - 1] + 1);
+      if (y > 0) dist[i] = Math.min(dist[i], dist[i - width] + 1);
+    }
+  }
+  for (let y = height - 1; y >= 0; y -= 1) {
+    for (let x = width - 1; x >= 0; x -= 1) {
+      const i = y * width + x;
+      if (x < width - 1) dist[i] = Math.min(dist[i], dist[i + 1] + 1);
+      if (y < height - 1) dist[i] = Math.min(dist[i], dist[i + width] + 1);
+    }
+  }
+  return dist;
+}
+
+function preparePositiveMaskLayer(positive) {
+  const mask = getPredictionMask(positive.region);
+  if (!mask) return null;
+  const pixels = decodePredictionMask(mask);
+  const tileW = Math.max(1, positive.x2 - positive.x1);
+  const tileH = Math.max(1, positive.y2 - positive.y1);
+  return {
+    region: positive.region,
+    x1: positive.x1,
+    y1: positive.y1,
+    x2: positive.x2,
+    y2: positive.y2,
+    tileW,
+    tileH,
+    maskW: mask.width,
+    maskH: mask.height,
+    pixels,
+  };
+}
+
+function expandedRectsOverlap(a, b, margin) {
+  return (
+    a.x1 - margin < b.x2 + margin &&
+    a.x2 + margin > b.x1 - margin &&
+    a.y1 - margin < b.y2 + margin &&
+    a.y2 + margin > b.y1 - margin
+  );
+}
+
+function clusterPositiveMaskLayers(layers) {
+  const margin = POSITIVE_OUTLINE_GAP_PX + POSITIVE_OUTLINE_THICKNESS_PX;
+  const parent = layers.map((_, index) => index);
+  const find = (index) => {
+    if (parent[index] === index) return index;
+    parent[index] = find(parent[index]);
+    return parent[index];
+  };
+  const union = (left, right) => {
+    parent[find(left)] = find(right);
+  };
+  for (let i = 0; i < layers.length; i += 1) {
+    for (let j = i + 1; j < layers.length; j += 1) {
+      if (expandedRectsOverlap(layers[i], layers[j], margin)) union(i, j);
+    }
+  }
+  const groups = new Map();
+  for (let i = 0; i < layers.length; i += 1) {
+    const root = find(i);
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root).push(layers[i]);
+  }
+  return [...groups.values()];
+}
+
+function dilateBinaryMask(pixels, width, height, radius) {
+  const dilated = new Uint8Array(pixels.length);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (!pixels[y * width + x]) continue;
+      for (let dy = -radius; dy <= radius; dy += 1) {
+        for (let dx = -radius; dx <= radius; dx += 1) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+          dilated[ny * width + nx] = 1;
+        }
+      }
+    }
+  }
+  return dilated;
+}
+
+function extractIsolatedExteriorOutline(
+  pixels,
+  width,
+  height,
+  gapPx = POSITIVE_OUTLINE_GAP_PX,
+  thicknessPx = POSITIVE_OUTLINE_THICKNESS_PX
+) {
+  const clearance = dilateBinaryMask(pixels, width, height, gapPx);
+  const outer = dilateBinaryMask(pixels, width, height, gapPx + thicknessPx);
+  const outline = new Uint8Array(pixels.length);
+  for (let i = 0; i < pixels.length; i += 1) {
+    if (outer[i] && !clearance[i]) outline[i] = 1;
+  }
+  return outline;
+}
+
+function stampMaskIntoClusterGrid(grid, gridW, gridH, layer, labelValue) {
+  const scaleX = layer.tileW / layer.maskW;
+  const scaleY = layer.tileH / layer.maskH;
+  const originX = layer.clusterOriginX;
+  const originY = layer.clusterOriginY;
+  for (let my = 0; my < layer.maskH; my += 1) {
+    for (let mx = 0; mx < layer.maskW; mx += 1) {
+      if (!layer.pixels[my * layer.maskW + mx]) continue;
+      const startX = Math.floor(layer.x1 + mx * scaleX - originX);
+      const startY = Math.floor(layer.y1 + my * scaleY - originY);
+      const endX = Math.ceil(layer.x1 + (mx + 1) * scaleX - originX);
+      const endY = Math.ceil(layer.y1 + (my + 1) * scaleY - originY);
+      for (let gy = startY; gy < endY; gy += 1) {
+        if (gy < 0 || gy >= gridH) continue;
+        for (let gx = startX; gx < endX; gx += 1) {
+          if (gx < 0 || gx >= gridW) continue;
+          grid[gy * gridW + gx] = labelValue;
+        }
+      }
+    }
+  }
+}
+
+function computeClusterOutlineLayers(cluster) {
+  const margin = POSITIVE_OUTLINE_GAP_PX + POSITIVE_OUTLINE_THICKNESS_PX;
+  const originX = Math.floor(Math.min(...cluster.map((layer) => layer.x1)) - margin);
+  const originY = Math.floor(Math.min(...cluster.map((layer) => layer.y1)) - margin);
+  const maxX = Math.ceil(Math.max(...cluster.map((layer) => layer.x2)) + margin);
+  const maxY = Math.ceil(Math.max(...cluster.map((layer) => layer.y2)) + margin);
+  const gridW = Math.max(1, maxX - originX);
+  const gridH = Math.max(1, maxY - originY);
+
+  if (gridW > MAX_OUTLINE_CLUSTER_CANVAS_PX || gridH > MAX_OUTLINE_CLUSTER_CANVAS_PX) {
+    return cluster.map((layer) => ({
+      layer,
+      outline: extractIsolatedExteriorOutline(layer.pixels, layer.maskW, layer.maskH),
+    }));
+  }
+
+  for (const layer of cluster) {
+    layer.clusterOriginX = originX;
+    layer.clusterOriginY = originY;
+  }
+
+  const labelGrids = cluster.map(() => new Uint8Array(gridW * gridH));
+  cluster.forEach((layer, index) => {
+    stampMaskIntoClusterGrid(labelGrids[index], gridW, gridH, layer, 1);
+  });
+
+  const distanceFields = labelGrids.map((grid) => computeChamferDistanceField(grid, gridW, gridH));
+  const clusterOutlines = labelGrids.map(() => new Uint8Array(gridW * gridH));
+  const gap = POSITIVE_OUTLINE_GAP_PX;
+  const thickness = POSITIVE_OUTLINE_THICKNESS_PX;
+  const tolerance = POSITIVE_OUTLINE_MIDPOINT_TOLERANCE_PX;
+
+  for (let gy = 0; gy < gridH; gy += 1) {
+    for (let gx = 0; gx < gridW; gx += 1) {
+      const p = gy * gridW + gx;
+      const distances = distanceFields
+        .map((field, index) => ({ index, distance: field[p] }))
+        .filter((entry) => entry.distance < gridW + gridH)
+        .sort((a, b) => a.distance - b.distance);
+      if (!distances.length || distances[0].distance <= 0) continue;
+
+      const ringCandidates = distances.filter(
+        (entry) => entry.distance >= gap && entry.distance <= gap + thickness
+      );
+      if (!ringCandidates.length) continue;
+
+      if (ringCandidates.length === 1) {
+        clusterOutlines[ringCandidates[0].index][p] = 1;
+        continue;
+      }
+
+      const first = ringCandidates[0];
+      const second = ringCandidates[1];
+      if (Math.abs(first.distance - second.distance) <= tolerance) {
+        clusterOutlines[first.index][p] = 1;
+        if (second.index !== first.index) clusterOutlines[second.index][p] = 1;
+      } else {
+        clusterOutlines[first.index][p] = 1;
+      }
+    }
+  }
+
+  return cluster.map((layer, index) => ({
+    layer,
+    outline: sampleClusterOutlineToMask(
+      clusterOutlines[index],
+      layer,
+      originX,
+      originY,
+      gridW,
+      gridH
+    ),
+  }));
+}
+
+function sampleClusterOutlineToMask(clusterOutline, layer, originX, originY, gridW, gridH) {
+  const outline = new Uint8Array(layer.maskW * layer.maskH);
+  const scaleX = layer.tileW / layer.maskW;
+  const scaleY = layer.tileH / layer.maskH;
+  for (let my = 0; my < layer.maskH; my += 1) {
+    for (let mx = 0; mx < layer.maskW; mx += 1) {
+      const gx = Math.round(layer.x1 + (mx + 0.5) * scaleX - originX);
+      const gy = Math.round(layer.y1 + (my + 0.5) * scaleY - originY);
+      if (gx < 0 || gy < 0 || gx >= gridW || gy >= gridH) continue;
+      if (clusterOutline[gy * gridW + gx]) outline[my * layer.maskW + mx] = 1;
+    }
+  }
+  return outline;
+}
+
+function computePositiveOutlineByRegion(positives) {
+  const layers = positives.map(preparePositiveMaskLayer).filter(Boolean);
+  const outlineByRegion = new Map();
+  for (const cluster of clusterPositiveMaskLayers(layers)) {
+    const results =
+      cluster.length === 1
+        ? [
+            {
+              layer: cluster[0],
+              outline: extractIsolatedExteriorOutline(
+                cluster[0].pixels,
+                cluster[0].maskW,
+                cluster[0].maskH
+              ),
+            },
+          ]
+        : computeClusterOutlineLayers(cluster);
+    for (const { layer, outline } of results) {
+      outlineByRegion.set(layer.region, outline);
+    }
+  }
+  return outlineByRegion;
+}
+
+function buildPredictionMaskOverlay(region, outlinePixels = null, maskW = 0, maskH = 0) {
   const container = document.createElement("div");
   container.className = "region-overlay region-overlay--segmentation";
   container.style.opacity = String(getOverlayOpacity());
@@ -505,22 +759,27 @@ function buildPredictionMaskOverlay(region) {
   const mask = getPredictionMask(region);
   if (!mask) return container;
 
-  const pixels = decodePredictionMask(mask);
+  const resolvedMaskW = maskW || mask.width;
+  const resolvedMaskH = maskH || mask.height;
+  const outline =
+    outlinePixels ||
+    extractIsolatedExteriorOutline(decodePredictionMask(mask), resolvedMaskW, resolvedMaskH);
   const canvas = document.createElement("canvas");
-  canvas.width = mask.width;
-  canvas.height = mask.height;
+  canvas.width = resolvedMaskW;
+  canvas.height = resolvedMaskH;
   canvas.className = "region-overlay-mask";
   const ctx = canvas.getContext("2d");
   if (!ctx) return container;
 
-  const imageData = ctx.createImageData(mask.width, mask.height);
-  for (let i = 0; i < pixels.length; i += 1) {
-    if (!pixels[i]) continue;
+  const imageData = ctx.createImageData(resolvedMaskW, resolvedMaskH);
+  const [r, g, b] = POSITIVE_OUTLINE_RGB;
+  for (let i = 0; i < outline.length; i += 1) {
+    if (!outline[i]) continue;
     const j = i * 4;
-    imageData.data[j] = 244;
-    imageData.data[j + 1] = 255;
-    imageData.data[j + 2] = 249;
-    imageData.data[j + 3] = 230;
+    imageData.data[j] = r;
+    imageData.data[j + 1] = g;
+    imageData.data[j + 2] = b;
+    imageData.data[j + 3] = 255;
   }
   ctx.putImageData(imageData, 0, 0);
   container.appendChild(canvas);
@@ -626,8 +885,17 @@ function addRegionOverlays(regions, showNegative = false) {
     else negatives.push(contribution);
   }
 
+  const outlineByRegion = computePositiveOutlineByRegion(positives);
+
   for (const p of positives) {
-    const segment = buildPredictionMaskOverlay(p.region);
+    const mask = getPredictionMask(p.region);
+    const outline = outlineByRegion.get(p.region);
+    const segment = buildPredictionMaskOverlay(
+      p.region,
+      outline,
+      mask?.width,
+      mask?.height
+    );
     const rect = new OpenSeadragon.Rect(
       p.x1,
       p.y1,
