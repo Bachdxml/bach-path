@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import base64
 import sys
 import types
 from pathlib import Path
@@ -33,6 +34,14 @@ def _load_module():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _bitpack_foreground_count(data: str, total_pixels: int) -> int:
+    raw = base64.b64decode(data.encode("ascii"))
+    count = 0
+    for i in range(total_pixels):
+        count += (raw[i // 8] >> (7 - (i % 8))) & 1
+    return count
 
 
 @pytest.fixture
@@ -496,33 +505,47 @@ def test_infer_with_neighborhood_uses_neighbor_consensus_for_second_pass(inferen
     assert second_pass_labels[coords.index((8, 8))] == 2
 
 
-def test_compute_hotspot_stays_centered_for_centered_synthetic_map(inference_module):
-    prob_map = torch.zeros((8, 8), dtype=torch.float32)
-    prob_map[3:5, 3:5] = 1.0
+def test_prediction_tile_region_from_prob_map_returns_mask_payload(inference_module):
+    prob_map = torch.zeros((64, 64), dtype=torch.float32).numpy()
+    prob_map[16:48, 16:48] = 1.0
 
-    hotspot = inference_module._compute_hotspot(prob_map, x=100, y=200, w=80, h=80)
+    regions = inference_module._prediction_tile_region_from_prob_map(
+        prob_map,
+        tile_w=80,
+        tile_h=80,
+        threshold=0.5,
+    )
 
-    assert hotspot is not None
-    payload = hotspot["hotspot"]
-    assert payload["cx"] == pytest.approx(140.0, abs=0.01)
-    assert payload["cy"] == pytest.approx(240.0, abs=0.01)
-    assert payload["x"] == pytest.approx(130.0, abs=0.01)
-    assert payload["y"] == pytest.approx(230.0, abs=0.01)
-    assert payload["w"] == pytest.approx(20.0, abs=0.01)
-    assert payload["h"] == pytest.approx(20.0, abs=0.01)
+    assert len(regions) == 1
+    region = regions[0]
+    assert region["x"] == 0
+    assert region["y"] == 0
+    assert region["w"] == 80
+    assert region["h"] == 80
+    assert region["score"] == pytest.approx(1.0, abs=0.01)
+    assert region["payload"]["kind"] == "segmentation"
+    assert region["payload"]["source"] == "prediction_tile"
+    assert region["payload"]["coverage"] == pytest.approx(0.25, abs=0.01)
+    mask = region["payload"]["prediction_mask"]
+    assert mask["encoding"] == "bitpack"
+    assert mask["width"] == 64
+    assert mask["height"] == 64
+    assert _bitpack_foreground_count(mask["data"], 64 * 64) == 32 * 32
 
 
-def test_compute_hotspot_shifts_off_center_for_off_center_synthetic_map(inference_module):
-    prob_map = torch.zeros((8, 8), dtype=torch.float32)
-    prob_map[1:3, 5:7] = 1.0
+def test_prediction_tile_region_from_prob_map_keeps_disconnected_mask_islands(inference_module):
+    prob_map = torch.zeros((128, 128), dtype=torch.float32).numpy()
+    prob_map[0:32, 0:32] = 1.0
+    prob_map[96:128, 96:128] = 1.0
 
-    hotspot = inference_module._compute_hotspot(prob_map, x=100, y=200, w=80, h=80)
+    regions = inference_module._prediction_tile_region_from_prob_map(
+        prob_map,
+        tile_w=128,
+        tile_h=128,
+        threshold=0.5,
+    )
 
-    assert hotspot is not None
-    payload = hotspot["hotspot"]
-    assert payload["cx"] > 140.0
-    assert payload["cy"] < 240.0
-    assert payload["x"] >= 150.0
-    assert payload["y"] <= 210.0
-    assert payload["x"] + payload["w"] <= 180.0
-    assert payload["y"] + payload["h"] <= 230.0
+    assert len(regions) == 1
+    mask = regions[0]["payload"]["prediction_mask"]
+    assert mask["encoding"] == "bitpack"
+    assert _bitpack_foreground_count(mask["data"], 128 * 128) == (32 * 32) * 2

@@ -379,7 +379,7 @@ def test_batch_inference_rejects_oversized_payload(app_paths):
     assert payload["error"]["code"] == "slide_invalid"
 
 
-def test_inference_regions_include_hotspot_payload(app_paths):
+def test_inference_regions_include_segmentation_payload(app_paths):
     slide_path = app_paths["source_dir"] / "region-payload.png"
     _create_sample_slide(slide_path, color=(180, 90, 120))
 
@@ -409,8 +409,9 @@ def test_inference_regions_include_hotspot_payload(app_paths):
                 score=0.82,
                 label="fungus_positive",
                 payload_json=(
-                    '{"hotspot":{"cx":164.5,"cy":248.25,"x":140,"y":226,"w":72,"h":60,'
-                    '"coverage":0.118,"source":"segmentation_centroid"}}'
+                    '{"kind":"segmentation","source":"prediction_tile","coverage":0.25,'
+                    '"prediction_mask":{"encoding":"bitpack","width":4,"height":4,'
+                    '"threshold":0.5,"data":"BkY="}}'
                 ),
             )
             db.add(region)
@@ -424,8 +425,8 @@ def test_inference_regions_include_hotspot_payload(app_paths):
     assert regions_response.status_code == 200, regions_response.text
     payload = regions_response.json()
     assert len(payload["regions"]) == 1
-    hotspot = payload["regions"][0]["payload"]["hotspot"]
-    assert hotspot["cx"] == 164.5
-    assert hotspot["cy"] == 248.25
-    assert hotspot["w"] == 72
-    assert hotspot["coverage"] == 0.118
+    segmentation = payload["regions"][0]["payload"]
+    assert segmentation["kind"] == "segmentation"
+    assert segmentation["source"] == "prediction_tile"
+    assert segmentation["coverage"] == 0.25
+    assert segmentation["prediction_mask"]["data"] == "BkY="

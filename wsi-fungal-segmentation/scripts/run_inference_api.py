@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Run fungus segmentation inference on a whole slide image.
-Outputs a JSON file with per-tile fungus_positive/fungus_negative labels.
+Outputs a JSON file with segmentation-derived fungus_positive regions.
 
 Usage:
   python run_inference_api.py --slide-path /path/to/slide.svs --output-json out.json --checkpoint checkpoints/best_model.pth
@@ -9,6 +9,7 @@ Usage:
 """
 
 import argparse
+import base64
 from collections.abc import Mapping
 import gzip
 import json
@@ -32,7 +33,7 @@ if str(_project_root) not in sys.path:
 from src.model import ResidualAttentionUNet
 from src.inference_utils import infer_with_neighborhood
 
-# Formats OpenSlide cannot open — run tile inference from a raster in memory.
+# Formats OpenSlide cannot open - run tile inference from a raster in memory.
 RASTER_SLIDE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
 
 # ImageNet normalization (matches training)
@@ -251,187 +252,58 @@ def _build_openslide_tissue_mask(slide, *, level: int) -> np.ndarray | None:
         return None
 
 
-def _connected_components(mask: np.ndarray) -> list[list[tuple[int, int]]]:
-    """Return 4-connected components over a small boolean grid."""
-    h, w = mask.shape
-    visited = np.zeros_like(mask, dtype=bool)
-    components: list[list[tuple[int, int]]] = []
-    for y in range(h):
-        for x in range(w):
-            if not mask[y, x] or visited[y, x]:
-                continue
-            stack = [(y, x)]
-            visited[y, x] = True
-            cells: list[tuple[int, int]] = []
-            while stack:
-                cy, cx = stack.pop()
-                cells.append((cy, cx))
-                if cy > 0 and mask[cy - 1, cx] and not visited[cy - 1, cx]:
-                    visited[cy - 1, cx] = True
-                    stack.append((cy - 1, cx))
-                if cy + 1 < h and mask[cy + 1, cx] and not visited[cy + 1, cx]:
-                    visited[cy + 1, cx] = True
-                    stack.append((cy + 1, cx))
-                if cx > 0 and mask[cy, cx - 1] and not visited[cy, cx - 1]:
-                    visited[cy, cx - 1] = True
-                    stack.append((cy, cx - 1))
-                if cx + 1 < w and mask[cy, cx + 1] and not visited[cy, cx + 1]:
-                    visited[cy, cx + 1] = True
-                    stack.append((cy, cx + 1))
-            components.append(cells)
-    return components
+def _encode_binary_mask_bitpack(mask: np.ndarray) -> str:
+    """Encode a boolean mask as row-major packed bits for compact JSON output."""
+    packed = np.packbits(np.asarray(mask, dtype=np.uint8).ravel(), bitorder="big")
+    return base64.b64encode(packed.tobytes()).decode("ascii")
 
 
-def _tile_regions_from_prob_map(
+def _prediction_tile_region_from_prob_map(
     prob_map: np.ndarray,
     *,
     tile_w: int,
     tile_h: int,
-    tile_size: int,
     threshold: float,
-    max_components: int = 8,
-    min_cells: int = 2,
 ) -> list[dict]:
-    """
-    Build localized subregions from a tile segmentation probability map.
-    Uses a coarse cell grid to keep region count bounded while preserving locality.
-    """
     h, w = prob_map.shape
     if h <= 0 or w <= 0:
         return []
+    mask = prob_map >= threshold
+    if not bool(mask.any()):
+        return []
 
-    cell_size = 32
-    grid_h = max(1, int(np.ceil(h / cell_size)))
-    grid_w = max(1, int(np.ceil(w / cell_size)))
-    grid_scores = np.zeros((grid_h, grid_w), dtype=np.float32)
-
-    for gy in range(grid_h):
-        y0 = gy * cell_size
-        y1 = min(h, y0 + cell_size)
-        for gx in range(grid_w):
-            x0 = gx * cell_size
-            x1 = min(w, x0 + cell_size)
-            patch = prob_map[y0:y1, x0:x1]
-            grid_scores[gy, gx] = float(patch.mean()) if patch.size else 0.0
-
-    adaptive_threshold = float(np.quantile(grid_scores, 0.80))
-    component_threshold = max(threshold, adaptive_threshold)
-
-    mask = grid_scores >= component_threshold
-    components = _connected_components(mask)
-    if not components and component_threshold > threshold:
-        mask = grid_scores >= threshold
-        components = _connected_components(mask)
-
-    regions = []
-    for cells in components:
-        if len(cells) < min_cells:
-            continue
-        ys = [c[0] for c in cells]
-        xs = [c[1] for c in cells]
-        gy0, gy1 = min(ys), max(ys) + 1
-        gx0, gx1 = min(xs), max(xs) + 1
-        score = float(np.mean([grid_scores[cy, cx] for cy, cx in cells]))
-
-        # Map coarse-grid bbox back into original (possibly edge-clipped) tile dimensions.
-        x0 = int(round((gx0 * cell_size) * tile_w / tile_size))
-        y0 = int(round((gy0 * cell_size) * tile_h / tile_size))
-        x1 = int(round((min(w, gx1 * cell_size)) * tile_w / tile_size))
-        y1 = int(round((min(h, gy1 * cell_size)) * tile_h / tile_size))
-        x0 = max(0, min(tile_w - 1, x0))
-        y0 = max(0, min(tile_h - 1, y0))
-        x1 = max(x0 + 1, min(tile_w, x1))
-        y1 = max(y0 + 1, min(tile_h, y1))
-
-        regions.append(
-            {
-                "x": x0,
-                "y": y0,
-                "w": x1 - x0,
-                "h": y1 - y0,
-                "score": round(max(0.0, min(1.0, score)), 4),
-            }
-        )
-
-    regions.sort(key=lambda r: r["score"], reverse=True)
-    return regions[:max_components]
-
-
-def _compute_hotspot(prob_map: torch.Tensor, *, x: int, y: int, w: int, h: int) -> dict | None:
-    """
-    Estimate a fungus hotspot inside a tile from the segmentation probability map.
-    Returns absolute slide-space coordinates plus a localized bbox for rendering.
-    """
-    if w <= 0 or h <= 0:
-        return None
-
-    data = prob_map.detach().float()
-    if data.ndim == 3:
-        data = data.squeeze(0)
-    if data.ndim != 2 or data.numel() == 0:
-        return None
-
-    map_h, map_w = data.shape
-    mean_prob = float(data.mean().item())
-    cutoff = max(0.05, min(0.8, mean_prob * 1.25))
-    weights = torch.clamp(data - cutoff, min=0.0)
-    if float(weights.sum().item()) <= 1e-6:
-        weights = torch.clamp(data - mean_prob, min=0.0)
-    if float(weights.sum().item()) <= 1e-6:
-        weights = torch.clamp(data, min=0.0)
-
-    total = float(weights.sum().item())
-    if total <= 1e-6:
-        return None
-
-    active = weights > 0
-    if not bool(active.any().item()):
-        active = data >= max(float(data.max().item()) * 0.85, mean_prob)
-
-    xs = torch.arange(map_w, device=data.device, dtype=torch.float32).unsqueeze(0).expand(map_h, map_w)
-    ys = torch.arange(map_h, device=data.device, dtype=torch.float32).unsqueeze(1).expand(map_h, map_w)
-    cx = float((weights * xs).sum().item() / total)
-    cy = float((weights * ys).sum().item() / total)
-
-    active_ys, active_xs = torch.where(active)
-    if active_xs.numel() == 0 or active_ys.numel() == 0:
-        x_min = x_max = int(round(cx))
-        y_min = y_max = int(round(cy))
-    else:
-        x_min = int(active_xs.min().item())
-        x_max = int(active_xs.max().item())
-        y_min = int(active_ys.min().item())
-        y_max = int(active_ys.max().item())
-
-    scale_x = w / map_w
-    scale_y = h / map_h
-    hotspot_x = x + (x_min * scale_x)
-    hotspot_y = y + (y_min * scale_y)
-    hotspot_w = max(scale_x, (x_max - x_min + 1) * scale_x)
-    hotspot_h = max(scale_y, (y_max - y_min + 1) * scale_y)
-    hotspot_cx = x + ((cx + 0.5) * scale_x)
-    hotspot_cy = y + ((cy + 0.5) * scale_y)
-
-    return {
-        "hotspot": {
-            "cx": round(hotspot_cx, 2),
-            "cy": round(hotspot_cy, 2),
-            "x": round(hotspot_x, 2),
-            "y": round(hotspot_y, 2),
-            "w": round(hotspot_w, 2),
-            "h": round(hotspot_h, 2),
-            "coverage": round(float(active.float().mean().item()), 4),
-            "source": "segmentation_centroid",
+    coverage = float(mask.mean())
+    positive_values = prob_map[mask]
+    score = float(positive_values.mean()) if positive_values.size else float(prob_map.mean())
+    return [
+        {
+            "x": 0,
+            "y": 0,
+            "w": int(tile_w),
+            "h": int(tile_h),
+            "score": round(max(0.0, min(1.0, score)), 4),
+            "payload": {
+                "kind": "segmentation",
+                "source": "prediction_tile",
+                "coverage": round(max(0.0, min(1.0, coverage)), 4),
+                "prediction_mask": {
+                    "encoding": "bitpack",
+                    "width": int(w),
+                    "height": int(h),
+                    "threshold": round(float(threshold), 4),
+                    "data": _encode_binary_mask_bitpack(mask),
+                },
+            },
         }
-    }
+    ]
 
 
 def _score_seg_masks(seg_masks, tile_dims, args, tile_size, downsample=1.0):
     """
     Convert seg_masks dict from infer_with_neighborhood into a regions list.
 
-    seg_masks  : {(x, y): prob_tensor [1, 1, H, W]}  — CPU tensors, probs 0-1
-    tile_dims  : {(x, y): (w, h)}  — original tile dimensions before resize
+    seg_masks  : {(x, y): prob_tensor [1, 1, H, W]}  - CPU tensors, probs 0-1
+    tile_dims  : {(x, y): (w, h)}  - original tile dimensions before resize
     downsample : level-0 scale factor (1.0 for raster images)
     """
     regions = []
@@ -440,8 +312,6 @@ def _score_seg_masks(seg_masks, tile_dims, args, tile_size, downsample=1.0):
         # prob_tensor is [1, 1, H, W]; squeeze to [H, W] for numpy ops
         prob_map = prob_tensor[0, 0].numpy()
         score = float(prob_map.mean())
-        label = "fungus_positive" if score >= args.threshold else "fungus_negative"
-
         # Scale to level-0 coordinates (no-op for raster where downsample=1.0)
         x0 = int(round(x * downsample))
         y0 = int(round(y * downsample))
@@ -450,36 +320,42 @@ def _score_seg_masks(seg_masks, tile_dims, args, tile_size, downsample=1.0):
         w0 = max(1, x1 - x0)
         h0 = max(1, y1 - y0)
 
-        if label == "fungus_positive":
-            localized = _tile_regions_from_prob_map(
-                prob_map,
-                tile_w=w0,
-                tile_h=h0,
-                tile_size=tile_size,
-                threshold=max(args.threshold, 0.20),
-            )
-            if localized:
-                for loc in localized:
-                    regions.append(
-                        {
-                            "x": int(x0 + loc["x"]),
-                            "y": int(y0 + loc["y"]),
-                            "w": int(loc["w"]),
-                            "h": int(loc["h"]),
-                            "score": float(loc["score"]),
-                            "label": "fungus_positive",
-                        }
-                    )
-                continue
+        localized = _prediction_tile_region_from_prob_map(
+            prob_map,
+            tile_w=w0,
+            tile_h=h0,
+            threshold=max(args.threshold, 0.20),
+        )
+        if localized:
+            for loc in localized:
+                payload = dict(loc.get("payload") or {})
+                regions.append(
+                    {
+                        "x": int(x0 + loc["x"]),
+                        "y": int(y0 + loc["y"]),
+                        "w": int(loc["w"]),
+                        "h": int(loc["h"]),
+                        "score": float(loc["score"]),
+                        "label": "fungus_positive",
+                        **payload,
+                    }
+                )
+            continue
+
+        label = "fungus_positive" if score >= args.threshold else "fungus_negative"
 
         if args.positive_only and label != "fungus_positive":
             continue
 
         region = {"x": x0, "y": y0, "w": w0, "h": h0, "score": round(score, 4), "label": label}
-        # prob_tensor[0] is [1, H, W] — shape expected by _compute_hotspot
-        hotspot_payload = _compute_hotspot(prob_tensor[0], x=x0, y=y0, w=w0, h=h0)
-        if hotspot_payload:
-            region.update(hotspot_payload)
+        if label == "fungus_positive":
+            region.update(
+                {
+                    "kind": "segmentation",
+                    "source": "segmentation_tile",
+                    "coverage": round(float((prob_map >= args.threshold).mean()), 4),
+                }
+            )
         regions.append(region)
 
     return regions
@@ -528,7 +404,7 @@ def _infer_regions_with_neighborhood(
             for dc in range(-k, k + 1)
             if (row + dr, col + dc) in density_preds
         ]
-        # Bias toward non-negative — if any neighbor is non-negative,
+        # Bias toward non-negative - if any neighbor is non-negative,
         # use majority vote among non-negative neighbors only.
         # Only return negative if every neighbor is negative.
         non_neg = [l for l in neighbors if l != 3]

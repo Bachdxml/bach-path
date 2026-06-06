@@ -429,46 +429,21 @@ function buildCentroidFallbackRect(cx, cy, dims, referenceRect = null) {
   return clampRectToSlide(cx - fallbackW / 2, cy - fallbackH / 2, fallbackW, fallbackH, dims);
 }
 
-function getRegionHotspot(region, dims) {
-  const payload = getRegionPayload(region);
-  const hotspot = payload?.hotspot;
-  if (!hotspot || typeof hotspot !== "object") return null;
-
-  const cx = getNumericRegionField(hotspot, "cx", "center_x");
-  const cy = getNumericRegionField(hotspot, "cy", "center_y");
-  const hx = getNumericRegionField(hotspot, "x", "left");
-  const hy = getNumericRegionField(hotspot, "y", "top");
-  const hw = getNumericRegionField(hotspot, "w", "width");
-  const hh = getNumericRegionField(hotspot, "h", "height");
-  const rect =
-    [hx, hy, hw, hh].every(Number.isFinite) ? clampRectToSlide(hx, hy, hw, hh, dims) : null;
-
-  return {
-    rect,
-    cx: Number.isFinite(cx) ? Math.max(0, Math.min(dims.width, cx)) : null,
-    cy: Number.isFinite(cy) ? Math.max(0, Math.min(dims.height, cy)) : null,
-    coverage: getNumericRegionField(hotspot, "coverage"),
-  };
-}
-
 function getRegionContribution(region, dims) {
   const x = getNumericRegionField(region, "x", "left");
   const y = getNumericRegionField(region, "y", "top");
   const w = getNumericRegionField(region, "w", "width");
   const h = getNumericRegionField(region, "h", "height");
   const tileRect = clampRectToSlide(x, y, w, h, dims);
-  const hotspot = getRegionHotspot(region, dims);
 
   const rawCx =
-    hotspot?.cx ??
     getNumericRegionField(region, "cx", "center_x") ??
     (tileRect ? (tileRect.x1 + tileRect.x2) * 0.5 : null);
   const rawCy =
-    hotspot?.cy ??
     getNumericRegionField(region, "cy", "center_y") ??
     (tileRect ? (tileRect.y1 + tileRect.y2) * 0.5 : null);
 
-  const areaRect = hotspot?.rect || tileRect || buildCentroidFallbackRect(rawCx, rawCy, dims, tileRect);
+  const areaRect = tileRect || buildCentroidFallbackRect(rawCx, rawCy, dims, tileRect);
   if (!areaRect) return null;
 
   const peak =
@@ -484,9 +459,72 @@ function getRegionContribution(region, dims) {
     y2: areaRect.y2,
     cx: peak.x,
     cy: peak.y,
-    coverage: hotspot?.coverage,
+    coverage: getNumericRegionField(getRegionPayload(region), "coverage"),
     score: Number.isFinite(region.score) ? Math.max(0, Math.min(1, region.score)) : 0.5,
   };
+}
+
+function getPredictionMask(region) {
+  const mask = getRegionPayload(region)?.prediction_mask;
+  if (!mask || mask.encoding !== "bitpack") return null;
+  const width = Number(mask.width);
+  const height = Number(mask.height);
+  const data = typeof mask.data === "string" ? mask.data : null;
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
+    return null;
+  }
+  if (!data) return null;
+  return { width, height, data };
+}
+
+function decodePredictionMask(mask) {
+  const total = mask.width * mask.height;
+  const pixels = new Uint8Array(total);
+  let raw = "";
+  try {
+    raw = atob(mask.data);
+  } catch (_) {
+    return pixels;
+  }
+  for (let i = 0; i < total; i += 1) {
+    const byte = raw.charCodeAt(Math.floor(i / 8));
+    if (!Number.isFinite(byte)) break;
+    const bit = 7 - (i % 8);
+    if (((byte >> bit) & 1) === 1) {
+      pixels[i] = 1;
+    }
+  }
+  return pixels;
+}
+
+function buildPredictionMaskOverlay(region) {
+  const container = document.createElement("div");
+  container.className = "region-overlay region-overlay--segmentation";
+  container.style.opacity = String(getOverlayOpacity());
+
+  const mask = getPredictionMask(region);
+  if (!mask) return container;
+
+  const pixels = decodePredictionMask(mask);
+  const canvas = document.createElement("canvas");
+  canvas.width = mask.width;
+  canvas.height = mask.height;
+  canvas.className = "region-overlay-mask";
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return container;
+
+  const imageData = ctx.createImageData(mask.width, mask.height);
+  for (let i = 0; i < pixels.length; i += 1) {
+    if (!pixels[i]) continue;
+    const j = i * 4;
+    imageData.data[j] = 244;
+    imageData.data[j + 1] = 255;
+    imageData.data[j + 2] = 249;
+    imageData.data[j + 3] = 230;
+  }
+  ctx.putImageData(imageData, 0, 0);
+  container.appendChild(canvas);
+  return container;
 }
 
 function buildReviewTile(region, index, dims) {
@@ -571,82 +609,6 @@ function renderTileReviewPanel(regions) {
   }
 }
 
-function traceRoundedRect(ctx, x, y, w, h, radius) {
-  const r = Math.max(0, Math.min(radius, w * 0.5, h * 0.5));
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.lineTo(x + w - r, y);
-  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-  ctx.lineTo(x + w, y + h - r);
-  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-  ctx.lineTo(x + r, y + h);
-  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-  ctx.lineTo(x, y + r);
-  ctx.quadraticCurveTo(x, y, x + r, y);
-  ctx.closePath();
-}
-
-function drawEllipticalGradient(ctx, cx, cy, rx, ry, stops) {
-  if (!(rx > 0) || !(ry > 0)) return;
-  const radius = Math.max(rx, ry);
-  ctx.save();
-  ctx.translate(cx, cy);
-  ctx.scale(rx / radius, ry / radius);
-  const gradient = ctx.createRadialGradient(0, 0, 0, 0, 0, radius);
-  for (const [offset, color] of stops) {
-    gradient.addColorStop(offset, color);
-  }
-  ctx.fillStyle = gradient;
-  ctx.fillRect(-radius, -radius, radius * 2, radius * 2);
-  ctx.restore();
-}
-
-function renderHeatContribution(ctx, contribution, dims, canvasW, canvasH, opacity) {
-  const scaleX = canvasW / dims.width;
-  const scaleY = canvasH / dims.height;
-  const x = contribution.x1 * scaleX;
-  const y = contribution.y1 * scaleY;
-  const w = Math.max(1, (contribution.x2 - contribution.x1) * scaleX);
-  const h = Math.max(1, (contribution.y2 - contribution.y1) * scaleY);
-  const peakX = Math.max(x, Math.min(x + w, contribution.cx * scaleX));
-  const peakY = Math.max(y, Math.min(y + h, contribution.cy * scaleY));
-  const coverageBoost = Number.isFinite(contribution.coverage)
-    ? Math.max(0.35, Math.min(1, Math.sqrt(contribution.coverage)))
-    : 0.55;
-  const cornerRadius = Math.max(4, Math.min(Math.min(w, h) * 0.28, 18));
-  const glowBlur = Math.max(10, Math.min(Math.max(w, h) * 0.34, 34));
-  const baseAlpha = Math.max(
-    0.04,
-    Math.min(0.24, opacity * (0.05 + contribution.score * 0.14 + coverageBoost * 0.06))
-  );
-  const peakAlpha = Math.max(0.08, Math.min(0.9, opacity * (0.22 + contribution.score * 0.95)));
-
-  ctx.save();
-  ctx.shadowColor = `rgba(255, 88, 40, ${(baseAlpha * 0.95).toFixed(3)})`;
-  ctx.shadowBlur = glowBlur;
-  ctx.fillStyle = `rgba(255, 86, 32, ${(baseAlpha * 0.55).toFixed(3)})`;
-  traceRoundedRect(ctx, x, y, w, h, cornerRadius);
-  ctx.fill();
-  ctx.restore();
-
-  ctx.save();
-  traceRoundedRect(ctx, x, y, w, h, cornerRadius);
-  ctx.clip();
-  ctx.fillStyle = `rgba(255, 92, 32, ${(baseAlpha * 0.75).toFixed(3)})`;
-  ctx.fillRect(x, y, w, h);
-  drawEllipticalGradient(ctx, x + w * 0.5, y + h * 0.5, Math.max(12, w * 0.9), Math.max(12, h * 0.9), [
-    [0, `rgba(255, 96, 32, ${(peakAlpha * 0.22).toFixed(3)})`],
-    [0.55, `rgba(255, 128, 0, ${(peakAlpha * 0.12).toFixed(3)})`],
-    [1, "rgba(255, 0, 0, 0)"],
-  ]);
-  drawEllipticalGradient(ctx, peakX, peakY, Math.max(10, w * 0.58), Math.max(10, h * 0.58), [
-    [0, `rgba(255, 48, 48, ${peakAlpha.toFixed(3)})`],
-    [0.52, `rgba(255, 128, 0, ${(peakAlpha * 0.58).toFixed(3)})`],
-    [1, "rgba(255, 0, 0, 0)"],
-  ]);
-  ctx.restore();
-}
-
 function addRegionOverlays(regions, showNegative = false) {
   if (!viewer) return;
   viewer.clearOverlays();
@@ -660,46 +622,24 @@ function addRegionOverlays(regions, showNegative = false) {
     if (label !== "fungus_positive" && !(showNegative && label === "fungus_negative")) continue;
     const contribution = getRegionContribution(r, dims);
     if (!contribution) continue;
-    if (label === "fungus_positive") positives.push(contribution);
+    if (label === "fungus_positive") positives.push({ ...contribution, region: r });
     else negatives.push(contribution);
   }
 
-  if (positives.length) {
-    // Build a full-slide heatmap canvas from positive detections.
-    const longSide = Math.max(dims.width, dims.height);
-    const scale = longSide > 1200 ? 1200 / longSide : 1;
-    const canvasW = Math.max(64, Math.round(dims.width * scale));
-    const canvasH = Math.max(64, Math.round(dims.height * scale));
-    const heatCanvas = document.createElement("canvas");
-    heatCanvas.width = canvasW;
-    heatCanvas.height = canvasH;
-    heatCanvas.style.width = "100%";
-    heatCanvas.style.height = "100%";
-    heatCanvas.style.display = "block";
-    heatCanvas.style.pointerEvents = "none";
-
-    const ctx = heatCanvas.getContext("2d");
-    if (ctx) {
-      const opacity = getOverlayOpacity();
-      for (const p of positives) {
-        renderHeatContribution(ctx, p, dims, canvasW, canvasH, opacity);
-      }
-
-      const container = document.createElement("div");
-      container.className = "region-overlay region-heatmap-overlay";
-      container.style.width = "100%";
-      container.style.height = "100%";
-      container.style.pointerEvents = "none";
-      container.style.overflow = "hidden";
-      container.style.mixBlendMode = "multiply";
-      container.appendChild(heatCanvas);
-
-      const imageRect = new OpenSeadragon.Rect(0, 0, dims.width, dims.height);
-      const viewportRect = viewer.viewport.imageToViewportRectangle(imageRect);
-      try {
-        viewer.addOverlay({ element: container, location: viewportRect });
-      } catch (_) {}
-    }
+  for (const p of positives) {
+    const segment = buildPredictionMaskOverlay(p.region);
+    const rect = new OpenSeadragon.Rect(
+      p.x1,
+      p.y1,
+      Math.max(1, p.x2 - p.x1),
+      Math.max(1, p.y2 - p.y1)
+    );
+    try {
+      viewer.addOverlay({
+        element: segment,
+        location: viewer.viewport.imageToViewportRectangle(rect),
+      });
+    } catch (_) {}
   }
 
   for (const n of negatives) {

@@ -230,6 +230,7 @@ def _import_slide_file(
         logger.warning("DEEPZOOM COMPLETE for slide %s", slide.id)
     except Exception as e:
         logger.warning("DeepZoom pre-generation failed for slide %s: %s", slide.id, e, exc_info=True)
+    return slide
 
 def _delete_pending_slide_row(db: Session, slide_id: int) -> None:
     slide = db.get(Slide, slide_id)
@@ -442,6 +443,8 @@ def import_slide(payload: SlideImportRequest, request: Request, db: Session = De
                 db.delete(existing_collection)
                 db.commit()
         raise
+    if slide is None:
+        raise AppError(ErrorCode.IO_ERROR, "Slide import did not complete")
     return SlideImportResponse(slide_id=slide.id, stored_path=_managed_slide_identifier(slide.stored_filename))
 
 

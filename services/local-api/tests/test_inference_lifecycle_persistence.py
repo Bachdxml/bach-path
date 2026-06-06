@@ -62,15 +62,17 @@ def _install_synchronous_inference(
 def test_inference_run_persists_success_and_is_queryable_after_restart(app_paths, monkeypatch):
     slide_path = app_paths["source_dir"] / "success-slide.png"
     _create_sample_slide(slide_path, color=(90, 180, 120))
-    expected_hotspot = {
-        "cx": 164.5,
-        "cy": 248.25,
-        "x": 140,
-        "y": 226,
-        "w": 72,
-        "h": 60,
-        "coverage": 0.118,
-        "source": "segmentation_centroid",
+    expected_segmentation = {
+        "kind": "segmentation",
+        "source": "prediction_tile",
+        "coverage": 0.25,
+        "prediction_mask": {
+            "encoding": "bitpack",
+            "width": 4,
+            "height": 4,
+            "threshold": 0.5,
+            "data": "BkY=",
+        },
     }
 
     script_path = app_paths["app_data_dir"] / "run_inference_api.py"
@@ -87,7 +89,7 @@ def test_inference_run_persists_success_and_is_queryable_after_restart(app_paths
                     "h": 4,
                     "score": 0.91,
                     "label": "fungus_positive",
-                    "hotspot": expected_hotspot,
+                    **expected_segmentation,
                 },
                 {"x": 5, "y": 6, "w": 7, "h": 8, "score": 0.27, "label": "fungus_negative"},
             ]
@@ -137,12 +139,13 @@ def test_inference_run_persists_success_and_is_queryable_after_restart(app_paths
     assert runs_payload[0]["inference_result"] == "positive"
     assert runs_payload[0]["summary"] == {"total": 2, "fungus_positive": 1, "fungus_negative": 1}
 
-    assert persisted_output["regions"][0]["hotspot"] == expected_hotspot
+    for key, value in expected_segmentation.items():
+        assert persisted_output["regions"][0][key] == value
     assert regions_response.status_code == 200, regions_response.text
     regions_payload = regions_response.json()["regions"]
     assert len(regions_payload) == 2
     assert {region["label"] for region in regions_payload} == {"fungus_positive", "fungus_negative"}
-    assert regions_payload[0]["payload"] == {"hotspot": expected_hotspot}
+    assert regions_payload[0]["payload"] == expected_segmentation
     assert lifecycle_response.status_code == 200, lifecycle_response.text
     lifecycle = lifecycle_response.json()["events"]
     assert [event["to_status"] for event in lifecycle] == ["queued", "running", "succeeded"]
