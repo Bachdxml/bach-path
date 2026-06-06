@@ -1191,7 +1191,7 @@ body {
 }
 
 .viewer-legend-swatch--positive {
-  background: #ff1818;
+  background: var(--positive-outline-color, #ff1818);
 }
 
 .viewer-legend-swatch--negative {

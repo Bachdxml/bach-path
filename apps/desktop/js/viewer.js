@@ -499,9 +499,60 @@ function decodePredictionMask(mask) {
 
 const POSITIVE_OUTLINE_GAP_PX = 3;
 const POSITIVE_OUTLINE_THICKNESS_PX = 2;
-const POSITIVE_OUTLINE_RGB = [255, 24, 24];
+const POSITIVE_OUTLINE_COLOR_KEY = "positiveOutlineColor";
+const POSITIVE_OUTLINE_COLOR_DEFAULT_ID = "bright-red";
+const POSITIVE_OUTLINE_COLOR_OPTIONS = [
+  { id: "bright-red", label: "Bright red", hex: "#FF1818", rgb: [255, 24, 24] },
+  { id: "electric-yellow", label: "Electric yellow", hex: "#FFE600", rgb: [255, 230, 0] },
+  { id: "hot-pink", label: "Hot pink", hex: "#FF2DAF", rgb: [255, 45, 175] },
+  { id: "cyan", label: "Cyan", hex: "#00E8FF", rgb: [0, 232, 255] },
+  { id: "lime", label: "Lime green", hex: "#7CFF00", rgb: [124, 255, 0] },
+  { id: "orange", label: "Bright orange", hex: "#FF7A00", rgb: [255, 122, 0] },
+  { id: "magenta", label: "Magenta", hex: "#FF00FF", rgb: [255, 0, 255] },
+  { id: "white", label: "White", hex: "#FFFFFF", rgb: [255, 255, 255] },
+];
 const POSITIVE_OUTLINE_MIDPOINT_TOLERANCE_PX = 0.5;
 const MAX_OUTLINE_CLUSTER_CANVAS_PX = 4096;
+const viewerOutlineColorChangedEvent =
+  viewerApp?.constants?.events?.positiveOutlineColorChanged || "positive-outline-color-changed";
+
+function getPositiveOutlineColorOption(colorId = null) {
+  const storedId = colorId || localStorage.getItem(POSITIVE_OUTLINE_COLOR_KEY) || POSITIVE_OUTLINE_COLOR_DEFAULT_ID;
+  return (
+    POSITIVE_OUTLINE_COLOR_OPTIONS.find((option) => option.id === storedId) ||
+    POSITIVE_OUTLINE_COLOR_OPTIONS.find((option) => option.id === POSITIVE_OUTLINE_COLOR_DEFAULT_ID) ||
+    POSITIVE_OUTLINE_COLOR_OPTIONS[0]
+  );
+}
+
+function getPositiveOutlineRgb() {
+  return getPositiveOutlineColorOption().rgb;
+}
+
+function setPositiveOutlineColor(colorId) {
+  const option = getPositiveOutlineColorOption(colorId);
+  localStorage.setItem(POSITIVE_OUTLINE_COLOR_KEY, option.id);
+  applyPositiveOutlineColorUi(option);
+  if (viewerApp?.emit) {
+    viewerApp.emit(viewerOutlineColorChangedEvent, { colorId: option.id, color: option });
+  } else {
+    window.dispatchEvent(
+      new CustomEvent(viewerOutlineColorChangedEvent, { detail: { colorId: option.id, color: option } })
+    );
+  }
+  return option;
+}
+
+function applyPositiveOutlineColorUi(option = getPositiveOutlineColorOption()) {
+  document.documentElement.style.setProperty("--positive-outline-color", option.hex);
+  const legendSwatch = document.querySelector(".viewer-legend-swatch--positive");
+  if (legendSwatch) legendSwatch.style.backgroundColor = option.hex;
+}
+
+function refreshPositiveOutlineOverlays() {
+  if (!viewer || !lastRegions.length) return;
+  addRegionOverlays(lastRegions, viewerShowNegative?.checked || false);
+}
 
 function computeChamferDistanceField(foreground, width, height) {
   const dist = new Float32Array(foreground.length);
@@ -772,7 +823,7 @@ function buildPredictionMaskOverlay(region, outlinePixels = null, maskW = 0, mas
   if (!ctx) return container;
 
   const imageData = ctx.createImageData(resolvedMaskW, resolvedMaskH);
-  const [r, g, b] = POSITIVE_OUTLINE_RGB;
+  const [r, g, b] = getPositiveOutlineRgb();
   for (let i = 0; i < outline.length; i += 1) {
     if (!outline[i]) continue;
     const j = i * 4;
@@ -1228,6 +1279,15 @@ viewerShowNegative?.addEventListener("change", () => {
 viewerOverlayOpacity?.addEventListener("input", () => {
   addRegionOverlays(lastRegions, viewerShowNegative?.checked || false);
 });
+
+window.addEventListener(viewerOutlineColorChangedEvent, () => {
+  refreshPositiveOutlineOverlays();
+});
+
+applyPositiveOutlineColorUi();
+window.POSITIVE_OUTLINE_COLOR_OPTIONS = POSITIVE_OUTLINE_COLOR_OPTIONS;
+window.getPositiveOutlineColorOption = getPositiveOutlineColorOption;
+window.setPositiveOutlineColor = setPositiveOutlineColor;
 
 viewerInferenceThreshold?.addEventListener("input", () => {
   syncThresholdLabel();

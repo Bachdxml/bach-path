@@ -12,6 +12,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const apiStatusEl = document.getElementById("api-status");
   const apiStatusMeta = document.getElementById("api-status-meta");
   const themeSelect = document.getElementById("ui-theme");
+  const outlineColorSelect = document.getElementById("positive-outline-color");
+  const positiveOutlineColorChangedEvent =
+    app?.constants?.events?.positiveOutlineColorChanged || "positive-outline-color-changed";
   const helpModal = document.getElementById("help-modal");
   const btnOpenHelp = document.getElementById("btn-open-help");
   const btnHelpDismiss = document.getElementById("btn-help-dismiss");
@@ -61,6 +64,29 @@ document.addEventListener("DOMContentLoaded", () => {
     localStorage.setItem(THEME_KEY, themeSelect.value);
     applyTheme();
     toast("Theme updated", "success", 2000);
+  });
+
+  function initOutlineColorSelect() {
+    if (!outlineColorSelect || !window.POSITIVE_OUTLINE_COLOR_OPTIONS) return;
+    outlineColorSelect.innerHTML = window.POSITIVE_OUTLINE_COLOR_OPTIONS.map(
+      (option) => `<option value="${option.id}">${option.label}</option>`
+    ).join("");
+    const selected = window.getPositiveOutlineColorOption?.();
+    if (selected) outlineColorSelect.value = selected.id;
+  }
+
+  initOutlineColorSelect();
+
+  outlineColorSelect?.addEventListener("change", () => {
+    window.setPositiveOutlineColor?.(outlineColorSelect.value);
+    toast("Outline color updated", "success", 2000);
+  });
+
+  window.addEventListener(positiveOutlineColorChangedEvent, (event) => {
+    const colorId = event.detail?.colorId;
+    if (colorId && outlineColorSelect && outlineColorSelect.value !== colorId) {
+      outlineColorSelect.value = colorId;
+    }
   });
 
   function setApiStatus(state, meta = "") {

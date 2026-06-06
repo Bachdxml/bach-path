@@ -25,6 +25,7 @@
         ...(existing.constants?.events || {}),
         apiReady: "bach-path-api-ready",
         inferenceModelChanged: "inference-model-changed",
+        positiveOutlineColorChanged: "positive-outline-color-changed",
       },
     },
     on(eventName, listener) {
