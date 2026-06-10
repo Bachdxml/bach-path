@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import threading
 from collections import deque
 from threading import RLock
 from typing import Any
 from uuid import uuid4
 
 from .interface import JobRecord, JobStatus, QueueInterface, _update_job, _utc_now
+
+_COMPLETED_JOB_TTL_SECS = 300
 
 
 class InMemoryQueue(QueueInterface):
@@ -57,6 +60,7 @@ class InMemoryQueue(QueueInterface):
                 updated_at=now,
             )
             self._jobs[job_id] = failed
+            self._schedule_eviction(job_id)
             return failed
 
     def cancel(self, job_id: str) -> JobRecord | None:
@@ -70,4 +74,14 @@ class InMemoryQueue(QueueInterface):
             now = _utc_now()
             finished = _update_job(job, status=status, finished_at=now, updated_at=now)
             self._jobs[job_id] = finished
+            self._schedule_eviction(job_id)
             return finished
+
+    def _schedule_eviction(self, job_id: str) -> None:
+        timer = threading.Timer(_COMPLETED_JOB_TTL_SECS, self._evict, args=(job_id,))
+        timer.daemon = True
+        timer.start()
+
+    def _evict(self, job_id: str) -> None:
+        with self._lock:
+            self._jobs.pop(job_id, None)

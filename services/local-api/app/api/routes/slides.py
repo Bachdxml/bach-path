@@ -225,9 +225,7 @@ def _import_slide_file(
     db.commit()
     db.refresh(slide)
     try:
-        logger.warning("ATTEMPTING DEEPZOOM for slide %s at %s", slide.id, dest_path)
         ensure_deepzoom(dest_path, settings.tiles_cache_dir, slide.id)
-        logger.warning("DEEPZOOM COMPLETE for slide %s", slide.id)
     except Exception as e:
         logger.warning("DeepZoom pre-generation failed for slide %s: %s", slide.id, e, exc_info=True)
     return slide
@@ -264,9 +262,11 @@ def _raster_tile_jpeg(slide_path: Path, level: int, x: int, y: int, tile_size: i
     with Image.open(slide_path) as img:
         img = img.convert("RGB")
         iw, ih = img.size
+        if x < 0 or y < 0:
+            raise AppError(ErrorCode.SLIDE_INVALID, f"Invalid tile coordinates: level={level} x={x} y={y}")
         px = x * tile_size
         py = y * tile_size
-        if px >= iw or py >= ih or x < 0 or y < 0:
+        if px >= iw or py >= ih:
             raise AppError(ErrorCode.NOT_FOUND, f"Tile out of bounds: level={level} x={x} y={y}")
         w = min(tile_size, iw - px)
         h = min(tile_size, ih - py)
@@ -658,7 +658,7 @@ def slide_tile(
                 with Image.open(slide_path) as img:
                     iw, ih = img.size
                 if x < 0 or y < 0 or x * tile_size >= iw or y * tile_size >= ih or level != 0:
-                    raise AppError(ErrorCode.NOT_FOUND, f"Tile out of bounds: level={level} x={x} y={y}")
+                    raise AppError(ErrorCode.SLIDE_INVALID, f"Invalid tile coordinates: level={level} x={x} y={y}")
                 return Response(content=tile_path.read_bytes(), media_type="image/jpeg")
             jpg_bytes = _raster_tile_jpeg(slide_path, level, x, y, tile_size)
             tile_path.parent.mkdir(parents=True, exist_ok=True)
@@ -688,8 +688,12 @@ def slide_tile(
         px_level = x * tile_size
         py_level = y * tile_size
 
+        # Negative coordinates are invalid client input, not a missing resource.
+        if x < 0 or y < 0:
+            raise AppError(ErrorCode.SLIDE_INVALID, f"Invalid tile coordinates: level={level} x={x} y={y}")
+
         # Reject completely out-of-bounds tiles (avoids doing work for nonsense coords)
-        if px_level >= level_w or py_level >= level_h or x < 0 or y < 0:
+        if px_level >= level_w or py_level >= level_h:
             raise AppError(ErrorCode.NOT_FOUND, f"Tile out of bounds: level={level} x={x} y={y}")
 
         if tile_path.exists():
@@ -778,7 +782,7 @@ def slide_deepzoom_tile(
             http_status=404,
         )
     if level < 0 or x < 0 or y < 0:
-        raise AppError(ErrorCode.NOT_FOUND, f"Tile out of bounds: level={level} x={x} y={y}")
+        raise AppError(ErrorCode.SLIDE_INVALID, f"Invalid tile coordinates: level={level} x={x} y={y}")
     tile_path = dz_paths.tiles_dir / str(level) / f"{x}_{y}.jpg"
     if not tile_path.exists():
         raise AppError(ErrorCode.NOT_FOUND, f"Tile out of bounds: level={level} x={x} y={y}")

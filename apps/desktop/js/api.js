@@ -96,32 +96,11 @@ async function importCollection(filePaths, title = null, sourceType = null, sign
 }
 
 async function renameImportCollection(collectionId, title) {
-  const payload = JSON.stringify({ title });
-  const attempts = [
-    { method: "POST", path: `/import-collections/${collectionId}/rename` },
-    { method: "POST", path: `/slides/import-collections/${collectionId}/rename` },
-    { method: "PATCH", path: `/import-collections/${collectionId}` },
-    { method: "PATCH", path: `/slides/import-collections/${collectionId}` },
-    { method: "PATCH", path: `/slides/import-collection/${collectionId}` },
-  ];
-  let res = null;
-  for (const attempt of attempts) {
-    try {
-      const nextRes = await apiFetch(attempt.path, {
-        method: attempt.method,
-        headers: { "Content-Type": "application/json" },
-        body: payload,
-      });
-      if (nextRes.ok || nextRes.status !== 404) {
-        res = nextRes;
-        break;
-      }
-      res = nextRes;
-    } catch (_) {
-      // Continue to next route/method combo if this attempt fails at transport/CORS level.
-    }
-  }
-  if (!res) throw new Error("Rename request could not reach the API");
+  const res = await apiFetch(`/import-collections/${collectionId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
   if (!res.ok) throw new Error(await parseErrorResponse(res));
   return res.json();
 }

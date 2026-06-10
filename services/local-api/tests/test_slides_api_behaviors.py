@@ -244,7 +244,7 @@ def test_cached_raster_tile_still_rejects_invalid_coordinates(app_paths):
         tile_response = client.get(f"/slides/{slide_id}/tiles/0/-1/0.jpg")
 
     assert tile_response.status_code == 400
-    assert tile_response.json()["error"]["code"] == "not_found"
+    assert tile_response.json()["error"]["code"] == "slide_invalid"
 
 
 def test_metadata_rejects_stored_path_outside_managed_storage(app_paths):

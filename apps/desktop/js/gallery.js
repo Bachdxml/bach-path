@@ -30,6 +30,10 @@ function waitForGalleryApiReady() {
 let inferencePollTimer = null;
 const pendingInferenceRunIds = new Set();
 
+function _syncPendingIds() {
+  localStorage.setItem('pendingInferenceRunIds', JSON.stringify([...pendingInferenceRunIds]));
+}
+
 function getCollapsedFolders() {
   try {
     const raw = localStorage.getItem(FOLDER_COLLAPSE_KEY);
@@ -477,6 +481,7 @@ function startInferencePolling() {
         const run = await gallerySlidesApi.getInferenceRun(runId);
         if (run.status === "succeeded" || run.status === "failed") {
           pendingInferenceRunIds.delete(runId);
+          _syncPendingIds();
           completedNow++;
         }
       } catch {
@@ -498,6 +503,7 @@ function trackInferenceRuns(runIds) {
   for (const id of runIds || []) {
     if (Number.isFinite(id)) pendingInferenceRunIds.add(id);
   }
+  _syncPendingIds();
   loadGallery();
   startInferencePolling();
 }
@@ -548,18 +554,18 @@ async function deleteSelectedSlides() {
   const ids = [...selectedIds];
   if (ids.length === 0) return;
   if (!confirm(`Delete ${ids.length} slide(s)? This cannot be undone.`)) return;
+  const results = await Promise.allSettled(ids.map(id => gallerySlidesApi.deleteSlide(id)));
   let ok = 0;
-  for (const id of ids) {
-    try {
-      await gallerySlidesApi.deleteSlide(id);
+  results.forEach((result, i) => {
+    if (result.status === 'fulfilled') {
       ok++;
       const fav = getFavorites();
-      fav.delete(id);
+      fav.delete(ids[i]);
       saveFavorites(fav);
-    } catch (err) {
-      console.error(err);
+    } else {
+      console.error(result.reason);
     }
-  }
+  });
   selectedIds.clear();
   selectionMode = false;
   updateSelectionUi();
@@ -613,6 +619,14 @@ if (galleryApp?.registerFeature) {
 }
 
 function initGallery() {
+  try {
+    const stored = localStorage.getItem('pendingInferenceRunIds');
+    if (stored) {
+      JSON.parse(stored).forEach(id => pendingInferenceRunIds.add(id));
+      if (pendingInferenceRunIds.size > 0) startInferencePolling();
+    }
+  } catch { /* ignore corrupt localStorage */ }
+
   if (gallerySort) {
     gallerySort.innerHTML = "";
     const opt = document.createElement("option");

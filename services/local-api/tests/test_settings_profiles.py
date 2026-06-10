@@ -31,7 +31,7 @@ def test_load_settings_defaults_to_local_profile(app_paths, monkeypatch):
     assert settings.sqlite_path == app_paths["app_data_dir"].resolve() / "app.db"
     assert settings.inference_tile_batch_size == 4
     assert settings.inference_device == "auto"
-    assert settings.inference_level == "auto"
+    assert settings.inference_level is None
     assert settings.inference_target_tiles == 30000
 
 
@@ -68,7 +68,7 @@ def test_load_settings_accepts_inference_level_and_target_tiles(app_paths, monke
 
     settings = load_settings()
 
-    assert settings.inference_level == "2"
+    assert settings.inference_level == 2
     assert settings.inference_target_tiles == 900
 
 

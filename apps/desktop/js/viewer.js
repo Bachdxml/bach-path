@@ -690,10 +690,10 @@ function stampMaskIntoClusterGrid(grid, gridW, gridH, layer, labelValue) {
 
 function computeClusterOutlineLayers(cluster) {
   const margin = POSITIVE_OUTLINE_GAP_PX + POSITIVE_OUTLINE_THICKNESS_PX;
-  const originX = Math.floor(Math.min(...cluster.map((layer) => layer.x1)) - margin);
-  const originY = Math.floor(Math.min(...cluster.map((layer) => layer.y1)) - margin);
-  const maxX = Math.ceil(Math.max(...cluster.map((layer) => layer.x2)) + margin);
-  const maxY = Math.ceil(Math.max(...cluster.map((layer) => layer.y2)) + margin);
+  const originX = Math.floor(cluster.reduce((min, l) => Math.min(min, l.x1), Infinity) - margin);
+  const originY = Math.floor(cluster.reduce((min, l) => Math.min(min, l.y1), Infinity) - margin);
+  const maxX = Math.ceil(cluster.reduce((max, l) => Math.max(max, l.x2), -Infinity) + margin);
+  const maxY = Math.ceil(cluster.reduce((max, l) => Math.max(max, l.y2), -Infinity) + margin);
   const gridW = Math.max(1, maxX - originX);
   const gridH = Math.max(1, maxY - originY);
 
@@ -1377,7 +1377,6 @@ async function handleRunInference() {
   runInferenceBtn.disabled = true;
   const selectedModel = getSelectedModelId();
   const threshold = getCurrentThreshold();
-  console.log('[DEBUG] Running inference with threshold:', threshold);
   setInferenceStatus(selectedModel ? `Starting... (${selectedModel})` : "Starting...");
 
   try {

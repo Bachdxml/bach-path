@@ -54,6 +54,18 @@ SIGKILL_ERROR_MESSAGE = (
 _SECRET_PATTERNS = (
     re.compile(r"(?i)(api[_-]?key|token|secret|password)(\s*[=:]\s*)([^\s,;]+)"),
 )
+_INFERENCE_ENV_ALLOW = {
+    # process/runtime essentials
+    "PATH", "PYTHONPATH", "TEMP", "TMP", "TMPDIR",
+    "HOME", "USERPROFILE", "SYSTEMROOT", "COMSPEC",
+    # Windows runtime essentials
+    "APPDATA", "LOCALAPPDATA", "PATHEXT", "WINDIR",
+    "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
+    # GPU / inference runtime
+    "CUDA_PATH", "CUDA_VISIBLE_DEVICES", "NVIDIA_VISIBLE_DEVICES",
+    # project-specific caps read by run_inference_api.py
+    "BACH_MAX_INFERENCE_TILES", "BACH_MAX_RASTER_PIXELS",
+}
 
 
 def _region_payload_from_json(payload_json: str | None) -> dict | None:
@@ -88,6 +100,17 @@ def _is_deployable_weight(p: Path) -> bool:
 
 
 def _get_project_root() -> Path:
+    from app.settings import load_settings
+    try:
+        configured = load_settings().project_root
+    except Exception:
+        configured = ""
+    if configured:
+        return Path(configured).resolve()
+    logger.debug(
+        "_get_project_root: APP_PROJECT_ROOT is not set; "
+        "falling back to 6-level parent chain from __file__"
+    )
     return Path(__file__).resolve().parent.parent.parent.parent.parent.parent
 
 
@@ -230,7 +253,7 @@ def _subprocess_diagnostic(result: subprocess.CompletedProcess | object) -> str:
 
 
 def _inference_subprocess_env() -> dict[str, str]:
-    env = dict(os.environ)
+    env = {k: v for k, v in os.environ.items() if k in _INFERENCE_ENV_ALLOW or k.startswith("INFERENCE_")}
     project_root = _get_project_root()
     python_entries = [
         str(project_root / "wsi-fungal-segmentation"),
@@ -408,9 +431,10 @@ def _process_inference_job(
             "--model-version", run.model_version,
             "--batch-size", str(settings.inference_tile_batch_size),
             "--device", settings.inference_device,
-            "--level", settings.inference_level,
             "--target-tiles", str(settings.inference_target_tiles),
         ]
+        if settings.inference_level is not None:
+            cmd.extend(["--level", str(settings.inference_level)])
         if threshold is not None:
             cmd.extend(["--threshold", str(float(threshold))])
 

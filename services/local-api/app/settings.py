@@ -31,8 +31,9 @@ class Settings(BaseModel):
     max_inference_output_bytes: int = 5_000_000
     inference_tile_batch_size: int = 4
     inference_device: str = "auto"
-    inference_level: str = "auto"
+    inference_level: int | None = None
     inference_target_tiles: int = 30000
+    project_root: str = ""
 
 
 def _parse_deployment_mode(raw: str | None) -> DeploymentMode:
@@ -216,15 +217,18 @@ def load_settings() -> Settings:
         raise RuntimeError(
             "APP_INFERENCE_DEVICE must be one of auto, cpu, cuda, cuda:<index>, or mps"
         )
-    inference_level = (os.environ.get("APP_INFERENCE_LEVEL") or "auto").strip().lower()
-    if inference_level != "auto":
+    inference_level_raw = (os.environ.get("APP_INFERENCE_LEVEL") or "").strip().lower()
+    if not inference_level_raw or inference_level_raw == "auto":
+        inference_level: int | None = None
+    else:
         try:
-            parsed_level = int(inference_level)
+            parsed_level = int(inference_level_raw)
         except ValueError as exc:
             raise RuntimeError("APP_INFERENCE_LEVEL must be 'auto' or a non-negative integer") from exc
         if parsed_level < 0:
             raise RuntimeError("APP_INFERENCE_LEVEL must be 'auto' or a non-negative integer")
-        inference_level = str(parsed_level)
+        inference_level = parsed_level
+    project_root = os.environ.get("APP_PROJECT_ROOT", "")
     inference_target_tiles = _parse_positive_int(
         os.environ.get("APP_INFERENCE_TARGET_TILES"),
         default=30000,
@@ -260,6 +264,7 @@ def load_settings() -> Settings:
         inference_device=inference_device,
         inference_level=inference_level,
         inference_target_tiles=inference_target_tiles,
+        project_root=project_root,
         remote_api_base_url=remote_api_base_url,
         remote_auth_provider_url=remote_auth_provider_url,
         remote_storage_url=remote_storage_url,
