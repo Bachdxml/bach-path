@@ -509,7 +509,11 @@ function trackInferenceRuns(runIds) {
 }
 
 async function deleteOneSlide(id) {
-  if (!confirm("Delete this slide from the library? This cannot be undone.")) return;
+  const confirmed = await showConfirm(
+    "Delete this slide from the library? This cannot be undone.",
+    { title: "Delete slide", confirmLabel: "Delete" }
+  );
+  if (!confirmed) return;
   try {
     await gallerySlidesApi.deleteSlide(id);
     selectedIds.delete(id);
@@ -533,7 +537,10 @@ async function deleteOneSlide(id) {
 async function renameCollectionGroup(group) {
   if (!group || group.collectionId == null) return;
   const currentTitle = group.title || "Untitled collection";
-  const nextTitle = prompt("Rename import collection", currentTitle);
+  const nextTitle = await showPrompt("Rename import collection", currentTitle, {
+    title: "Rename collection",
+    confirmLabel: "Rename",
+  });
   if (nextTitle === null) return;
   const trimmed = nextTitle.trim();
   if (!trimmed) {
@@ -553,7 +560,11 @@ async function renameCollectionGroup(group) {
 async function deleteSelectedSlides() {
   const ids = [...selectedIds];
   if (ids.length === 0) return;
-  if (!confirm(`Delete ${ids.length} slide(s)? This cannot be undone.`)) return;
+  const confirmed = await showConfirm(
+    `Delete ${ids.length} slide(s)? This cannot be undone.`,
+    { title: "Delete slides", confirmLabel: "Delete" }
+  );
+  if (!confirmed) return;
   const results = await Promise.allSettled(ids.map(id => gallerySlidesApi.deleteSlide(id)));
   let ok = 0;
   results.forEach((result, i) => {
@@ -605,10 +616,9 @@ function loadGallery() {
   loadGalleryData();
 }
 
-window.galleryRefresh = loadGallery;
-window.galleryGetOrderedSlideIds = () => getOrderedSlides().map((s) => s.id);
-window.galleryGetSlideById = (id) => allSlides.find((s) => s.id === id) || null;
-window.galleryTrackInferenceRuns = trackInferenceRuns;
+// Public gallery API is exposed via the BachPath feature registry. Cross-module
+// callers (viewer.js, app.js, import.js) read app.features.gallery.* and only
+// fall back to window.* when the registry is unavailable.
 if (galleryApp?.registerFeature) {
   galleryApp.registerFeature("gallery", {
     refresh: loadGallery,
@@ -616,6 +626,13 @@ if (galleryApp?.registerFeature) {
     getSlideById: (id) => allSlides.find((s) => s.id === id) || null,
     trackInferenceRuns,
   });
+} else {
+  // Registry not bootstrapped (e.g. core.bach-path.js failed to load): keep the
+  // legacy globals so cross-module fallbacks still resolve.
+  window.galleryRefresh = loadGallery;
+  window.galleryGetOrderedSlideIds = () => getOrderedSlides().map((s) => s.id);
+  window.galleryGetSlideById = (id) => allSlides.find((s) => s.id === id) || null;
+  window.galleryTrackInferenceRuns = trackInferenceRuns;
 }
 
 function initGallery() {
@@ -664,10 +681,9 @@ function initGallery() {
       window.appToast?.("Select one or more slides first.", "info");
       return;
     }
-    const modelId =
-      typeof window.getSelectedInferenceModel === "function"
-        ? window.getSelectedInferenceModel()
-        : null;
+    const getSelectedModel =
+      galleryApp?.features?.shell?.getSelectedInferenceModel || window.getSelectedInferenceModel;
+    const modelId = typeof getSelectedModel === "function" ? getSelectedModel() : null;
     const threshold = getPreferredThreshold(modelId);
     btnGalleryInferSelected.disabled = true;
     try {

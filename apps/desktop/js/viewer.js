@@ -617,11 +617,31 @@ function clusterPositiveMaskLayers(layers) {
   const union = (left, right) => {
     parent[find(left)] = find(right);
   };
-  for (let i = 0; i < layers.length; i += 1) {
-    for (let j = i + 1; j < layers.length; j += 1) {
-      if (expandedRectsOverlap(layers[i], layers[j], margin)) union(i, j);
+
+  // Sweep-line over x: process layers left-to-right by x1 and only compare
+  // each layer against an "active" window of earlier layers whose x-extent can
+  // still reach it. Two expanded rects overlap on x iff
+  //   b.x1 - margin < a.x2 + margin  <=>  b.x1 < a.x2 + 2*margin,
+  // so once layers[a].x2 + 2*margin <= layers[b].x1 for the current b (and all
+  // later, larger-x1 layers), a can never overlap again and leaves the window.
+  // This yields the identical union-find result as the previous O(n^2) pass.
+  const expandReach = 2 * margin;
+  const order = layers.map((_, index) => index).sort((a, b) => layers[a].x1 - layers[b].x1);
+  const active = [];
+  for (const j of order) {
+    const layerJ = layers[j];
+    let write = 0;
+    for (let r = 0; r < active.length; r += 1) {
+      const i = active[r];
+      if (layers[i].x2 + expandReach <= layerJ.x1) continue; // out of x-reach, drop
+      active[write] = i;
+      write += 1;
+      if (expandedRectsOverlap(layers[i], layerJ, margin)) union(i, j);
     }
+    active.length = write;
+    active.push(j);
   }
+
   const groups = new Map();
   for (let i = 0; i < layers.length; i += 1) {
     const root = find(i);
@@ -904,16 +924,28 @@ function renderTileReviewPanel(regions) {
     btn.className = "tile-review-card";
     if (selectedReviewRegionId === tile.id) btn.classList.add("is-active");
     const scoreText = tile.score == null ? "n/a" : tile.score.toFixed(2);
-    btn.innerHTML = `
-      <div class="tile-review-card-title">
-        <span>${escapeHtml(tile.label)}</span>
-        <span>Score ${escapeHtml(scoreText)}</span>
-      </div>
-      <div class="tile-review-card-meta">
-        Slide ${escapeHtml(currentSlideId)} · Level-0 x=${escapeHtml(tile.coordinates.x)}, y=${escapeHtml(tile.coordinates.y)}<br />
-        Region ${escapeHtml(tile.coordinates.w)}×${escapeHtml(tile.coordinates.h)} px · Click to open in slide
-      </div>
-    `;
+
+    const title = document.createElement("div");
+    title.className = "tile-review-card-title";
+    const labelSpan = document.createElement("span");
+    labelSpan.textContent = tile.label;
+    const scoreSpan = document.createElement("span");
+    scoreSpan.textContent = `Score ${scoreText}`;
+    title.append(labelSpan, scoreSpan);
+
+    const meta = document.createElement("div");
+    meta.className = "tile-review-card-meta";
+    meta.append(
+      document.createTextNode(
+        `Slide ${currentSlideId} · Level-0 x=${tile.coordinates.x}, y=${tile.coordinates.y}`
+      ),
+      document.createElement("br"),
+      document.createTextNode(
+        `Region ${tile.coordinates.w}×${tile.coordinates.h} px · Click to open in slide`
+      )
+    );
+
+    btn.append(title, meta);
     btn.addEventListener("click", () => jumpToReviewTile(tile));
     viewerTileReviewContent.appendChild(btn);
   }
@@ -1429,12 +1461,16 @@ async function handleRunInference() {
   }
 }
 
-window.showViewer = showViewer;
+// Public viewer API is exposed via the BachPath feature registry. gallery.js
+// reads app.features.viewer.open and only falls back to window.showViewer when
+// the registry is unavailable.
 if (viewerApp?.registerFeature) {
   viewerApp.registerFeature("viewer", {
     open: showViewer,
     close: closeViewer,
   });
+} else {
+  window.showViewer = showViewer;
 }
 
 if (viewerBack) {

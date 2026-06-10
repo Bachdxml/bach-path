@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +34,7 @@ from app.schemas.inference import (
     InferenceModelInfo,
     InferenceModelListResponse,
 )
+from app.slides.access import resolve_managed_slide_path as _resolve_managed_slide_path
 from app.slides.paths import folder_key_for_original_path
 from app.util.exceptions import AppError, ErrorCode
 
@@ -41,6 +43,9 @@ router = APIRouter(prefix="/inference", tags=["inference"])
 # OpenSlide/PyTorch subprocesses being killed by local OS memory pressure.
 _inference_executor = ThreadPoolExecutor(max_workers=1)
 _inference_queue: QueueInterface = InMemoryQueue()
+# Guards lazy initialization of the shared engine/session factory on app.state,
+# matching the lock used by get_db so both paths cooperate.
+_engine_init_lock = threading.Lock()
 logger = logging.getLogger(__name__)
 MAX_FOLDER_INFERENCE_SLIDES = 512
 MAX_REGIONS_PER_RUN = 100_000
@@ -301,18 +306,6 @@ def _parse_inference_region(raw_region: object) -> dict:
     }
 
 
-def _resolve_managed_slide_path(slide: Slide, settings) -> Path:
-    path = Path(slide.stored_path).resolve(strict=False)
-    slides_root = settings.slides_dir.resolve(strict=False)
-    try:
-        path.relative_to(slides_root)
-    except ValueError as e:
-        raise AppError(ErrorCode.STORAGE_INCONSISTENT, "Slide path is outside managed storage") from e
-    if not path.exists() or not path.is_file():
-        raise AppError(ErrorCode.STORAGE_INCONSISTENT, "Slide file missing from managed storage")
-    return path
-
-
 def _record_inference_run_transition(
     db: Session,
     run: InferenceRun,
@@ -349,27 +342,23 @@ def _record_inference_run_transition(
 
 
 def _run_inference_task(
-    run_id: int,
-    slide_path: str,
-    output_path: Path,
-    checkpoint: Path,
-    threshold: float | None = None,
+    session_factory,
+    settings,
 ):
-    """Background task: claim a queued inference job, run it, and finalize queue state."""
+    """Background task: claim a queued inference job, run it, and finalize queue state.
+
+    The shared application ``Settings`` and a SQLAlchemy ``session_factory`` are
+    threaded in from the request that enqueued the job (see #6). Everything the
+    job needs to run is read from the queue payload (see #7), so this function
+    takes no per-run parameters.
+    """
     claimed_job = _inference_queue.claim()
     if claimed_job is None:
-        logger.warning("Inference worker started for run %s but no queued job was available", run_id)
+        logger.warning("Inference worker started but no queued job was available")
         return
 
     try:
-        _process_inference_job(
-            claimed_job,
-            fallback_run_id=run_id,
-            fallback_slide_path=slide_path,
-            fallback_output_path=output_path,
-            fallback_checkpoint=checkpoint,
-            fallback_threshold=threshold,
-        )
+        _process_inference_job(claimed_job, session_factory=session_factory, settings=settings)
     except Exception:
         logger.exception("Inference job %s could not be processed", claimed_job.id)
         _inference_queue.fail(claimed_job.id, "internal")
@@ -378,40 +367,23 @@ def _run_inference_task(
 def _process_inference_job(
     job: JobRecord,
     *,
-    fallback_run_id: int,
-    fallback_slide_path: str,
-    fallback_output_path: Path,
-    fallback_checkpoint: Path,
-    fallback_threshold: float | None,
+    session_factory,
+    settings,
 ):
-    """Run the claimed job and update both the DB row and queue record."""
-    from app.db.session import make_engine, make_session_factory
-    from app.settings import load_settings
+    """Run the claimed job and update both the DB row and queue record.
 
-    settings = load_settings()
-    engine = make_engine(settings.sqlite_path)
-    SessionLocal = make_session_factory(engine)
-    db = SessionLocal()
+    The queue payload is the single source of truth for run parameters.
+    """
+    db = session_factory()
 
     payload = job.payload or {}
-    run_id = fallback_run_id
-    slide_path = fallback_slide_path
-    output_path = fallback_output_path
-    checkpoint = fallback_checkpoint
-    threshold = fallback_threshold
+    run_id = int(payload["run_id"])
+    slide_path = str(payload["slide_path"])
+    output_path = Path(payload["output_path"])
+    checkpoint = Path(payload["checkpoint"])
+    threshold = payload.get("threshold")
     run = None
     try:
-        if "run_id" in payload:
-            run_id = int(payload["run_id"])
-        if "slide_path" in payload:
-            slide_path = str(payload["slide_path"])
-        if "output_path" in payload:
-            output_path = Path(payload["output_path"])
-        if "checkpoint" in payload:
-            checkpoint = Path(payload["checkpoint"])
-        if "threshold" in payload:
-            threshold = payload["threshold"]
-
         run = db.get(InferenceRun, run_id)
         if not run:
             _inference_queue.cancel(job.id)
@@ -573,11 +545,30 @@ def _process_inference_job(
         db.close()
 
 
+def _get_session_factory(request: Request):
+    """Return the shared session factory cached on app.state.
+
+    Mirrors the lazy initialization performed by ``get_db`` so that the
+    background inference worker reuses the application's single engine and
+    connection pool instead of constructing a new engine per job (see #6).
+    """
+    state = request.app.state
+    if not hasattr(state, "engine"):
+        with _engine_init_lock:
+            if not hasattr(state, "engine"):
+                from app.db.session import make_engine, make_session_factory
+
+                state.engine = make_engine(state.settings.sqlite_path)
+                state.SessionLocal = make_session_factory(state.engine)
+    return state.SessionLocal
+
+
 def _queue_inference_run_for_slide(
     *,
     slide: Slide,
     payload: InferenceRunCreate,
     settings,
+    session_factory,
     db: Session,
 ) -> InferenceRun:
     slide_path = _resolve_managed_slide_path(slide, settings)
@@ -610,11 +601,8 @@ def _queue_inference_run_for_slide(
         )
         _inference_executor.submit(
             _run_inference_task,
-            run.id,
-            str(slide_path),
-            output_path,
-            checkpoint,
-            payload.threshold,
+            session_factory,
+            settings,
         )
     except Exception:
         logger.exception("Failed to submit inference run %s", run.id)
@@ -653,7 +641,14 @@ def run_inference(
     settings.inference_runs_dir.mkdir(parents=True, exist_ok=True)
 
     payload = payload or InferenceRunCreate()
-    run = _queue_inference_run_for_slide(slide=slide, payload=payload, settings=settings, db=db)
+    session_factory = _get_session_factory(request)
+    run = _queue_inference_run_for_slide(
+        slide=slide,
+        payload=payload,
+        settings=settings,
+        session_factory=session_factory,
+        db=db,
+    )
 
     return _run_to_response(run)
 
@@ -689,12 +684,14 @@ def run_batch_inference(
         model_file=payload.model_file,
         threshold=payload.threshold,
     )
+    session_factory = _get_session_factory(request)
     runs = []
     for sid in slide_ids:
         run = _queue_inference_run_for_slide(
             slide=found_by_id[sid],
             payload=base_payload,
             settings=settings,
+            session_factory=session_factory,
             db=db,
         )
         runs.append(run)
@@ -739,12 +736,14 @@ def run_folder_inference(
         model_file=payload.model_file,
         threshold=payload.threshold,
     )
+    session_factory = _get_session_factory(request)
     runs = []
     for slide in target_slides:
         run = _queue_inference_run_for_slide(
             slide=slide,
             payload=base_payload,
             settings=settings,
+            session_factory=session_factory,
             db=db,
         )
         runs.append(run)

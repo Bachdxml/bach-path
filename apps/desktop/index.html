@@ -464,7 +464,22 @@ python scripts/export_deploy_weights.py \
       </div>
     </div>
 
+    <dialog id="app-modal" class="app-modal">
+      <form method="dialog" class="modal-dialog app-modal-dialog">
+        <h2 id="app-modal-title">Confirm</h2>
+        <p id="app-modal-message" class="app-modal-message"></p>
+        <div id="app-modal-field-wrap" class="app-modal-field" hidden>
+          <input type="text" id="app-modal-input" class="app-modal-input" autocomplete="off" />
+        </div>
+        <div class="modal-actions app-modal-actions">
+          <button type="button" class="btn btn-secondary" id="app-modal-cancel">Cancel</button>
+          <button type="button" class="btn btn-primary" id="app-modal-confirm">OK</button>
+        </div>
+      </form>
+    </dialog>
+
     <script src="js/core.bach-path.js"></script>
+    <script src="js/modals.js"></script>
     <script src="js/api.js"></script>
     <script src="js/import.js"></script>
     <script src="js/gallery.js"></script>

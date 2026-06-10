@@ -1056,6 +1056,52 @@ body {
   gap: 6px;
 }
 
+/* Native <dialog>-based confirm/prompt modals (see js/modals.js). */
+.app-modal {
+  border: none;
+  padding: 0;
+  background: transparent;
+  color: var(--text);
+  max-width: none;
+  max-height: none;
+  overflow: visible;
+}
+
+.app-modal::backdrop {
+  background: rgba(0, 0, 0, 0.62);
+}
+
+.app-modal-dialog {
+  width: min(460px, 96vw);
+  margin: 0;
+}
+
+.app-modal-message {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+}
+
+.app-modal-field {
+  margin-top: 14px;
+}
+
+.app-modal-input {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.app-modal-actions {
+  justify-content: flex-end;
+}
+
 .viewer-overlay {
   position: fixed;
   inset: 0;

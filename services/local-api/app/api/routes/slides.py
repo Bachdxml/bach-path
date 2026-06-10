@@ -3,7 +3,9 @@ import io
 import logging
 import re
 import shutil
+import threading
 import uuid
+from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,6 +34,7 @@ from app.schemas.slides import (
     SlideReviewRequest,
     SlideReviewResponse,
 )
+from app.slides.access import resolve_managed_slide_path as _resolve_managed_slide_path
 from app.slides.deepzoom import deepzoom_paths, has_deepzoom, ensure_deepzoom
 from app.slides.metadata import RASTER_EXTENSIONS, read_openslide_metadata, read_raster_metadata
 from app.slides.paths import folder_key_for_original_path
@@ -52,6 +55,73 @@ MAX_IMPORT_COLLECTION_ITEMS = 256
 TILE_FILENAME_RE = re.compile(r"(?:^|[_-])tile[_-]?x?\d+[_-]y?\d+(?:[_-]|$)", re.IGNORECASE)
 GENERATED_TILE_PATH_PARTS = {"mastertile", "tiles", "patches"}
 GENERATED_TILE_CLASS_PARTS = {"high", "medium", "low", "negative", "unclassified", "images", "masks"}
+
+# --- OpenSlide handle cache (Finding #11) -----------------------------------
+# Opening a WSI parses pyramid metadata and header offsets, which is expensive.
+# The viewer fires many tile requests per second during pan/zoom, so we share a
+# bounded set of OpenSlide handles across requests keyed on the resolved path.
+#
+# Concurrency design: the lock is held only to look up or insert/evict a handle
+# in the OrderedDict. The actual read_region happens outside the lock once the
+# caller holds a handle reference. On eviction we simply drop the dict entry and
+# never call .close() on it -- another in-flight request may still be reading
+# through that same handle. The handle is closed by OpenSlide's own __del__ once
+# the last reference is garbage-collected, so we never close an in-use handle.
+_OPENSLIDE_CACHE_MAXSIZE = 8
+_openslide_cache: "OrderedDict[str, object]" = OrderedDict()
+_openslide_cache_lock = threading.Lock()
+
+
+def _get_cached_openslide(slide_path: Path):
+    """Return a shared OpenSlide handle for ``slide_path``, opening it on miss.
+
+    The handle is owned by the cache; callers must not close it. See the module
+    comment above for the concurrency rationale.
+    """
+    key = str(slide_path)
+    with _openslide_cache_lock:
+        handle = _openslide_cache.get(key)
+        if handle is not None:
+            _openslide_cache.move_to_end(key)
+            return handle
+
+    # Open outside the lock so a slow open() does not block other slides.
+    configure_openslide_runtime()
+    import openslide
+
+    handle = openslide.OpenSlide(str(slide_path))
+
+    with _openslide_cache_lock:
+        existing = _openslide_cache.get(key)
+        if existing is not None:
+            # Another thread opened it first; reuse theirs and drop ours
+            # (ours is closed by GC once this function returns).
+            _openslide_cache.move_to_end(key)
+            return existing
+        _openslide_cache[key] = handle
+        _openslide_cache.move_to_end(key)
+        while len(_openslide_cache) > _OPENSLIDE_CACHE_MAXSIZE:
+            # Drop the reference only; never .close() a possibly in-use handle.
+            _openslide_cache.popitem(last=False)
+    return handle
+
+
+def _evict_openslide_handle(slide_path: Path) -> None:
+    """Drop and close any cached handle for ``slide_path``.
+
+    Called before deleting a slide file so a cached handle does not keep the
+    file open (notably on Windows, where an open handle blocks unlink). Unlike
+    capacity eviction, this path explicitly closes because the file is going
+    away; any concurrent read will fail, which is acceptable for a deletion.
+    """
+    key = str(slide_path)
+    with _openslide_cache_lock:
+        handle = _openslide_cache.pop(key, None)
+    if handle is not None:
+        try:
+            handle.close()
+        except Exception:
+            pass
 
 
 def _display_original_path(original_path: str | None) -> str | None:
@@ -157,18 +227,6 @@ def _validate_import_source(
             ErrorCode.SLIDE_INVALID,
             "This looks like a generated training tile, not a whole slide. Import the source .svs instead.",
         )
-
-
-def _resolve_managed_slide_path(slide: Slide, settings, *, must_exist: bool = True) -> Path:
-    path = Path(slide.stored_path).resolve(strict=False)
-    slides_root = settings.slides_dir.resolve(strict=False)
-    try:
-        path.relative_to(slides_root)
-    except ValueError as e:
-        raise AppError(ErrorCode.STORAGE_INCONSISTENT, "Slide path is outside managed storage") from e
-    if must_exist and (not path.exists() or not path.is_file()):
-        raise AppError(ErrorCode.STORAGE_INCONSISTENT, "Slide file missing from managed storage")
-    return path
 
 
 def _import_slide_file(
@@ -307,6 +365,8 @@ def delete_slide(slide_id: int, request: Request, db: Session = Depends(get_db))
                 json_path.unlink()
             except OSError as e:
                 logger.warning("Could not delete inference output %s: %s", json_path, e)
+
+    _evict_openslide_handle(slide_path)
 
     if slide_path.is_file():
         try:
@@ -590,39 +650,32 @@ def slide_thumbnail(
             raise AppError(ErrorCode.SLIDE_UNREADABLE, "Could not read slide image")
 
     try:
-        configure_openslide_runtime()
-        import openslide
-        osr = openslide.OpenSlide(str(slide_path))
+        osr = _get_cached_openslide(slide_path)
     except Exception:
         logger.exception("OpenSlide thumbnail open failed for slide %s", slide_id)
         raise AppError(ErrorCode.SLIDE_UNREADABLE, "Could not read slide image")
 
-    try:
-        # Use lowest-resolution level (highest level index)
-        level = osr.level_count - 1
-        level_w, level_h = osr.level_dimensions[level]
-        img = osr.read_region((0, 0), level, (level_w, level_h))
-        img = img.convert("RGB")
+    # Cached handle is owned by the cache; do not close it here.
+    # Use lowest-resolution level (highest level index)
+    level = osr.level_count - 1
+    level_w, level_h = osr.level_dimensions[level]
+    img = osr.read_region((0, 0), level, (level_w, level_h))
+    img = img.convert("RGB")
 
-        # Scale to fit within size (max dimension)
-        w, h = img.size
-        if w > size or h > size:
-            ratio = min(size / w, size / h)
-            new_w = max(1, int(w * ratio))
-            new_h = max(1, int(h * ratio))
-            img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+    # Scale to fit within size (max dimension)
+    w, h = img.size
+    if w > size or h > size:
+        ratio = min(size / w, size / h)
+        new_w = max(1, int(w * ratio))
+        new_h = max(1, int(h * ratio))
+        img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=85)
-        jpg = buf.getvalue()
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_bytes(jpg)
-        return Response(content=jpg, media_type="image/jpeg")
-    finally:
-        try:
-            osr.close()
-        except Exception:
-            pass
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=85)
+    jpg = buf.getvalue()
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_bytes(jpg)
+    return Response(content=jpg, media_type="image/jpeg")
 
 
 @router.get("/{slide_id}/tiles/{level}/{x}/{y}.jpg")
@@ -672,67 +725,61 @@ def slide_tile(
 
     # 2) Validate level exists + 3) compute tile region
     try:
-        configure_openslide_runtime()
-        import openslide
-        osr = openslide.OpenSlide(str(slide_path))
+        osr = _get_cached_openslide(slide_path)
     except Exception:
         logger.exception("OpenSlide tile open failed for slide %s", slide_id)
         raise AppError(ErrorCode.SLIDE_UNREADABLE, "Could not read slide image")
 
-    try:
-        if level < 0 or level >= osr.level_count:
-            raise AppError(ErrorCode.SLIDE_INVALID, f"Invalid level {level}; slide has {osr.level_count} levels")
+    # Cached handle is owned by the cache; do not close it here. The read below
+    # runs outside the cache lock since the handle reference is now held.
+    if level < 0 or level >= osr.level_count:
+        raise AppError(ErrorCode.SLIDE_INVALID, f"Invalid level {level}; slide has {osr.level_count} levels")
 
-        level_w, level_h = osr.level_dimensions[level]
+    level_w, level_h = osr.level_dimensions[level]
 
-        px_level = x * tile_size
-        py_level = y * tile_size
+    px_level = x * tile_size
+    py_level = y * tile_size
 
-        # Negative coordinates are invalid client input, not a missing resource.
-        if x < 0 or y < 0:
-            raise AppError(ErrorCode.SLIDE_INVALID, f"Invalid tile coordinates: level={level} x={x} y={y}")
+    # Negative coordinates are invalid client input, not a missing resource.
+    if x < 0 or y < 0:
+        raise AppError(ErrorCode.SLIDE_INVALID, f"Invalid tile coordinates: level={level} x={x} y={y}")
 
-        # Reject completely out-of-bounds tiles (avoids doing work for nonsense coords)
-        if px_level >= level_w or py_level >= level_h:
-            raise AppError(ErrorCode.NOT_FOUND, f"Tile out of bounds: level={level} x={x} y={y}")
+    # Reject completely out-of-bounds tiles (avoids doing work for nonsense coords)
+    if px_level >= level_w or py_level >= level_h:
+        raise AppError(ErrorCode.NOT_FOUND, f"Tile out of bounds: level={level} x={x} y={y}")
 
-        if tile_path.exists():
-            return Response(content=tile_path.read_bytes(), media_type="image/jpeg")
+    if tile_path.exists():
+        return Response(content=tile_path.read_bytes(), media_type="image/jpeg")
 
-        # OpenSlide read_region location is in level-0 coordinates
-        downsample = float(osr.level_downsamples[level])
-        px0 = int(px_level * downsample)
-        py0 = int(py_level * downsample)
+    # OpenSlide read_region location is in level-0 coordinates
+    downsample = float(osr.level_downsamples[level])
+    px0 = int(px_level * downsample)
+    py0 = int(py_level * downsample)
 
-        w = min(tile_size, level_w - px_level)
-        h = min(tile_size, level_h - py_level)
+    w = min(tile_size, level_w - px_level)
+    h = min(tile_size, level_h - py_level)
 
-        # 4) read_region (returns RGBA)
-        img = osr.read_region((px0, py0), level, (w, h))
+    # 4) read_region (returns RGBA)
+    img = osr.read_region((px0, py0), level, (w, h))
 
-        # 5) Convert to RGB (JPEG needs no alpha)
-        img = img.convert("RGB")
+    # 5) Convert to RGB (JPEG needs no alpha)
+    img = img.convert("RGB")
 
-        if w != tile_size or h != tile_size:
-            padded = Image.new("RGB", (tile_size, tile_size))
-            padded.paste(img, (0, 0))
-            img = padded
+    if w != tile_size or h != tile_size:
+        padded = Image.new("RGB", (tile_size, tile_size))
+        padded.paste(img, (0, 0))
+        img = padded
 
-        # 6) Return JPEG
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=85)
-        jpg_bytes = buf.getvalue()
+    # 6) Return JPEG
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=85)
+    jpg_bytes = buf.getvalue()
 
-        # write-through cache
-        tile_path.parent.mkdir(parents=True, exist_ok=True)
-        tile_path.write_bytes(jpg_bytes)
+    # write-through cache
+    tile_path.parent.mkdir(parents=True, exist_ok=True)
+    tile_path.write_bytes(jpg_bytes)
 
-        return Response(content=jpg_bytes, media_type="image/jpeg")
-    finally:
-        try:
-            osr.close()
-        except Exception:
-            pass
+    return Response(content=jpg_bytes, media_type="image/jpeg")
 
 
 @router.get("/{slide_id}/deepzoom.dzi")
