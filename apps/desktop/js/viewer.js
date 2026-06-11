@@ -43,6 +43,7 @@ let currentSlideId = null;
 let currentMpp = null;
 let currentRunId = null;
 let lastRegions = [];
+const maskCache = new Map();
 let currentSlideWidth = null;
 let currentSlideHeight = null;
 let currentSlideLabel = "";
@@ -464,8 +465,7 @@ function getRegionContribution(region, dims) {
   };
 }
 
-function getPredictionMask(region) {
-  const mask = getRegionPayload(region)?.prediction_mask;
+function normalizePredictionMask(mask) {
   if (!mask || mask.encoding !== "bitpack") return null;
   const width = Number(mask.width);
   const height = Number(mask.height);
@@ -475,6 +475,51 @@ function getPredictionMask(region) {
   }
   if (!data) return null;
   return { width, height, data };
+}
+
+function regionHasMask(region) {
+  return getRegionPayload(region)?.has_mask === true;
+}
+
+function maskCacheKey(x, y) {
+  return `${x}_${y}`;
+}
+
+// Lazily fetch and decode a single tile's prediction mask, caching the
+// decoded result (or null) per (run,x,y). The cache dedupes refetches; it is
+// cleared whenever a new run loads (see loadRegionsForRun).
+async function loadTileMask(runId, region) {
+  const x = region?.x;
+  const y = region?.y;
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  const key = maskCacheKey(x, y);
+  if (maskCache.has(key)) return maskCache.get(key);
+  let decoded = null;
+  try {
+    let raw = null;
+    // Current format: mask lives in a sidecar, fetched lazily per tile.
+    if (runId && regionHasMask(region)) {
+      raw = await viewerSlidesApi.getInferenceMask(runId, x, y);
+    }
+    // Backward compatibility: runs created before the mask-sidecar change have
+    // no sidecar and instead carry the mask inline in the region payload.
+    if (!raw) {
+      raw = getRegionPayload(region)?.prediction_mask || null;
+    }
+    const normalized = normalizePredictionMask(raw);
+    if (normalized) {
+      decoded = {
+        width: normalized.width,
+        height: normalized.height,
+        pixels: decodePredictionMask(normalized),
+      };
+    }
+  } catch (err) {
+    console.warn(`Failed to load mask for tile ${x},${y}`, err);
+    decoded = null;
+  }
+  maskCache.set(key, decoded);
+  return decoded;
 }
 
 function decodePredictionMask(mask) {
@@ -578,9 +623,9 @@ function computeChamferDistanceField(foreground, width, height) {
 }
 
 function preparePositiveMaskLayer(positive) {
-  const mask = getPredictionMask(positive.region);
+  const mask = positive.mask;
   if (!mask) return null;
-  const pixels = decodePredictionMask(mask);
+  const pixels = mask.pixels;
   const tileW = Math.max(1, positive.x2 - positive.x1);
   const tileH = Math.max(1, positive.y2 - positive.y1);
   return {
@@ -802,19 +847,18 @@ function computePositiveOutlineByRegion(positives) {
   return outlineByRegion;
 }
 
-function buildPredictionMaskOverlay(region, outlinePixels = null, maskW = 0, maskH = 0) {
+function buildPredictionMaskOverlay(mask, outlinePixels = null, maskW = 0, maskH = 0) {
   const container = document.createElement("div");
   container.className = "region-overlay region-overlay--segmentation";
   container.style.opacity = String(getOverlayOpacity());
 
-  const mask = getPredictionMask(region);
   if (!mask) return container;
 
   const resolvedMaskW = maskW || mask.width;
   const resolvedMaskH = maskH || mask.height;
   const outline =
     outlinePixels ||
-    extractIsolatedExteriorOutline(decodePredictionMask(mask), resolvedMaskW, resolvedMaskH);
+    extractIsolatedExteriorOutline(mask.pixels, resolvedMaskW, resolvedMaskH);
   const canvas = document.createElement("canvas");
   canvas.width = resolvedMaskW;
   canvas.height = resolvedMaskH;
@@ -919,12 +963,13 @@ function renderTileReviewPanel(regions) {
   }
 }
 
-function addRegionOverlays(regions, showNegative = false) {
+async function addRegionOverlays(regions, showNegative = false) {
   if (!viewer) return;
   viewer.clearOverlays();
   const dims = getSlideDimensions();
   if (!dims) return;
 
+  const runId = currentRunId;
   const positives = [];
   const negatives = [];
   for (const r of regions || []) {
@@ -936,13 +981,25 @@ function addRegionOverlays(regions, showNegative = false) {
     else negatives.push(contribution);
   }
 
-  const outlineByRegion = computePositiveOutlineByRegion(positives);
+  // Lazily fetch each positive tile's mask (cached/deduped). Tiles whose mask
+  // is null (404/absent/failed) are skipped from the outline/overlay pipeline.
+  await Promise.all(
+    positives.map(async (p) => {
+      p.mask = await loadTileMask(runId, p.region);
+    })
+  );
+  // A re-render for a newer run may have started while awaiting; bail out so we
+  // do not draw stale overlays on top of the current run.
+  if (runId !== currentRunId) return;
 
-  for (const p of positives) {
-    const mask = getPredictionMask(p.region);
+  const maskedPositives = positives.filter((p) => p.mask);
+  const outlineByRegion = computePositiveOutlineByRegion(maskedPositives);
+
+  for (const p of maskedPositives) {
+    const mask = p.mask;
     const outline = outlineByRegion.get(p.region);
     const segment = buildPredictionMaskOverlay(
-      p.region,
+      mask,
       outline,
       mask?.width,
       mask?.height
@@ -1013,6 +1070,7 @@ async function loadRegionsForRun(runId, slideId = currentSlideId, requestId = vi
     const { regions } = await viewerSlidesApi.getInferenceRegions(runId);
     if (requestId !== viewerRequestSeq || currentSlideId !== slideId) return;
     lastRegions = regions || [];
+    maskCache.clear();
     selectedReviewRegionId = null;
     const hasPositive = lastRegions.some(
       (r) => normalizeRegionLabel(r.label) === "fungus_positive"

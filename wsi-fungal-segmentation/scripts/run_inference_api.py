@@ -265,6 +265,12 @@ def _prediction_tile_region_from_prob_map(
     tile_h: int,
     threshold: float,
 ) -> list[dict]:
+    """Return prediction-tile region dicts.
+
+    Each returned dict carries the raw boolean mask under the private key
+    ``_mask`` so the caller can write it to the npz sidecar; the caller must
+    strip ``_mask`` before placing the region in the JSON payload.
+    """
     h, w = prob_map.shape
     if h <= 0 or w <= 0:
         return []
@@ -282,17 +288,13 @@ def _prediction_tile_region_from_prob_map(
             "w": int(tile_w),
             "h": int(tile_h),
             "score": round(max(0.0, min(1.0, score)), 4),
+            "_mask": np.ascontiguousarray(mask, dtype=bool),
             "payload": {
                 "kind": "segmentation",
                 "source": "prediction_tile",
                 "coverage": round(max(0.0, min(1.0, coverage)), 4),
-                "prediction_mask": {
-                    "encoding": "bitpack",
-                    "width": int(w),
-                    "height": int(h),
-                    "threshold": round(float(threshold), 4),
-                    "data": _encode_binary_mask_bitpack(mask),
-                },
+                "threshold": round(float(threshold), 4),
+                "has_mask": True,
             },
         }
     ]
@@ -305,8 +307,12 @@ def _score_seg_masks(seg_masks, tile_dims, args, tile_size, downsample=1.0):
     seg_masks  : {(x, y): prob_tensor [1, 1, H, W]}  - CPU tensors, probs 0-1
     tile_dims  : {(x, y): (w, h)}  - original tile dimensions before resize
     downsample : level-0 scale factor (1.0 for raster images)
+
+    Returns (regions, masks_by_key) where masks_by_key maps the final
+    "{x}_{y}" level-0 region key to the 2D boolean prediction mask array.
     """
     regions = []
+    masks_by_key = {}
     for (x, y), prob_tensor in seg_masks.items():
         w, h = tile_dims[(x, y)]
         # prob_tensor is [1, 1, H, W]; squeeze to [H, W] for numpy ops
@@ -329,10 +335,15 @@ def _score_seg_masks(seg_masks, tile_dims, args, tile_size, downsample=1.0):
         if localized:
             for loc in localized:
                 payload = dict(loc.get("payload") or {})
+                fx = int(x0 + loc["x"])
+                fy = int(y0 + loc["y"])
+                loc_mask = loc.get("_mask")
+                if loc_mask is not None:
+                    masks_by_key[f"{fx}_{fy}"] = loc_mask
                 regions.append(
                     {
-                        "x": int(x0 + loc["x"]),
-                        "y": int(y0 + loc["y"]),
+                        "x": fx,
+                        "y": fy,
                         "w": int(loc["w"]),
                         "h": int(loc["h"]),
                         "score": float(loc["score"]),
@@ -358,7 +369,7 @@ def _score_seg_masks(seg_masks, tile_dims, args, tile_size, downsample=1.0):
             )
         regions.append(region)
 
-    return regions
+    return regions, masks_by_key
 
 
 def _infer_regions_with_neighborhood(
@@ -374,7 +385,7 @@ def _infer_regions_with_neighborhood(
     k=1,
 ):
     if not positions:
-        return []
+        return [], {}
 
     def to_grid(x, y):
         return y // stride, x // stride
@@ -413,12 +424,13 @@ def _infer_regions_with_neighborhood(
         return 3
 
     regions = []
+    masks_by_key = {}
     with torch.no_grad():
         for i in range(0, len(positions), args.batch_size):
             batch_positions = positions[i:i + args.batch_size]
             batch = torch.cat([load_tensor(pos) for pos in batch_positions], dim=0).to(device)
-            
-            
+
+
 
             batch_labels = torch.tensor(
                 [consensus_label(*to_grid(x, y)) for x, y, _w, _h in batch_positions],
@@ -438,9 +450,13 @@ def _infer_regions_with_neighborhood(
             }
             # Score each batch immediately so segmentation masks do not
             # accumulate for the whole slide.
-            regions.extend(_score_seg_masks(seg_masks, tile_dims, args, tile_size, downsample=downsample))
+            batch_regions, batch_masks = _score_seg_masks(
+                seg_masks, tile_dims, args, tile_size, downsample=downsample
+            )
+            regions.extend(batch_regions)
+            masks_by_key.update(batch_masks)
 
-    return regions
+    return regions, masks_by_key
 
 
 def main():
@@ -594,7 +610,7 @@ def main():
             return preprocess_tile(region, tile_size)
 
         try:
-            regions = _infer_regions_with_neighborhood(
+            regions, masks_by_key = _infer_regions_with_neighborhood(
                 model=model,
                 positions=positions,
                 load_tensor=load_tensor,
@@ -683,7 +699,7 @@ def main():
                 return preprocess_tile(region, tile_size)
 
             try:
-                regions = _infer_regions_with_neighborhood(
+                regions, masks_by_key = _infer_regions_with_neighborhood(
                     model=model,
                     positions=positions,
                     load_tensor=load_tensor,
@@ -733,10 +749,16 @@ def main():
         "regions": regions,
     }
 
+    mask_threshold = max(args.threshold, 0.20)
+    sidecar_path = output_path.with_name(output_path.stem + "_masks.npz")
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, "w") as f:
             json.dump(output, f, separators=(",", ":"))
+        # Masks live in a compact compressed sidecar so the JSON stays small.
+        npz_arrays = {key: mask for key, mask in masks_by_key.items()}
+        npz_arrays["__threshold__"] = np.float32(mask_threshold)
+        np.savez_compressed(sidecar_path, **npz_arrays)
     except Exception as e:
         print(f"Error writing output: {e}", file=sys.stderr)
         return EXIT_OUTPUT

@@ -201,6 +201,13 @@ async function getInferenceRegions(runId) {
   return res.json();
 }
 
+async function getInferenceMask(runId, x, y) {
+  const res = await apiFetch(`/inference/runs/${runId}/masks/${x}/${y}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(await parseErrorResponse(res));
+  return res.json();
+}
+
 async function getSlideInferenceRuns(slideId) {
   const res = await apiFetch(`/inference/slides/${slideId}/runs`);
   if (!res.ok) throw new Error(await parseErrorResponse(res));
@@ -261,6 +268,7 @@ const slidesApi = {
   runFolderInference,
   getInferenceRun,
   getInferenceRegions,
+  getInferenceMask,
   getSlideInferenceRuns,
   updateSlideReview,
   listInferenceModels,

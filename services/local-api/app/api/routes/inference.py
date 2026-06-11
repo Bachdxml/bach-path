@@ -1,4 +1,5 @@
 from __future__ import annotations
+import base64
 import json
 import logging
 import math
@@ -10,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -756,6 +758,53 @@ def get_inference_regions(run_id: int, db: Session = Depends(get_db)):
         raise AppError(ErrorCode.NOT_FOUND, f"Inference run {run_id} not found")
     regions = db.query(Region).filter(Region.inference_run_id == run_id).all()
     return {"regions": [_region_to_response(r) for r in regions]}
+
+
+def _mask_sidecar_path(output_json_path: str) -> Path:
+    """Derive the masks sidecar (<dir>/<run_id>_masks.npz) from the run's output JSON path."""
+    json_path = Path(output_json_path)
+    return json_path.with_name(f"{json_path.stem}_masks.npz")
+
+
+@router.get("/runs/{run_id}/masks/{x}/{y}")
+def get_inference_tile_mask(run_id: int, x: int, y: int, db: Session = Depends(get_db)):
+    run = db.get(InferenceRun, run_id)
+    if not run:
+        raise AppError(ErrorCode.NOT_FOUND, f"Inference run {run_id} not found", http_status=404)
+    if x < 0 or y < 0:
+        raise AppError(ErrorCode.NOT_FOUND, "Tile mask not found", http_status=404)
+    if not run.output_json_path:
+        raise AppError(ErrorCode.NOT_FOUND, "Tile mask not found", http_status=404)
+
+    sidecar = _mask_sidecar_path(run.output_json_path)
+    if not sidecar.exists():
+        raise AppError(ErrorCode.NOT_FOUND, "Tile mask not found", http_status=404)
+
+    key = f"{x}_{y}"
+    with np.load(sidecar) as archive:
+        if key not in archive:
+            raise AppError(ErrorCode.NOT_FOUND, "Tile mask not found", http_status=404)
+        mask = archive[key]
+        threshold = None
+        if "__threshold__" in archive:
+            try:
+                threshold = float(np.asarray(archive["__threshold__"]).item())
+            except (TypeError, ValueError):
+                threshold = None
+
+    mask = np.asarray(mask)
+    if mask.ndim != 2:
+        raise AppError(ErrorCode.IO_ERROR, "Stored tile mask is not 2D")
+    height, width = int(mask.shape[0]), int(mask.shape[1])
+    packed = np.packbits(np.asarray(mask, dtype=np.uint8).ravel(), bitorder="big")
+    data = base64.b64encode(packed.tobytes()).decode("ascii")
+    return {
+        "encoding": "bitpack",
+        "width": width,
+        "height": height,
+        "threshold": threshold,
+        "data": data,
+    }
 
 
 @router.get("/runs/{run_id}/lifecycle-events", response_model=InferenceRunLifecycleEventListResponse)

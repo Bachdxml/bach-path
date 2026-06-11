@@ -526,11 +526,14 @@ def test_prediction_tile_region_from_prob_map_returns_mask_payload(inference_mod
     assert region["payload"]["kind"] == "segmentation"
     assert region["payload"]["source"] == "prediction_tile"
     assert region["payload"]["coverage"] == pytest.approx(0.25, abs=0.01)
-    mask = region["payload"]["prediction_mask"]
-    assert mask["encoding"] == "bitpack"
-    assert mask["width"] == 64
-    assert mask["height"] == 64
-    assert _bitpack_foreground_count(mask["data"], 64 * 64) == 32 * 32
+    assert region["payload"]["has_mask"] is True
+    assert region["payload"]["threshold"] == pytest.approx(0.5, abs=0.01)
+    assert "prediction_mask" not in region["payload"]
+    # The raw boolean mask is surfaced under the private _mask key for the sidecar.
+    mask = region["_mask"]
+    assert mask.dtype == bool
+    assert mask.shape == (64, 64)
+    assert int(mask.sum()) == 32 * 32
 
 
 def test_prediction_tile_region_from_prob_map_keeps_disconnected_mask_islands(inference_module):
@@ -546,6 +549,97 @@ def test_prediction_tile_region_from_prob_map_keeps_disconnected_mask_islands(in
     )
 
     assert len(regions) == 1
-    mask = regions[0]["payload"]["prediction_mask"]
-    assert mask["encoding"] == "bitpack"
-    assert _bitpack_foreground_count(mask["data"], 128 * 128) == (32 * 32) * 2
+    mask = regions[0]["_mask"]
+    assert mask.dtype == bool
+    assert int(mask.sum()) == (32 * 32) * 2
+
+
+def test_main_writes_mask_sidecar_and_no_prediction_mask_in_json(tmp_path, monkeypatch, inference_module):
+    import json as _json
+
+    import numpy as _np
+
+    slide_path = tmp_path / "slide.png"
+    output_path = tmp_path / "output.json"
+    checkpoint_path = tmp_path / "checkpoint.pth.gz"
+    Image.new("RGB", (64, 64), color=(90, 160, 110)).save(slide_path)
+    checkpoint_path.write_text("checkpoint", encoding="utf-8")
+
+    class FakeModel:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def load_state_dict(self, state_dict):
+            self.state_dict = state_dict
+
+        def to(self, device):
+            return self
+
+        def eval(self):
+            return self
+
+        def __call__(self, *args, **kwargs):
+            batch = args[0]
+            batch_size, _, height, width = batch.shape
+            # All-ones segmentation logits -> sigmoid ~1.0 -> positive mask everywhere.
+            return (
+                torch.full((batch_size, 1, height, width), 20.0, dtype=torch.float32),
+                torch.zeros((batch_size, 4), dtype=torch.float32),
+                torch.zeros((batch_size, 1, max(1, height // 8), max(1, width // 8)), dtype=torch.float32),
+                torch.zeros((batch_size, 1, max(1, height // 4), max(1, width // 4)), dtype=torch.float32),
+            )
+
+    monkeypatch.setattr(inference_module, "ResidualAttentionUNet", FakeModel)
+    monkeypatch.setattr(inference_module, "_load_checkpoint_dict", lambda path, device: {"mock": "checkpoint"})
+    monkeypatch.setattr(
+        inference_module,
+        "_extract_model_state_dict",
+        lambda checkpoint: ({"weight": torch.ones(1)}, {"cfg": {"model": {}}}),
+    )
+    monkeypatch.setattr(inference_module.torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_inference_api.py",
+            "--slide-path",
+            str(slide_path),
+            "--output-json",
+            str(output_path),
+            "--checkpoint",
+            str(checkpoint_path),
+            "--tile-size",
+            "64",
+            "--stride",
+            "64",
+            "--batch-size",
+            "1",
+        ],
+    )
+
+    assert inference_module.main() == 0
+
+    output = _json.loads(output_path.read_text(encoding="utf-8"))
+    pred_regions = [
+        r for r in output["regions"]
+        if r.get("source") == "prediction_tile"
+    ]
+    assert pred_regions, "expected at least one prediction_tile region"
+    for r in output["regions"]:
+        assert "prediction_mask" not in r
+    for r in pred_regions:
+        assert r["has_mask"] is True
+        assert "threshold" in r
+        assert r["kind"] == "segmentation"
+        assert "coverage" in r
+
+    sidecar_path = output_path.with_name(output_path.stem + "_masks.npz")
+    assert sidecar_path.exists()
+    with _np.load(sidecar_path) as data:
+        assert "__threshold__" in data.files
+        for r in pred_regions:
+            key = f"{r['x']}_{r['y']}"
+            assert key in data.files
+            arr = data[key]
+            assert arr.dtype == bool
+            assert arr.ndim == 2
