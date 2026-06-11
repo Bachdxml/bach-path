@@ -14,17 +14,6 @@ let importCancelled = false;
 let importInProgress = false;
 let importAbortController = null;
 
-function getPathsFromFiles(files) {
-  const paths = [];
-  for (const f of files) {
-    const ext = f.name ? "." + f.name.split(".").pop().toLowerCase() : "";
-    if (WSI_EXTENSIONS.includes(ext) && f.path) {
-      paths.push(f.path);
-    }
-  }
-  return paths;
-}
-
 function filterValidPaths(paths) {
   const unique = [];
   const seen = new Set();
@@ -121,9 +110,11 @@ async function importPaths(paths, sourceType) {
     }
   } catch (err) {
     if (importCancelled || err?.name === "AbortError") {
-      setStatus("Import canceled.", true);
+      const cancelMessage =
+        "Import request canceled. Slides already processed by the server may still appear in the gallery.";
+      setStatus(cancelMessage, true);
       if (typeof window.appToast === "function") {
-        window.appToast("Import canceled.", "info", 3000);
+        window.appToast(cancelMessage, "info", 5000);
       }
     } else {
       const message = (err && err.message ? err.message : "Import failed").trim();
@@ -155,13 +146,18 @@ function initImport() {
     dropZone.classList.remove("drag-over");
   });
 
-  dropZone.addEventListener("drop", (e) => {
+  dropZone.addEventListener("drop", async (e) => {
     e.preventDefault();
     e.stopPropagation();
     dropZone.classList.remove("drag-over");
-    const paths = getPathsFromFiles(Array.from(e.dataTransfer.files || []));
-    if (paths.length) {
-      importPaths(paths, "files");
+    const rawPaths = window.electronAPI.getPathsForFiles(
+      Array.from(e.dataTransfer.files || [])
+    );
+    const validPaths = rawPaths.length
+      ? await window.electronAPI.getDroppedFilePaths(rawPaths)
+      : [];
+    if (validPaths.length) {
+      importPaths(validPaths, "files");
     } else {
       setStatus("No valid files (SVS, TIF, TIFF, PNG) dropped.", true);
     }

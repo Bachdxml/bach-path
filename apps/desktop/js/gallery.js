@@ -28,6 +28,7 @@ function waitForGalleryApiReady() {
   return Promise.resolve();
 }
 let inferencePollTimer = null;
+let inferencePollInFlight = false;
 const pendingInferenceRunIds = new Set();
 
 function _syncPendingIds() {
@@ -469,32 +470,40 @@ function getPreferredThreshold(modelId) {
 function startInferencePolling() {
   if (inferencePollTimer) return;
   inferencePollTimer = setInterval(async () => {
-    const ids = [...pendingInferenceRunIds];
-    if (!ids.length) {
-      clearInterval(inferencePollTimer);
-      inferencePollTimer = null;
-      return;
-    }
-    let completedNow = 0;
-    for (const runId of ids) {
-      try {
-        const run = await gallerySlidesApi.getInferenceRun(runId);
-        if (run.status === "succeeded" || run.status === "failed") {
-          pendingInferenceRunIds.delete(runId);
-          _syncPendingIds();
-          completedNow++;
-        }
-      } catch {
-        // Keep polling while API is transiently unavailable.
+    if (inferencePollInFlight) return;
+    inferencePollInFlight = true;
+    try {
+      const ids = [...pendingInferenceRunIds];
+      if (!ids.length) {
+        clearInterval(inferencePollTimer);
+        inferencePollTimer = null;
+        return;
       }
-    }
-    if (completedNow > 0) {
-      loadGallery();
-    }
-    if (pendingInferenceRunIds.size === 0) {
-      clearInterval(inferencePollTimer);
-      inferencePollTimer = null;
-      window.appToast?.("Inference updates completed.", "success", 2200);
+      let completedNow = 0;
+      await Promise.allSettled(
+        ids.map(async (runId) => {
+          try {
+            const run = await gallerySlidesApi.getInferenceRun(runId);
+            if (run.status === "succeeded" || run.status === "failed") {
+              pendingInferenceRunIds.delete(runId);
+              _syncPendingIds();
+              completedNow++;
+            }
+          } catch {
+            // Keep polling while API is transiently unavailable.
+          }
+        })
+      );
+      if (completedNow > 0) {
+        loadGallery();
+      }
+      if (pendingInferenceRunIds.size === 0) {
+        clearInterval(inferencePollTimer);
+        inferencePollTimer = null;
+        window.appToast?.("Inference updates completed.", "success", 2200);
+      }
+    } finally {
+      inferencePollInFlight = false;
     }
   }, 2000);
 }

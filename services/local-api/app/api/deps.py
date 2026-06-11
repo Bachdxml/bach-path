@@ -1,25 +1,16 @@
 from __future__ import annotations
 import secrets
-import threading
 from typing import Generator
 
 from fastapi import Header, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
-from app.db.session import make_engine, make_session_factory
-
-_db_init_lock = threading.Lock()
+from app.db.session import get_app_session_factory
 
 def get_db(request: Request) -> Generator[Session, None, None]:
-    settings = request.app.state.settings
-    # Cache engine/session factory on app.state for performance
-    if not hasattr(request.app.state, "engine"):
-        with _db_init_lock:
-            if not hasattr(request.app.state, "engine"):
-                request.app.state.engine = make_engine(settings.sqlite_path)
-                request.app.state.SessionLocal = make_session_factory(request.app.state.engine)
-
-    db: Session = request.app.state.SessionLocal()
+    # Engine/session factory is lazily created and cached on app.state by the
+    # shared helper, so all code paths use the same lock and engine.
+    db: Session = get_app_session_factory(request.app)()
     try:
         yield db
         db.commit()

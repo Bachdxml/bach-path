@@ -16,6 +16,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import get_db
+from app.inference.results import classify_inference_result
 from app.models.enums import InferenceStatus
 from app.models.inference_run import InferenceRun
 from app.models.import_collection import ImportCollection
@@ -425,14 +426,15 @@ def list_slides(db: Session = Depends(get_db)):
                     negative_count_by_run[run_id] = count
 
     def _inference_result(slide_id: int) -> str:
+        # "Succeeded" here means a latest succeeded run exists for the slide.
         run = latest_run_by_slide.get(slide_id)
         if not run:
-            return "unchecked"
-        if positive_count_by_run.get(run.id, 0) > 0:
-            return "positive"
-        if negative_count_by_run.get(run.id, 0) > 0:
-            return "negative"
-        return "needs_review"
+            return classify_inference_result(0, 0, succeeded=False)
+        return classify_inference_result(
+            positive_count_by_run.get(run.id, 0),
+            negative_count_by_run.get(run.id, 0),
+            succeeded=True,
+        )
 
     items: list[SlideListItem] = []
     for s in slides:
@@ -706,12 +708,16 @@ def slide_tile(
     )
 
     if slide_path.suffix.lower() in RASTER_EXTENSIONS:
+        # Cheap validation before any cache lookup or image open, so cache-hit
+        # and cache-miss paths return identical status codes.
+        if level != 0:
+            raise AppError(ErrorCode.SLIDE_INVALID, f"Raster images have only level 0; got {level}")
+        if x < 0 or y < 0:
+            raise AppError(ErrorCode.SLIDE_INVALID, f"Invalid tile coordinates: level={level} x={x} y={y}")
         try:
             if tile_path.exists():
-                with Image.open(slide_path) as img:
-                    iw, ih = img.size
-                if x < 0 or y < 0 or x * tile_size >= iw or y * tile_size >= ih or level != 0:
-                    raise AppError(ErrorCode.SLIDE_INVALID, f"Invalid tile coordinates: level={level} x={x} y={y}")
+                # Cached tiles were only written after passing bounds checks in
+                # _raster_tile_jpeg, so no need to re-open the source image.
                 return Response(content=tile_path.read_bytes(), media_type="image/jpeg")
             jpg_bytes = _raster_tile_jpeg(slide_path, level, x, y, tile_size)
             tile_path.parent.mkdir(parents=True, exist_ok=True)

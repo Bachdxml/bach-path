@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import threading
 from collections import deque
+from datetime import timedelta
 from threading import RLock
 from typing import Any
 from uuid import uuid4
@@ -9,6 +9,7 @@ from uuid import uuid4
 from .interface import JobRecord, JobStatus, QueueInterface, _update_job, _utc_now
 
 _COMPLETED_JOB_TTL_SECS = 300
+_TERMINAL_STATUSES = frozenset({JobStatus.succeeded, JobStatus.failed, JobStatus.canceled})
 
 
 class InMemoryQueue(QueueInterface):
@@ -20,12 +21,14 @@ class InMemoryQueue(QueueInterface):
     def enqueue(self, payload: dict[str, Any]) -> JobRecord:
         job = JobRecord(id=uuid4().hex, payload=dict(payload))
         with self._lock:
+            self._evict_expired()
             self._jobs[job.id] = job
             self._pending.append(job.id)
             return job
 
     def claim(self) -> JobRecord | None:
         with self._lock:
+            self._evict_expired()
             while self._pending:
                 job_id = self._pending.popleft()
                 job = self._jobs.get(job_id)
@@ -48,6 +51,7 @@ class InMemoryQueue(QueueInterface):
 
     def fail(self, job_id: str, error: str | None = None) -> JobRecord | None:
         with self._lock:
+            self._evict_expired()
             job = self._jobs.get(job_id)
             if job is None or job.status in {JobStatus.succeeded, JobStatus.canceled}:
                 return None
@@ -60,7 +64,6 @@ class InMemoryQueue(QueueInterface):
                 updated_at=now,
             )
             self._jobs[job_id] = failed
-            self._schedule_eviction(job_id)
             return failed
 
     def cancel(self, job_id: str) -> JobRecord | None:
@@ -68,20 +71,28 @@ class InMemoryQueue(QueueInterface):
 
     def _finish(self, job_id: str, status: JobStatus) -> JobRecord | None:
         with self._lock:
+            self._evict_expired()
             job = self._jobs.get(job_id)
             if job is None or job.status in {JobStatus.succeeded, JobStatus.failed, JobStatus.canceled}:
                 return None
             now = _utc_now()
             finished = _update_job(job, status=status, finished_at=now, updated_at=now)
             self._jobs[job_id] = finished
-            self._schedule_eviction(job_id)
             return finished
 
-    def _schedule_eviction(self, job_id: str) -> None:
-        timer = threading.Timer(_COMPLETED_JOB_TTL_SECS, self._evict, args=(job_id,))
-        timer.daemon = True
-        timer.start()
+    def _evict_expired(self) -> None:
+        """Lazily purge terminal jobs older than the TTL.
 
-    def _evict(self, job_id: str) -> None:
-        with self._lock:
-            self._jobs.pop(job_id, None)
+        Called from every public method while the lock is held, so no
+        per-job timer threads are needed (see code-review finding #10).
+        """
+        cutoff = _utc_now() - timedelta(seconds=_COMPLETED_JOB_TTL_SECS)
+        expired = [
+            job_id
+            for job_id, job in self._jobs.items()
+            if job.status in _TERMINAL_STATUSES
+            and job.finished_at is not None
+            and job.finished_at <= cutoff
+        ]
+        for job_id in expired:
+            del self._jobs[job_id]

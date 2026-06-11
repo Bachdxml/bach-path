@@ -9,7 +9,7 @@
     "dist": "electron-builder",
     "dist:win:exe": "electron-builder --win dir --x64",
     "dist:win": "electron-builder --win nsis portable --x64",
-    "test": "node --check index.js && node --check preload.js && find js -name '*.js' -print0 | xargs -0 -n1 node --check"
+    "test": "node scripts/check-syntax.js"
   },
   "build": {
     "appId": "com.bachpath.pathologyviewer",

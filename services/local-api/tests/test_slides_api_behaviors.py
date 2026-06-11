@@ -247,6 +247,45 @@ def test_cached_raster_tile_still_rejects_invalid_coordinates(app_paths):
     assert tile_response.json()["error"]["code"] == "slide_invalid"
 
 
+def test_raster_tile_status_codes_are_cache_state_independent(app_paths):
+    slide_path = app_paths["source_dir"] / "cache-consistency.png"
+    _create_sample_slide(slide_path)
+
+    app = create_app()
+    with TestClient(app) as client:
+        import_response = client.post("/slides/import", json={"file_path": str(slide_path)})
+        assert import_response.status_code == 200, import_response.text
+        slide_id = import_response.json()["slide_id"]
+
+        def fetch_statuses() -> dict[str, tuple[int, str]]:
+            responses = {
+                "past_edge": client.get(f"/slides/{slide_id}/tiles/0/1/0.jpg"),
+                "negative": client.get(f"/slides/{slide_id}/tiles/0/-1/0.jpg"),
+                "bad_level": client.get(f"/slides/{slide_id}/tiles/1/0/0.jpg"),
+            }
+            return {
+                name: (resp.status_code, resp.json()["error"]["code"])
+                for name, resp in responses.items()
+            }
+
+        # Sample slide is 48x36, so only tile (0,0) at level 0 exists.
+        before_cache = fetch_statuses()
+
+        # Cache the valid neighbor, then repeat the same out-of-bounds requests.
+        valid_response = client.get(f"/slides/{slide_id}/tiles/0/0/0.jpg")
+        assert valid_response.status_code == 200, valid_response.text
+
+        after_cache = fetch_statuses()
+
+    expected = {
+        "past_edge": (404, "not_found"),
+        "negative": (400, "slide_invalid"),
+        "bad_level": (400, "slide_invalid"),
+    }
+    assert before_cache == expected
+    assert after_cache == expected
+
+
 def test_metadata_rejects_stored_path_outside_managed_storage(app_paths):
     outside_file = app_paths["app_data_dir"].parent / "outside-managed.png"
     _create_sample_slide(outside_file)

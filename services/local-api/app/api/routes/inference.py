@@ -6,7 +6,6 @@ import os
 import re
 import subprocess
 import sys
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +15,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.db.session import get_app_session_factory
+from app.inference.results import classify_inference_result
 from app.models.slide import Slide
 from app.models.inference_run import InferenceRun
 from app.models.inference_run_event import InferenceRunEvent
@@ -43,9 +44,6 @@ router = APIRouter(prefix="/inference", tags=["inference"])
 # OpenSlide/PyTorch subprocesses being killed by local OS memory pressure.
 _inference_executor = ThreadPoolExecutor(max_workers=1)
 _inference_queue: QueueInterface = InMemoryQueue()
-# Guards lazy initialization of the shared engine/session factory on app.state,
-# matching the lock used by get_db so both paths cooperate.
-_engine_init_lock = threading.Lock()
 logger = logging.getLogger(__name__)
 MAX_FOLDER_INFERENCE_SLIDES = 512
 MAX_REGIONS_PER_RUN = 100_000
@@ -548,19 +546,11 @@ def _process_inference_job(
 def _get_session_factory(request: Request):
     """Return the shared session factory cached on app.state.
 
-    Mirrors the lazy initialization performed by ``get_db`` so that the
-    background inference worker reuses the application's single engine and
-    connection pool instead of constructing a new engine per job (see #6).
+    Delegates to the same helper as ``get_db`` so that the background
+    inference worker reuses the application's single engine and connection
+    pool instead of constructing a new engine per job (see #6).
     """
-    state = request.app.state
-    if not hasattr(state, "engine"):
-        with _engine_init_lock:
-            if not hasattr(state, "engine"):
-                from app.db.session import make_engine, make_session_factory
-
-                state.engine = make_engine(state.settings.sqlite_path)
-                state.SessionLocal = make_session_factory(state.engine)
-    return state.SessionLocal
+    return get_app_session_factory(request.app)
 
 
 def _queue_inference_run_for_slide(
@@ -570,10 +560,16 @@ def _queue_inference_run_for_slide(
     settings,
     session_factory,
     db: Session,
+    resolved_checkpoint: tuple[Path, str] | None = None,
+    slide_path: Path | None = None,
 ) -> InferenceRun:
-    slide_path = _resolve_managed_slide_path(slide, settings)
+    # Batch callers pre-resolve the slide path and checkpoint for all targets
+    # before enqueuing anything (see #6); the single-slide endpoint relies on
+    # these defaults.
+    if slide_path is None:
+        slide_path = _resolve_managed_slide_path(slide, settings)
 
-    checkpoint, model_id = _resolve_model_checkpoint(payload.model_file)
+    checkpoint, model_id = resolved_checkpoint or _resolve_model_checkpoint(payload.model_file)
     run = InferenceRun(
         slide_id=slide.id,
         model_name=payload.model_name,
@@ -685,6 +681,14 @@ def run_batch_inference(
         threshold=payload.threshold,
     )
     session_factory = _get_session_factory(request)
+    # Validate everything up front so a failure on slide k cannot leave runs
+    # 0..k-1 committed and queued while the client receives an error with no
+    # run_ids (see #6). The TOCTOU window between this validation and the
+    # enqueue loop below is accepted for this local single-user API.
+    resolved_checkpoint = _resolve_model_checkpoint(payload.model_file)
+    slide_paths = {
+        sid: _resolve_managed_slide_path(found_by_id[sid], settings) for sid in slide_ids
+    }
     runs = []
     for sid in slide_ids:
         run = _queue_inference_run_for_slide(
@@ -693,6 +697,8 @@ def run_batch_inference(
             settings=settings,
             session_factory=session_factory,
             db=db,
+            resolved_checkpoint=resolved_checkpoint,
+            slide_path=slide_paths[sid],
         )
         runs.append(run)
     return InferenceBatchRunResponse(run_ids=[r.id for r in runs], slide_ids=slide_ids)
@@ -737,6 +743,13 @@ def run_folder_inference(
         threshold=payload.threshold,
     )
     session_factory = _get_session_factory(request)
+    # Validate everything up front so a mid-loop failure cannot leave a
+    # partial set of committed/queued runs unreported to the client (see #6).
+    # The TOCTOU window between validation and enqueue is accepted here.
+    resolved_checkpoint = _resolve_model_checkpoint(payload.model_file)
+    slide_paths = {
+        slide.id: _resolve_managed_slide_path(slide, settings) for slide in target_slides
+    }
     runs = []
     for slide in target_slides:
         run = _queue_inference_run_for_slide(
@@ -745,6 +758,8 @@ def run_folder_inference(
             settings=settings,
             session_factory=session_factory,
             db=db,
+            resolved_checkpoint=resolved_checkpoint,
+            slide_path=slide_paths[slide.id],
         )
         runs.append(run)
     return InferenceBatchRunResponse(
@@ -868,14 +883,12 @@ def _run_to_response(
 
 
 def _inference_result_from_run(run: InferenceRun, summary: dict | None) -> str:
-    if run.status != InferenceStatus.succeeded.value:
-        return "unchecked"
     summary = summary or {}
-    if int(summary.get("fungus_positive") or 0) > 0:
-        return "positive"
-    if int(summary.get("fungus_negative") or 0) > 0:
-        return "negative"
-    return "needs_review"
+    return classify_inference_result(
+        int(summary.get("fungus_positive") or 0),
+        int(summary.get("fungus_negative") or 0),
+        succeeded=run.status == InferenceStatus.succeeded.value,
+    )
 
 
 def _public_error_message(message: str | None) -> str | None:

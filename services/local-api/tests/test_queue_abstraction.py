@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+from datetime import timedelta
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -8,6 +10,7 @@ from PIL import Image
 from app.main import create_app
 from app.api.routes import inference as inference_routes
 from app.queue import InMemoryQueue
+from app.queue import in_memory as in_memory_module
 
 
 def _create_sample_slide(path: Path, color: tuple[int, int, int] = (120, 80, 200)) -> None:
@@ -42,6 +45,40 @@ def test_in_memory_queue_lifecycle() -> None:
     assert failed.error == "boom"
 
     assert queue.cancel(claimed_second.id) is None
+
+
+def test_in_memory_queue_completion_does_not_spawn_threads() -> None:
+    queue = InMemoryQueue()
+    before = threading.active_count()
+
+    for index in range(20):
+        queue.enqueue({"slide_id": index})
+        claimed = queue.claim()
+        assert claimed is not None
+        queue.ack(claimed.id)
+
+    assert threading.active_count() == before
+
+
+def test_in_memory_queue_lazily_evicts_expired_terminal_jobs(monkeypatch) -> None:
+    queue = InMemoryQueue()
+
+    job = queue.enqueue({"slide_id": 1})
+    claimed = queue.claim()
+    assert claimed is not None
+    queue.ack(claimed.id)
+    assert job.id in queue._jobs
+
+    real_now = in_memory_module._utc_now
+    monkeypatch.setattr(
+        in_memory_module,
+        "_utc_now",
+        lambda: real_now() + timedelta(seconds=in_memory_module._COMPLETED_JOB_TTL_SECS + 1),
+    )
+
+    # Any public call purges expired terminal jobs while holding the lock.
+    queue.enqueue({"slide_id": 2})
+    assert job.id not in queue._jobs
 
 
 def test_inference_run_enqueues_job(app_paths, monkeypatch):

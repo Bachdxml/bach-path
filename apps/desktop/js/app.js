@@ -258,9 +258,6 @@ document.addEventListener("DOMContentLoaded", () => {
     .then((config) => {
       const portInput = document.getElementById("api-port");
       if (portInput) portInput.value = config.apiPort ?? 8765;
-      if (typeof slidesApi.setApiKey === "function") {
-        slidesApi.setApiKey(config.apiKey || null);
-      }
     })
     .catch((err) => {
       toast(`Failed to load settings: ${err?.message || err}`, "error");

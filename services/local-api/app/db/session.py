@@ -1,4 +1,5 @@
 from __future__ import annotations
+import threading
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker, Session
@@ -27,3 +28,18 @@ def make_engine(sqlite_path: Path) -> Engine:
 
 def make_session_factory(engine: Engine):
     return sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True, class_=Session)
+
+# Single lock guarding lazy init of the shared engine on app.state. All code
+# paths (request deps, background inference worker) must go through
+# get_app_session_factory so double-checked locking stays safe.
+_app_engine_lock = threading.Lock()
+
+def get_app_session_factory(app):
+    """Lazily create and cache the shared engine/session factory on app.state."""
+    state = app.state
+    if not hasattr(state, "engine"):
+        with _app_engine_lock:
+            if not hasattr(state, "engine"):
+                state.engine = make_engine(state.settings.sqlite_path)
+                state.SessionLocal = make_session_factory(state.engine)
+    return state.SessionLocal

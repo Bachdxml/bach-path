@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 function sanitizeConfigPayload(config) {
   if (!config || typeof config !== "object" || Array.isArray(config)) return {};
@@ -48,6 +48,19 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
   getDroppedFilePaths: (pathStrings) =>
     ipcRenderer.invoke("get-dropped-file-paths", sanitizePathStrings(pathStrings)),
+  getPathsForFiles: (files) => {
+    if (!Array.isArray(files)) return [];
+    const paths = [];
+    for (const file of files) {
+      try {
+        const filePath = webUtils.getPathForFile(file);
+        if (typeof filePath === "string" && filePath !== "") paths.push(filePath);
+      } catch {
+        // Skip files the OS cannot resolve to a path.
+      }
+    }
+    return paths;
+  },
   selectFolder: () => ipcRenderer.invoke("select-folder"),
   selectFiles: () => ipcRenderer.invoke("select-files"),
   selectDirectory: () => ipcRenderer.invoke("select-directory"),

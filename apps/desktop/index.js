@@ -527,7 +527,8 @@ handleTrusted("get-config", () => loadConfig());
 handleTrusted("set-config", (_, config) => {
   const nextConfig = validateConfigPayload(config);
   saveConfig(nextConfig);
-  apiReadyState = buildApiReadyState(nextConfig);
+  // apiReadyState is owned by startApi(); persisted config changes take effect
+  // after a restart (the UI already tells users this for port changes).
   return loadConfig();
 });
 

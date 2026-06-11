@@ -798,6 +798,13 @@ function sampleClusterOutlineToMask(clusterOutline, layer, originX, originY, gri
   return outline;
 }
 
+// Cache the expensive outline geometry per regions-array identity. The
+// outline depends only on the regions (color is applied at paint time), so
+// rebuilds for the same regions (e.g. color change, show-negative toggle)
+// can reuse the cached map.
+let outlineCacheRegions = null;
+let outlineCacheMap = null;
+
 function computePositiveOutlineByRegion(positives) {
   const layers = positives.map(preparePositiveMaskLayer).filter(Boolean);
   const outlineByRegion = new Map();
@@ -968,7 +975,14 @@ function addRegionOverlays(regions, showNegative = false) {
     else negatives.push(contribution);
   }
 
-  const outlineByRegion = computePositiveOutlineByRegion(positives);
+  let outlineByRegion;
+  if (outlineCacheMap && outlineCacheRegions === regions) {
+    outlineByRegion = outlineCacheMap;
+  } else {
+    outlineByRegion = computePositiveOutlineByRegion(positives);
+    outlineCacheRegions = regions;
+    outlineCacheMap = outlineByRegion;
+  }
 
   for (const p of positives) {
     const mask = getPredictionMask(p.region);
@@ -1309,7 +1323,14 @@ viewerShowNegative?.addEventListener("change", () => {
 });
 
 viewerOverlayOpacity?.addEventListener("input", () => {
-  addRegionOverlays(lastRegions, viewerShowNegative?.checked || false);
+  // Update mounted overlays in place; rebuilding (clustering + outline
+  // extraction) is expensive and the geometry does not depend on opacity.
+  const opacity = String(getOverlayOpacity());
+  viewerContainer
+    ?.querySelectorAll(".region-overlay--segmentation")
+    .forEach((el) => {
+      el.style.opacity = opacity;
+    });
 });
 
 window.addEventListener(viewerOutlineColorChangedEvent, () => {
