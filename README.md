@@ -26,6 +26,25 @@ Optional but recommended:
 
 - `libvips` for faster Deep Zoom pre-caching (macOS: `brew install vips`)
 - OpenSlide runtime dependencies (if not already available in your environment)
+- An NVIDIA GPU with CUDA for inference. Inference auto-selects CUDA when a
+  GPU-enabled PyTorch is installed; on a CPU-only torch build it falls back to
+  CPU and whole-slide runs can be very slow (minutes-to-hours). The
+  `wsi-fungal-segmentation/requirements.txt` pins CUDA (cu124) wheels by default.
+  If `pip` installs a `+cpu` torch build, force the CUDA wheels into the
+  inference venv:
+
+  ```powershell
+  wsi-fungal-segmentation\.venv\Scripts\python.exe -m pip install --force-reinstall `
+    torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
+  # then restore the pinned Pillow that --force-reinstall may bump:
+  wsi-fungal-segmentation\.venv\Scripts\python.exe -m pip install "Pillow==10.4.0"
+  ```
+
+  Verify with:
+
+  ```powershell
+  wsi-fungal-segmentation\.venv\Scripts\python.exe -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+  ```
 
 ## 1) Set Up Desktop App
 
