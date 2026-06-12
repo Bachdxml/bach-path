@@ -538,7 +538,7 @@ async function deleteOneSlide(id) {
     if (typeof window.appToast === "function") {
       window.appToast(err.message || "Delete failed", "error");
     } else {
-      alert(err.message);
+      console.error(err);
     }
   }
 }

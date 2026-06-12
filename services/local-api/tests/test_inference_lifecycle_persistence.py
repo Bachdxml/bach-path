@@ -290,6 +290,7 @@ def test_inference_subprocess_invocation_includes_model_metadata_and_optional_th
     app_paths,
     monkeypatch,
 ):
+    monkeypatch.setenv("APP_INFERENCE_TARGET_TILES", "1500")
     slide_path = app_paths["source_dir"] / "invocation-slide.png"
     _create_sample_slide(slide_path, color=(110, 70, 180))
 

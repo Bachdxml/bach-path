@@ -403,8 +403,10 @@ def _process_inference_job(
             "--device", settings.inference_device,
             "--target-tiles", str(settings.inference_target_tiles),
         ]
-        if settings.inference_level is not None:
-            cmd.extend(["--level", str(settings.inference_level)])
+        cmd.extend([
+            "--level",
+            "auto" if settings.inference_level is None else str(settings.inference_level),
+        ])
         if threshold is not None:
             cmd.extend(["--threshold", str(float(threshold))])
 
