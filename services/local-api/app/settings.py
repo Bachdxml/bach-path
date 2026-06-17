@@ -206,7 +206,7 @@ def load_settings() -> Settings:
     )
     max_inference_output_bytes = _parse_positive_int(
         os.environ.get("APP_MAX_INFERENCE_OUTPUT_BYTES"),
-        default=5_000_000,
+        default=50_000_000,
     )
     inference_tile_batch_size = _parse_positive_int(
         os.environ.get("APP_INFERENCE_TILE_BATCH_SIZE"),

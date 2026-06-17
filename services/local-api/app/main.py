@@ -1,7 +1,6 @@
 from __future__ import annotations
+import logging
 import os
-import openslide_bin
-os.add_dll_directory(os.path.dirname(openslide_bin.__file__))
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 
@@ -11,6 +10,8 @@ from app.api.errors import register_exception_handlers
 from app.logging_config import configure_logging
 from app.db.init import init_database
 from fastapi.middleware.cors import CORSMiddleware
+
+logger = logging.getLogger(__name__)
 
 
 def _csv_env(name: str, default: list[str]) -> list[str]:
@@ -57,7 +58,11 @@ async def lifespan(app: FastAPI):
     app.state.settings = settings
 
     configure_logging(settings.log_dir, settings.log_level)
-    init_database(settings)
+    try:
+        init_database(settings)
+    except Exception:
+        logger.exception("API startup failed during database initialization")
+        raise
 
     yield
 

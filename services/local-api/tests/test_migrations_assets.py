@@ -44,3 +44,17 @@ def test_migrations_adopt_existing_metadata_schema(tmp_path: Path) -> None:
 
     with engine.connect() as connection:
         assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "20260526_0001"
+
+
+def test_migrations_adopt_unknown_revision_with_compatible_schema(tmp_path: Path) -> None:
+    sqlite_path = tmp_path / "future_revision.db"
+    engine = create_engine(f"sqlite+pysqlite:///{sqlite_path.as_posix()}", future=True)
+    Base.metadata.create_all(bind=engine)
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
+        connection.execute(text("INSERT INTO alembic_version (version_num) VALUES ('20260527_0002')"))
+
+    run_migrations(sqlite_path)
+
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "20260526_0001"

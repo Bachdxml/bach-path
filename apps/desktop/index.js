@@ -303,12 +303,16 @@ function getInferencePythonPath(apiPythonPath) {
   return apiPythonPath;
 }
 
-function waitForHealth(port, host = "127.0.0.1", maxAttempts = 30) {
+function waitForHealth(port, host = "127.0.0.1", maxAttempts = 120) {
   return new Promise((resolve, reject) => {
     let attempts = 0;
     const hostForUrl = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
 
     const tryFetch = () => {
+      if (!apiProcess || apiProcess.exitCode !== null || apiProcess.signalCode !== null) {
+        reject(new Error("API process exited before health check completed"));
+        return;
+      }
       const req = http.get(`http://${hostForUrl}:${port}/health`, (res) => {
         if (res.statusCode >= 200 && res.statusCode < 300) {
           resolve();
@@ -392,6 +396,9 @@ function startApi() {
     process.env.PYTHONPATH,
   ].filter(Boolean);
   spawnEnv.PYTHONPATH = pythonPathEntries.join(path.delimiter);
+  const recentStdout = [];
+  const recentStderr = [];
+  let apiExit = null;
 
   apiProcess = spawn(
     pythonPath,
@@ -417,16 +424,38 @@ function startApi() {
   apiProcess.on("error", (err) => {
     console.error("API process error:", err);
   });
+  apiProcess.on("exit", (code, signal) => {
+    apiExit = { code, signal };
+  });
+
+  apiProcess.stdout?.on("data", (data) => {
+    const text = data.toString();
+    recentStdout.push(text);
+    while (recentStdout.length > 20) recentStdout.shift();
+    console.log("API stdout:", text);
+  });
 
   apiProcess.stderr?.on("data", (data) => {
-    console.error("API stderr:", data.toString());
+    const text = data.toString();
+    recentStderr.push(text);
+    while (recentStderr.length > 20) recentStderr.shift();
+    console.error("API stderr:", text);
   });
 
   return waitForHealth(port, host)
     .then(() => buildApiReadyState({ ...config, apiPort: port, apiHost: host, apiKey }))
     .catch((err) => {
+      const stdoutText = recentStdout.join("").trim();
+      const stderrText = recentStderr.join("").trim();
+      const exitText = apiExit
+        ? `API exited with code ${apiExit.code ?? "null"} signal ${apiExit.signal ?? "null"}. `
+        : "";
       stopApi();
-      throw err;
+      throw new Error(
+        `${exitText}${err.message}` +
+          `${stdoutText ? `\nRecent API stdout:\n${stdoutText}` : ""}` +
+          `${stderrText ? `\nRecent API stderr:\n${stderrText}` : ""}`
+      );
     });
 }
 

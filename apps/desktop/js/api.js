@@ -44,11 +44,16 @@ function withApiHeaders(headers = {}) {
 
 async function apiFetch(path, options = {}) {
   const { headers, signal, ...rest } = options;
-  return fetch(`${apiBase}${path}`, {
-    ...rest,
-    signal,
-    headers: withApiHeaders(headers),
-  });
+  try {
+    return await fetch(`${apiBase}${path}`, {
+      ...rest,
+      signal,
+      headers: withApiHeaders(headers),
+    });
+  } catch (err) {
+    if (err?.name === "AbortError") throw err;
+    throw new Error(`Local API unavailable at ${apiBase}. Restart Bach Path and check the API status.`);
+  }
 }
 
 async function apiFetchWithFallback(paths, options = {}) {
