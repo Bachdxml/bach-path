@@ -148,6 +148,29 @@ Notes:
 - Inference model discovery uses deployed gzip checkpoints in `wsi-fungal-segmentation/models`.
 - Supported deploy formats for app/API model selection: `.pth.gz`, `.pt.gz`.
 
+### Mask output size and adaptive coarsening
+
+Inference output size is dominated by per-tile segmentation masks, so dense
+slides used to fail with `Inference output exceeded server limits`. The pipeline
+now coarsens masks at the source to stay within a size budget instead of failing:
+
+- **Degradation ladder.** The inference subprocess walks a fixed ladder and stops
+  at the first step that fits the budget: (1) **full** native-resolution masks;
+  (2) **downsampled** — masks are progressively halved (factor 2, 4, 8, …) to the
+  highest resolution that fits; (3) **dropped** — as a last resort no masks are
+  emitted, but every detection box and score is kept. Detection geometry is never
+  dropped for size.
+- **Degradation status.** Each run records a `mask_degradation_status` of `full`,
+  `downsampled` (with a `mask_downsample_factor`), or `dropped`, exposed on the run
+  via the API. The viewer shows a reduced-fidelity notice for `downsampled` and
+  `dropped` runs; `full` (and legacy runs without the field) show no notice.
+- **`APP_MAX_INFERENCE_OUTPUT_BYTES`** (default **10,000,000** = 10 MB, overridable
+  via the environment variable) now tunes **how much mask detail is retained
+  before coarsening begins, not whether a run succeeds**. The subprocess targets a
+  budget of ~90% of this limit as a safety margin; the API keeps the hard-limit
+  file-size gate as a safety net. Raising it retains more detail at the cost of
+  in-browser mask decode/render time; the 10 MB default balances the two.
+
 ## 5) Run the App (Development)
 
 From repo root:

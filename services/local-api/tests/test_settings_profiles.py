@@ -44,6 +44,24 @@ def test_load_settings_accepts_inference_tile_batch_size_override(app_paths, mon
     assert settings.inference_tile_batch_size == 4
 
 
+def test_load_settings_defaults_max_inference_output_bytes_to_ten_mb(app_paths, monkeypatch):
+    _set_base_env(monkeypatch, app_paths["app_data_dir"])
+    monkeypatch.delenv("APP_MAX_INFERENCE_OUTPUT_BYTES", raising=False)
+
+    settings = load_settings()
+
+    assert settings.max_inference_output_bytes == 10_000_000
+
+
+def test_load_settings_accepts_max_inference_output_bytes_override(app_paths, monkeypatch):
+    _set_base_env(monkeypatch, app_paths["app_data_dir"])
+    monkeypatch.setenv("APP_MAX_INFERENCE_OUTPUT_BYTES", "20000000")
+
+    settings = load_settings()
+
+    assert settings.max_inference_output_bytes == 20_000_000
+
+
 def test_load_settings_accepts_inference_device_override(app_paths, monkeypatch):
     _set_base_env(monkeypatch, app_paths["app_data_dir"])
     monkeypatch.setenv("APP_INFERENCE_DEVICE", "mps")

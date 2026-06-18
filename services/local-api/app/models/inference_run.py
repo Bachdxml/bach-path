@@ -29,6 +29,14 @@ class InferenceRun(Base):
     # Where raw JSON output is stored on disk (keeps DB lean)
     output_json_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
 
+    # Mask degradation ladder outcome for this run: 'full' (native resolution),
+    # 'downsampled' (coarsened to fit the size budget), or 'dropped' (boxes only).
+    # Legacy rows default to 'full'. Factor is set only when downsampled.
+    mask_degradation_status: Mapped[str] = mapped_column(
+        String(32), default="full", server_default="full", nullable=False
+    )
+    mask_downsample_factor: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # If failed
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
