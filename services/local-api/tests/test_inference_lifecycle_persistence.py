@@ -291,6 +291,7 @@ def test_inference_subprocess_invocation_includes_model_metadata_and_optional_th
     monkeypatch,
 ):
     monkeypatch.setenv("APP_INFERENCE_TARGET_TILES", "1500")
+    monkeypatch.setenv("USERNAME", "bach-test-user")
     slide_path = app_paths["source_dir"] / "invocation-slide.png"
     _create_sample_slide(slide_path, color=(110, 70, 180))
 
@@ -352,6 +353,7 @@ def test_inference_subprocess_invocation_includes_model_metadata_and_optional_th
     assert first_kwargs["capture_output"] is True
     assert first_kwargs["text"] is True
     assert isinstance(first_kwargs["env"], dict)
+    assert first_kwargs["env"]["USERNAME"] == "bach-test-user"
     assert str(Path(__file__).resolve().parents[3] / "wsi-fungal-segmentation") in first_kwargs["env"]["PYTHONPATH"]
 
     assert "--checkpoint" in second_command
@@ -452,3 +454,47 @@ def test_inference_reports_memory_pressure_when_subprocess_is_sigkilled(
     lifecycle = lifecycle_response.json()["events"]
     assert lifecycle[-1]["to_status"] == "failed"
     assert "non-zero exit code -9" in lifecycle[-1]["detail"]
+
+
+def test_inference_records_runtime_launch_failure_detail(app_paths, monkeypatch):
+    slide_path = app_paths["source_dir"] / "launch-failure-slide.png"
+    _create_sample_slide(slide_path, color=(130, 100, 40))
+
+    script_path = app_paths["app_data_dir"] / "run_inference_api.py"
+    script_path.write_text("# test stub\n", encoding="utf-8")
+
+    def fake_run(cmd, **kwargs):
+        raise PermissionError("Access is denied")
+
+    _install_synchronous_inference(
+        app_paths,
+        monkeypatch,
+        output_payload=None,
+    )
+    monkeypatch.setattr(inference_routes, "_get_script_path", lambda: script_path)
+    monkeypatch.setattr(inference_routes, "_get_inference_python", lambda: r"C:\bad\python.exe")
+    monkeypatch.setattr(inference_routes.subprocess, "run", fake_run)
+
+    app = create_app()
+    with TestClient(app) as client:
+        slide_id = _import_slide(client, slide_path)
+        create_response = client.post(
+            f"/inference/slides/{slide_id}/run",
+            json={"model_name": "fungus-detector"},
+        )
+        assert create_response.status_code == 200, create_response.text
+        run_id = create_response.json()["id"]
+
+        run_response = client.get(f"/inference/runs/{run_id}")
+        lifecycle_response = client.get(f"/inference/runs/{run_id}/lifecycle-events")
+
+    run_payload = run_response.json()
+    assert run_payload["status"] == "failed"
+    assert run_payload["error_message"] == "Could not start inference runtime."
+
+    lifecycle = lifecycle_response.json()["events"]
+    assert lifecycle[-1]["to_status"] == "failed"
+    assert lifecycle[-1]["error"] == "inference_launch_failed"
+    assert "Could not launch inference subprocess" in lifecycle[-1]["detail"]
+    assert r"C:\bad\python.exe" in lifecycle[-1]["detail"]
+    assert "PermissionError: Access is denied" in lifecycle[-1]["detail"]

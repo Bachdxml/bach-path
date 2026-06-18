@@ -174,6 +174,12 @@ async function getInferenceRun(runId) {
   return res.json();
 }
 
+async function getInferenceRunLifecycleEvents(runId) {
+  const res = await apiFetch(`/inference/runs/${runId}/lifecycle-events`);
+  if (!res.ok) throw new Error(await parseErrorResponse(res));
+  return res.json();
+}
+
 async function getInferenceRegions(runId) {
   const res = await apiFetch(`/inference/runs/${runId}/regions`);
   if (!res.ok) throw new Error(await parseErrorResponse(res));
@@ -239,6 +245,7 @@ const slidesApi = {
   runBatchInference,
   runFolderInference,
   getInferenceRun,
+  getInferenceRunLifecycleEvents,
   getInferenceRegions,
   getSlideInferenceRuns,
   updateSlideReview,

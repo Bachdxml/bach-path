@@ -166,6 +166,39 @@ function setInferenceStatus(text) {
   if (inferenceStatus) inferenceStatus.textContent = text;
 }
 
+function summarizeInferenceFailureDetail(detail) {
+  if (!detail) return "";
+  const lines = String(detail)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const tracebackStart = lines.findIndex((line) => /^stderr:\s*Traceback\b|^Traceback\b/i.test(line));
+  const tracebackException =
+    tracebackStart >= 0
+      ? [...lines.slice(tracebackStart + 1)]
+          .reverse()
+          .find((line) => /^[A-Za-z_][\w.]*?(Error|Exception|Warning)\b:/.test(line))
+      : "";
+  const diagnostic =
+    tracebackException ||
+    lines.find((line) => /error|exception|traceback|modulenotfound|permission/i.test(line)) ||
+    lines.find((line) => !line.toLowerCase().startsWith("stderr:")) ||
+    lines[0] ||
+    "";
+  return diagnostic.length > 240 ? `${diagnostic.slice(0, 237)}...` : diagnostic;
+}
+
+async function getInferenceFailureDetail(runId) {
+  if (!viewerSlidesApi.getInferenceRunLifecycleEvents) return "";
+  try {
+    const { events } = await viewerSlidesApi.getInferenceRunLifecycleEvents(runId);
+    const failed = [...(events || [])].reverse().find((event) => event.to_status === "failed");
+    return summarizeInferenceFailureDetail(failed?.detail);
+  } catch (_) {
+    return "";
+  }
+}
+
 // Pure mapping from a run's mask degradation status to notice text. Returns ""
 // when no notice should be shown. `full` and legacy runs lacking the field map
 // to "" (no notice). Kept pure so it can be unit-tested without a DOM.
@@ -1501,7 +1534,9 @@ async function handleRunInference() {
         return;
       }
       if (r.status === "failed") {
-        setInferenceStatus(`Failed: ${r.error_message || "Unknown error"}`);
+        const detail = await getInferenceFailureDetail(r.id);
+        const baseMessage = r.error_message || "Unknown error";
+        setInferenceStatus(detail ? `Failed: ${baseMessage} (${detail})` : `Failed: ${baseMessage}`);
         runInferenceBtn.disabled = false;
         return;
       }

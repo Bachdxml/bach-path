@@ -376,12 +376,12 @@ function startApi() {
   const spawnEnv = { ...process.env };
   if (dyldPath) spawnEnv.DYLD_LIBRARY_PATH = dyldPath;
   spawnEnv.APP_API_KEY = apiKey;
+  spawnEnv.APP_PROJECT_ROOT = getProjectRoot();
   // Browser-rendered <img> tile/thumbnail requests cannot include custom headers,
   // so allow query API keys only for this local desktop-launched API process.
   spawnEnv.APP_ALLOW_QUERY_API_KEY = "true";
   if (!spawnEnv.INFERENCE_PYTHON) {
-      const inferenceVenv = path.join(getApiBaseDir(), "..", "..", "wsi-fungal-segmentation", ".venv", "Scripts", "python.exe");
-      spawnEnv.INFERENCE_PYTHON = fs.existsSync(inferenceVenv) ? inferenceVenv : pythonPath;
+    spawnEnv.INFERENCE_PYTHON = getInferencePythonPath(pythonPath);
   }
   // Desktop renderer runs from file:// (Origin: null), so enable this explicitly for desktop launches.
   spawnEnv.APP_CORS_ALLOW_FILE_ORIGIN = "true";

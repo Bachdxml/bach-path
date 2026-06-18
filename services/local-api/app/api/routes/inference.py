@@ -60,7 +60,7 @@ _SECRET_PATTERNS = (
 _INFERENCE_ENV_ALLOW = {
     # process/runtime essentials
     "PATH", "PYTHONPATH", "TEMP", "TMP", "TMPDIR",
-    "HOME", "USERPROFILE", "SYSTEMROOT", "COMSPEC",
+    "HOME", "USERPROFILE", "USER", "USERNAME", "LOGNAME", "LNAME", "SYSTEMROOT", "COMSPEC",
     # Windows runtime essentials
     "APPDATA", "LOCALAPPDATA", "PATHEXT", "WINDIR",
     "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
@@ -255,6 +255,32 @@ def _subprocess_diagnostic(result: subprocess.CompletedProcess | object) -> str:
     return diagnostic
 
 
+def _sanitize_diagnostic(text: str) -> str:
+    diagnostic = text.replace("\x00", "").strip()
+    for pattern in _SECRET_PATTERNS:
+        diagnostic = pattern.sub(r"\1\2[redacted]", diagnostic)
+    if len(diagnostic) > MAX_SUBPROCESS_DIAGNOSTIC_CHARS:
+        return diagnostic[:MAX_SUBPROCESS_DIAGNOSTIC_CHARS].rstrip() + "\n...[truncated]"
+    return diagnostic
+
+
+def _format_subprocess_launch_detail(
+    cmd: list[str],
+    *,
+    cwd: str,
+    exc: BaseException | None = None,
+) -> str:
+    parts = [
+        "Could not launch inference subprocess.",
+        f"python: {cmd[0] if cmd else ''}",
+        f"script: {cmd[1] if len(cmd) > 1 else ''}",
+        f"cwd: {cwd}",
+    ]
+    if exc is not None:
+        parts.append(f"{exc.__class__.__name__}: {exc}")
+    return _sanitize_diagnostic("\n".join(parts))
+
+
 def _inference_subprocess_env() -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if k in _INFERENCE_ENV_ALLOW or k.startswith("INFERENCE_")}
     project_root = _get_project_root()
@@ -438,14 +464,35 @@ def _process_inference_job(
         if threshold is not None:
             cmd.extend(["--threshold", str(float(threshold))])
 
-        result = subprocess.run(
-            cmd,
-            cwd=str(script_path.parent.parent),
-            env=_inference_subprocess_env(),
-            capture_output=True,
-            text=True,
-            timeout=3600,
-        )
+        subprocess_cwd = str(script_path.parent.parent)
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=subprocess_cwd,
+                env=_inference_subprocess_env(),
+                capture_output=True,
+                text=True,
+                timeout=3600,
+            )
+        except OSError as exc:
+            diagnostic = _format_subprocess_launch_detail(cmd, cwd=subprocess_cwd, exc=exc)
+            logger.warning(
+                "Inference subprocess could not be launched for run %s: %s",
+                run_id,
+                diagnostic,
+            )
+            run.error_code = "inference_launch_failed"
+            run.error_message = "Could not start inference runtime."
+            _record_inference_run_transition(
+                db,
+                run,
+                InferenceStatus.failed,
+                detail=diagnostic,
+                error="inference_launch_failed",
+            )
+            db.commit()
+            _inference_queue.fail(job.id, "inference_launch_failed")
+            return
 
         if result.returncode != 0:
             diagnostic = _subprocess_diagnostic(result)
