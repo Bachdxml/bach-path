@@ -53,8 +53,6 @@ Host folders used by the desktop launch (under the Electron `userData` dir):
   `training_runs`, `tiles_cache`). Point this at a prior native install's
   `api-data` to keep existing slides/runs/database — no migration needed.
 - `api-logs/` -> container `/logs`.
-- `import-inbox/` -> container `/import` (read-only **slides inbox**; place
-  slides here to import them).
 - `models/` -> mounted over the baked-in model **only if** it contains a valid
   deploy weight (`.pth.gz` / `.pt.gz`); otherwise the baked-in model is used.
 
@@ -69,12 +67,12 @@ docker compose up
 ```
 
 Then reach the API at `http://127.0.0.1:8765/health`. Compose uses
-`./docker-data/{app-data,app-logs,import}` on the host; point `app-data` at a
-prior native install's `api-data` to reuse existing data. The slides inbox is
-`./docker-data/import` (read-only at `/import`). To override the baked-in model,
-uncomment the `models` volume in `docker-compose.yml` and drop a `.pth.gz` into
-`./docker-data/models`. On a CPU-only host, comment out the `deploy.resources`
-GPU block.
+`./docker-data/{app-data,app-logs}` on the host; point `app-data` at a
+prior native install's `api-data` to reuse existing data. Slides are imported by
+uploading their bytes (see **Import slides** below), so there is no host slides
+inbox to manage. To override the baked-in model, uncomment the `models` volume in
+`docker-compose.yml` and drop a `.pth.gz` into `./docker-data/models`. On a
+CPU-only host, comment out the `deploy.resources` GPU block.
 
 ### Mount conventions
 
@@ -82,7 +80,6 @@ GPU block.
 | ------------------ | -------------------------- | ------------------------- | --------------------------------------- | ---- |
 | App data           | `userData/api-data`        | `./docker-data/app-data`  | `/data`                                 | rw   |
 | Logs               | `userData/api-logs`        | `./docker-data/app-logs`  | `/logs`                                 | rw   |
-| Slides inbox       | `userData/import-inbox`    | `./docker-data/import`    | `/import`                               | ro   |
 | Models override    | `userData/models`          | `./docker-data/models`    | `/app/wsi-fungal-segmentation/models`   | rw   |
 
 The API publishes on the host **loopback only** (`127.0.0.1:8765`); it is not
@@ -325,7 +322,13 @@ Build artifacts are written under `apps/desktop/dist/`.
 
 ## 7) Use the App
 
-1. Open **Import** and add slides (single files or recursive folder import)
+1. Open **Import** and add slides — click **Select file(s)**, **Select folder
+   (recursive)**, or drag slides onto the drop zone. Slides are **uploaded** into
+   the app (their bytes are sent to the local backend); you never copy files into
+   a folder or think about paths. A live `Importing N/total…` counter shows
+   progress, unreadable files are skipped, and a summary like
+   `Imported 11 of 12 — 1 couldn't be read` appears at the end. Use **Cancel
+   import** to stop after the current slide; already-imported slides are kept.
 2. Open **Models** and confirm a deploy model is available
 3. Open **Gallery** and select a slide
 4. Run inference and review overlays in the viewer

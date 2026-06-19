@@ -51,46 +51,40 @@ async function apiFetch(path, options = {}) {
   });
 }
 
-async function apiFetchWithFallback(paths, options = {}) {
-  let lastResponse = null;
-  for (const path of paths) {
-    const res = await apiFetch(path, options);
-    if (res.ok || res.status !== 404) {
-      return res;
-    }
-    lastResponse = res;
-  }
-  return lastResponse;
-}
-
 async function listSlides() {
   const res = await apiFetch("/slides");
   if (!res.ok) throw new Error(await parseErrorResponse(res));
   return res.json();
 }
 
-async function importSlide(filePath) {
-  const res = await apiFetch("/slides/import", {
+async function createImportCollection(title = null, sourceType = null) {
+  const payload = {};
+  if (typeof title === "string" && title.trim()) payload.title = title.trim();
+  if (typeof sourceType === "string" && sourceType.trim()) payload.source_type = sourceType.trim();
+  const res = await apiFetch("/import-collections", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ file_path: filePath }),
+    body: JSON.stringify(payload),
   });
   if (!res.ok) throw new Error(await parseErrorResponse(res));
   return res.json();
 }
 
-async function importCollection(filePaths, title = null, sourceType = null, signal = null) {
-  const payload = {
-    file_paths: filePaths || [],
-  };
-  if (typeof title === "string" && title.trim()) payload.title = title.trim();
-  if (typeof sourceType === "string" && sourceType.trim()) payload.source_type = sourceType.trim();
-  const res = await apiFetchWithFallback(["/slides/import-collection", "/slides/import-collections"], {
-    method: "POST",
-    signal,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+async function deleteImportCollection(collectionId) {
+  const res = await apiFetch(`/import-collections/${collectionId}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(await parseErrorResponse(res));
+  return res.json();
+}
+
+// Upload a drag-dropped File object's bytes directly from the renderer. The
+// browser streams the File from disk and sets the multipart boundary, so we must
+// not set Content-Type ourselves. Authentication reuses the shared API client.
+async function uploadSlideFile(file, collectionId, allowTileLikeImport = false, signal = null) {
+  const form = new FormData();
+  if (collectionId != null) form.append("collection_id", String(collectionId));
+  form.append("allow_tile_like_import", allowTileLikeImport ? "true" : "false");
+  form.append("file", file, file.name);
+  const res = await apiFetch("/slides/upload", { method: "POST", body: form, signal });
   if (!res.ok) throw new Error(await parseErrorResponse(res));
   return res.json();
 }
@@ -226,8 +220,9 @@ const slidesApi = {
   getApiBase,
   healthCheck,
   listSlides,
-  importSlide,
-  importCollection,
+  createImportCollection,
+  deleteImportCollection,
+  uploadSlideFile,
   renameImportCollection,
   deleteSlide,
   getThumbnailUrl,

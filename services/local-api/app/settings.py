@@ -26,7 +26,6 @@ class Settings(BaseModel):
     remote_api_base_url: str | None = None
     remote_auth_provider_url: str | None = None
     remote_storage_url: str | None = None
-    import_allowed_roots: tuple[Path, ...] = ()
     max_batch_inference_items: int = 64
     max_inference_output_bytes: int = 10_000_000
     inference_tile_batch_size: int = 4
@@ -78,22 +77,6 @@ def _validate_remote_url(
         return
     if parsed.username or parsed.password:
         errors.append(f"{name} must not include embedded credentials")
-
-
-def _parse_allowed_roots(raw: str | None) -> tuple[Path, ...]:
-    if not raw:
-        return ()
-
-    roots: list[Path] = []
-    for item in raw.split(","):
-        value = item.strip()
-        if not value:
-            continue
-        root = Path(value)
-        if not root.is_absolute():
-            raise RuntimeError("APP_IMPORT_ALLOWED_ROOTS entries must be absolute paths")
-        roots.append(root.resolve())
-    return tuple(roots)
 
 
 def _parse_positive_int(raw: str | None, *, default: int) -> int:
@@ -199,7 +182,6 @@ def load_settings() -> Settings:
     remote_api_base_url = _optional_env("APP_REMOTE_API_BASE_URL")
     remote_auth_provider_url = _optional_env("APP_REMOTE_AUTH_PROVIDER_URL")
     remote_storage_url = _optional_env("APP_REMOTE_STORAGE_URL")
-    import_allowed_roots = _parse_allowed_roots(os.environ.get("APP_IMPORT_ALLOWED_ROOTS"))
     max_batch_inference_items = _parse_positive_int(
         os.environ.get("APP_MAX_BATCH_INFERENCE_ITEMS"),
         default=64,
@@ -257,7 +239,6 @@ def load_settings() -> Settings:
         sqlite_path=sqlite_path,
         api_key=api_key,
         allow_query_api_key=allow_query_api_key,
-        import_allowed_roots=import_allowed_roots,
         max_batch_inference_items=max_batch_inference_items,
         max_inference_output_bytes=max_inference_output_bytes,
         inference_tile_batch_size=inference_tile_batch_size,

@@ -11,6 +11,7 @@ from app.main import create_app
 from app.api.routes import inference as inference_routes
 from app.queue import InMemoryQueue
 from app.queue import in_memory as in_memory_module
+from tests.upload_helpers import upload_slide
 
 
 def _create_sample_slide(path: Path, color: tuple[int, int, int] = (120, 80, 200)) -> None:
@@ -116,7 +117,7 @@ def test_inference_run_enqueues_job(app_paths, monkeypatch):
 
     app = create_app()
     with TestClient(app) as client:
-        import_response = client.post("/slides/import", json={"file_path": str(slide_path)})
+        import_response = upload_slide(client, slide_path)
         assert import_response.status_code == 200, import_response.text
         slide_id = import_response.json()["slide_id"]
 

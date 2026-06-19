@@ -9,6 +9,7 @@ from PIL import Image
 
 from app.api.routes import inference as inference_routes
 from app.main import create_app
+from tests.upload_helpers import upload_slide
 
 
 def _create_sample_slide(path: Path, color: tuple[int, int, int] = (120, 80, 200)) -> None:
@@ -16,7 +17,7 @@ def _create_sample_slide(path: Path, color: tuple[int, int, int] = (120, 80, 200
 
 
 def _import_slide(client: TestClient, slide_path: Path) -> int:
-    response = client.post("/slides/import", json={"file_path": str(slide_path)})
+    response = upload_slide(client, slide_path)
     assert response.status_code == 200, response.text
     return response.json()["slide_id"]
 

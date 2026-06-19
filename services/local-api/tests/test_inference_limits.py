@@ -10,6 +10,7 @@ from app.main import create_app
 from app.api.routes import inference as inference_routes
 from app.queue import InMemoryQueue
 from app.util.exceptions import AppError
+from tests.upload_helpers import upload_slide
 
 
 def _create_sample_slide(path: Path, color: tuple[int, int, int] = (120, 80, 200)) -> None:
@@ -41,7 +42,7 @@ def test_folder_inference_rejects_oversized_folder(app_paths, monkeypatch):
     app = create_app()
     with TestClient(app) as client:
         for slide_path in (first_slide, second_slide, third_slide):
-            import_response = client.post("/slides/import", json={"file_path": str(slide_path)})
+            import_response = upload_slide(client, slide_path)
             assert import_response.status_code == 200, import_response.text
 
         list_response = client.get("/slides")
@@ -97,7 +98,7 @@ def test_batch_inference_with_missing_slide_file_queues_nothing(app_paths, monke
         slide_ids = []
         stored_filenames = []
         for slide_path in (first_slide, second_slide):
-            import_response = client.post("/slides/import", json={"file_path": str(slide_path)})
+            import_response = upload_slide(client, slide_path)
             assert import_response.status_code == 200, import_response.text
             import_payload = import_response.json()
             slide_ids.append(import_payload["slide_id"])

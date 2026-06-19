@@ -69,16 +69,31 @@ def wait_for_health(port: int, timeout_sec: float = 20.0) -> None:
     raise RuntimeError(f"API health check timed out on {url}")
 
 
-def post_json(url: str, payload: dict[str, object]) -> tuple[int, str]:
-    body = json.dumps(payload).encode("utf-8")
+def post_multipart(url: str, file_path: Path, fields: dict[str, str] | None = None) -> tuple[int, str]:
+    """Upload a file's bytes as multipart/form-data (the path-free import flow)."""
+    boundary = "----QASmoke" + os.urandom(16).hex()
+    crlf = b"\r\n"
+    parts: list[bytes] = []
+    for name, value in (fields or {}).items():
+        parts.append(b"--" + boundary.encode() + crlf)
+        parts.append(f'Content-Disposition: form-data; name="{name}"'.encode() + crlf + crlf)
+        parts.append(str(value).encode() + crlf)
+    parts.append(b"--" + boundary.encode() + crlf)
+    parts.append(
+        f'Content-Disposition: form-data; name="file"; filename="{file_path.name}"'.encode() + crlf
+    )
+    parts.append(b"Content-Type: application/octet-stream" + crlf + crlf)
+    parts.append(file_path.read_bytes() + crlf)
+    parts.append(b"--" + boundary.encode() + b"--" + crlf)
+    body = b"".join(parts)
     req = Request(
         url=url,
         method="POST",
-        headers={"Content-Type": "application/json"},
         data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
     )
     try:
-        with urlopen(req, timeout=20.0) as resp:
+        with urlopen(req, timeout=60.0) as resp:
             return int(resp.status), resp.read().decode("utf-8", errors="replace")
     except Exception as exc:
         code = getattr(exc, "code", 0)
@@ -181,15 +196,6 @@ def _extract_value(payload: object, keys: tuple[str, ...]) -> object | None:
     return None
 
 
-def _extract_collection_id(payload: object) -> int:
-    value = _extract_value(payload, ("collection_id", "collectionId", "id"))
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str) and value.isdigit():
-        return int(value)
-    raise RuntimeError(f"Could not find collection id in payload: {payload}")
-
-
 def _extract_name(payload: object) -> str:
     value = _extract_value(payload, ("collection_name", "name", "title"))
     if isinstance(value, str) and value.strip():
@@ -230,44 +236,30 @@ def _import_collection_smoke(port: int, input_dir: Path, slides_dir: Path) -> No
         batch_files.append(p)
 
     openapi = get_json(f"http://127.0.0.1:{port}/openapi.json")
-    import_ops = _find_openapi_operations(openapi, "post", ("import",), ("collection", "batch"))
-    if not import_ops:
-        raise RuntimeError("Could not find a collection batch import endpoint in OpenAPI")
 
+    # The batch flow is: create an empty collection, then upload each file's bytes
+    # into it (one upload call per file). No client filesystem path is sent.
     collection_name = "QA grouped import smoke"
-    import_result = None
-    import_path = None
-    for path, _operation in import_ops:
-        url = f"http://127.0.0.1:{port}{path}"
-        payloads = [
-            {"file_paths": [str(p.resolve()) for p in batch_files], "collection_name": collection_name},
-            {"file_paths": [str(p.resolve()) for p in batch_files], "name": collection_name},
-            {"paths": [str(p.resolve()) for p in batch_files], "collection_name": collection_name},
-            {"paths": [str(p.resolve()) for p in batch_files], "name": collection_name},
-            {"files": [str(p.resolve()) for p in batch_files], "collection_name": collection_name},
-            {"files": [str(p.resolve()) for p in batch_files], "name": collection_name},
-        ]
-        for payload in payloads:
-            status, response = request_json("POST", url, payload)
-            if status == 200:
-                import_result = response
-                import_path = path
-                break
-        if import_result is not None:
-            break
+    status, response = request_json(
+        "POST",
+        f"http://127.0.0.1:{port}/import-collections",
+        {"title": collection_name, "source_type": "files"},
+    )
+    if status != 200 or not isinstance(response, dict):
+        raise RuntimeError(f"Could not create import collection: status={status} body={response}")
+    collection_id = response.get("id")
+    if not isinstance(collection_id, int):
+        raise RuntimeError(f"Create-collection response missing integer id: {response}")
 
-    if import_result is None or import_path is None:
-        raise RuntimeError(f"Collection batch import smoke failed via endpoints: {import_ops}")
-
-    collection_id = _extract_collection_id(import_result)
-    if isinstance(import_result, dict):
-        # API returns imported_slide_ids (SlideImportCollectionResponse); some stacks use slide_ids.
-        slide_ids = import_result.get("imported_slide_ids")
-        if slide_ids is None:
-            slide_ids = import_result.get("slide_ids")
-        if isinstance(slide_ids, list) and len(slide_ids) != 20:
-            raise RuntimeError(f"Expected 20 imported slide ids, got {len(slide_ids)}")
-    print(f"Batch import created collection id {collection_id} via {import_path}")
+    for p in batch_files:
+        st, text = post_multipart(
+            f"http://127.0.0.1:{port}/slides/upload",
+            p,
+            {"collection_id": str(collection_id)},
+        )
+        if st != 200:
+            raise RuntimeError(f"Upload smoke failed for {p.name}: status={st} body={text}")
+    print(f"Batch import uploaded 20 slides into collection id {collection_id}")
 
     slides_payload = get_json(f"http://127.0.0.1:{port}/slides")
     slide_rows = _normalize_slide_rows(slides_payload)
@@ -392,7 +384,6 @@ def import_collision_smoke() -> None:
         env = os.environ.copy()
         env["APP_DATA_DIR"] = str(data_dir)
         env["APP_LOG_DIR"] = str(log_dir)
-        env["APP_IMPORT_ALLOWED_ROOTS"] = str(input_dir)
         env["PYTHONPATH"] = f"{API_DIR}{os.pathsep}{env.get('PYTHONPATH', '')}".rstrip(os.pathsep)
 
         proc = subprocess.Popen(
@@ -420,9 +411,9 @@ def import_collision_smoke() -> None:
             _import_collection_smoke(port, input_dir, slides_dir)
             failures: list[tuple[str, int, str]] = []
             for file in sorted(input_dir.glob("*.png")):
-                status, text = post_json(
-                    f"http://127.0.0.1:{port}/slides/import",
-                    {"file_path": str(file.resolve())},
+                status, text = post_multipart(
+                    f"http://127.0.0.1:{port}/slides/upload",
+                    file,
                 )
                 if status != 200:
                     failures.append((file.name, status, text))

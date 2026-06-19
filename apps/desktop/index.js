@@ -20,7 +20,6 @@ const WSI_EXTENSIONS = new Set([".svs", ".tif", ".tiff", ".png"]);
 const GENERATED_TILE_DIR_NAMES = new Set(["mastertile", "tiles", "patches"]);
 const GENERATED_TILE_CLASS_NAMES = new Set(["high", "medium", "low", "negative", "unclassified", "images", "masks"]);
 const TILE_FILENAME_RE = /(?:^|[_-])tile[_-]?x?\d+[_-]y?\d+(?:[_-]|$)/i;
-const MAX_DROPPED_PATHS = 2048;
 const MAX_FILENAME_LENGTH = 255;
 
 let mainWindow = null;
@@ -169,23 +168,6 @@ function validateConfigPayload(config) {
   return nextConfig;
 }
 
-function validateDroppedPaths(pathStrings) {
-  if (!Array.isArray(pathStrings)) return [];
-  const validPaths = [];
-
-  for (const value of pathStrings.slice(0, MAX_DROPPED_PATHS)) {
-    if (!isNonEmptyString(value)) continue;
-    if (!path.isAbsolute(value)) continue;
-    const resolvedPath = path.resolve(value);
-    if (!WSI_EXTENSIONS.has(path.extname(resolvedPath).toLowerCase())) continue;
-    if (looksLikeGeneratedTilePath(resolvedPath)) continue;
-    if (!fs.existsSync(resolvedPath)) continue;
-    validPaths.push(resolvedPath);
-  }
-
-  return validPaths;
-}
-
 function looksLikeGeneratedTilePath(filePath) {
   const parts = path.resolve(filePath).split(path.sep).map((part) => part.toLowerCase());
   const base = path.basename(filePath, path.extname(filePath)).toLowerCase();
@@ -275,11 +257,6 @@ function getApiLogDir() {
   return path.join(app.getPath("userData"), "api-logs");
 }
 
-// Read-only slides inbox bind-mounted into the container at /import (M7).
-function getApiImportDir() {
-  return path.join(app.getPath("userData"), "import-inbox");
-}
-
 // Optional host models folder; when it holds a valid deploy weight it is mounted
 // over the baked-in model path (M8).
 function getApiModelsDir() {
@@ -333,7 +310,7 @@ function removeExistingContainer() {
   runDocker(["rm", "-f", BACKEND_CONTAINER_NAME], { timeout: 30000 });
 }
 
-function buildDockerRunArgs({ withGpu, port, host, apiKey, dataDir, logDir, importDir, modelsDir }) {
+function buildDockerRunArgs({ withGpu, port, host, apiKey, dataDir, logDir, modelsDir }) {
   const publishHost = host === "::1" ? "[::1]" : host;
   const args = ["run", "-d", "--name", BACKEND_CONTAINER_NAME];
   if (withGpu) args.push("--gpus", "all");
@@ -347,9 +324,7 @@ function buildDockerRunArgs({ withGpu, port, host, apiKey, dataDir, logDir, impo
     "-e", "APP_INFERENCE_DEVICE=auto",
     // Persistent app-data + logs from the existing host paths (M6).
     "-v", `${dataDir}:/data`,
-    "-v", `${logDir}:/logs`,
-    // Read-only slides inbox (M7).
-    "-v", `${importDir}:/import:ro`
+    "-v", `${logDir}:/logs`
   );
   // Optional models override mount (M8).
   if (modelsDir) {
@@ -416,9 +391,8 @@ function startApi() {
 
   const dataDir = getApiDataDir();
   const logDir = getApiLogDir();
-  const importDir = getApiImportDir();
   const modelsDir = getApiModelsDir();
-  for (const dir of [dataDir, logDir, importDir]) {
+  for (const dir of [dataDir, logDir]) {
     fs.mkdirSync(dir, { recursive: true });
   }
   // Only mount the host models folder when it actually holds a deploy weight,
@@ -434,7 +408,7 @@ function startApi() {
   // Replace any stale container with the same fixed name (M15).
   removeExistingContainer();
 
-  const baseOpts = { port, host, apiKey, dataDir, logDir, importDir, modelsDir: modelsMount };
+  const baseOpts = { port, host, apiKey, dataDir, logDir, modelsDir: modelsMount };
   let run = runDocker(buildDockerRunArgs({ ...baseOpts, withGpu: true }));
   if (run.error || run.status !== 0) {
     // No NVIDIA GPU / toolkit missing: retry on CPU so the app still works (M10).
@@ -496,6 +470,111 @@ function createWindow(apiReady) {
   mainWindow.loadFile(path.join(__dirname, "index.html"));
   mainWindow.webContents.on("did-finish-load", () => {
     mainWindow.webContents.send("api-ready", normalizeApiReadyPayload(apiReady));
+  });
+}
+
+function sanitizeMultipartFilename(name) {
+  // Strip path separators and characters that would break the Content-Disposition
+  // header; the basename is all the backend needs for display + validation.
+  return path.basename(String(name)).replace(/[\r\n"\\]/g, "_").slice(0, MAX_FILENAME_LENGTH) || "slide";
+}
+
+// Stream a picked file's bytes to the backend upload endpoint from the main
+// process. Uses fs.createReadStream so a multi-GB slide is never buffered in
+// memory, and reuses the running backend's host/port/API key.
+function uploadSlideFromPath(payload) {
+  const { filePath, collectionId, allowTileLikeImport } = payload || {};
+  return new Promise((resolve) => {
+    if (!isNonEmptyString(filePath)) {
+      resolve({ ok: false, error: "No file path provided" });
+      return;
+    }
+    let stat;
+    try {
+      stat = fs.statSync(filePath);
+    } catch (e) {
+      resolve({ ok: false, error: `Could not read file: ${oneLine(e.message)}` });
+      return;
+    }
+    if (!stat.isFile()) {
+      resolve({ ok: false, error: "Selected path is not a file" });
+      return;
+    }
+
+    const { host, port, apiKey } = apiReadyState || {};
+    const boundary = "----BachPathUpload" + crypto.randomBytes(16).toString("hex");
+    const CRLF = "\r\n";
+    const filename = sanitizeMultipartFilename(filePath);
+
+    const head = Buffer.from(
+      `--${boundary}${CRLF}` +
+        `Content-Disposition: form-data; name="collection_id"${CRLF}${CRLF}` +
+        `${collectionId == null ? "" : collectionId}${CRLF}` +
+        `--${boundary}${CRLF}` +
+        `Content-Disposition: form-data; name="allow_tile_like_import"${CRLF}${CRLF}` +
+        `${allowTileLikeImport ? "true" : "false"}${CRLF}` +
+        `--${boundary}${CRLF}` +
+        `Content-Disposition: form-data; name="file"; filename="${filename}"${CRLF}` +
+        `Content-Type: application/octet-stream${CRLF}${CRLF}`,
+      "utf-8"
+    );
+    const tail = Buffer.from(`${CRLF}--${boundary}--${CRLF}`, "utf-8");
+
+    const headers = {
+      "Content-Type": `multipart/form-data; boundary=${boundary}`,
+      "Content-Length": head.length + stat.size + tail.length,
+    };
+    if (apiKey) headers["x-api-key"] = apiKey;
+
+    let settled = false;
+    const finish = (result) => {
+      if (!settled) {
+        settled = true;
+        resolve(result);
+      }
+    };
+
+    const req = http.request(
+      {
+        host: host || "127.0.0.1",
+        port: port || DEFAULT_PORT,
+        path: "/slides/upload",
+        method: "POST",
+        headers,
+      },
+      (res) => {
+        let body = "";
+        res.setEncoding("utf-8");
+        res.on("data", (chunk) => (body += chunk));
+        res.on("end", () => {
+          let parsed = null;
+          try {
+            parsed = JSON.parse(body);
+          } catch (_) {
+            /* non-JSON body */
+          }
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            finish({ ok: true, slideId: parsed?.slide_id, storedPath: parsed?.stored_path });
+          } else {
+            const message = parsed?.error?.message || `HTTP ${res.statusCode}`;
+            finish({ ok: false, status: res.statusCode, error: message });
+          }
+        });
+      }
+    );
+    req.on("error", (e) => finish({ ok: false, error: oneLine(e.message) }));
+
+    req.write(head);
+    const fileStream = fs.createReadStream(filePath);
+    fileStream.on("error", (e) => {
+      finish({ ok: false, error: `Could not read file: ${oneLine(e.message)}` });
+      req.destroy();
+    });
+    fileStream.on("end", () => {
+      req.write(tail);
+      req.end();
+    });
+    fileStream.pipe(req, { end: false });
   });
 }
 
@@ -579,7 +658,7 @@ handleTrusted("set-config", (_, config) => {
   return loadConfig();
 });
 
-handleTrusted("get-dropped-file-paths", (_, pathStrings) => validateDroppedPaths(pathStrings));
+handleTrusted("upload-slide-file", (_, payload) => uploadSlideFromPath(payload));
 
 handleTrusted("select-folder", async () => {
   const result = await dialog.showOpenDialog(mainWindow, {

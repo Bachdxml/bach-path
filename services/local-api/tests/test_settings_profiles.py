@@ -10,7 +10,6 @@ from app.settings import load_settings
 def _set_base_env(monkeypatch: pytest.MonkeyPatch, app_data_dir: Path) -> None:
     monkeypatch.setenv("APP_DATA_DIR", str(app_data_dir))
     monkeypatch.setenv("APP_LOG_DIR", str(app_data_dir / "logs"))
-    monkeypatch.setenv("APP_IMPORT_ALLOWED_ROOTS", str(app_data_dir.parent / "source-slides"))
     monkeypatch.delenv("APP_API_KEY", raising=False)
     monkeypatch.delenv("APP_ALLOW_QUERY_API_KEY", raising=False)
 
@@ -102,14 +101,6 @@ def test_load_settings_requires_app_data_dir(monkeypatch):
     monkeypatch.delenv("APP_DATA_DIR", raising=False)
 
     with pytest.raises(RuntimeError, match="APP_DATA_DIR is required"):
-        load_settings()
-
-
-def test_load_settings_rejects_relative_allowed_roots(app_paths, monkeypatch):
-    monkeypatch.setenv("APP_DATA_DIR", str(app_paths["app_data_dir"]))
-    monkeypatch.setenv("APP_IMPORT_ALLOWED_ROOTS", "relative/path")
-
-    with pytest.raises(RuntimeError, match="APP_IMPORT_ALLOWED_ROOTS entries must be absolute paths"):
         load_settings()
 
 

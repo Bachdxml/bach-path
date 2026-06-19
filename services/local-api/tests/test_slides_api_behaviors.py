@@ -13,6 +13,7 @@ from app.models.inference_run import InferenceRun
 from app.models.import_collection import ImportCollection
 from app.models.region import Region
 from app.models.slide import Slide
+from tests.upload_helpers import create_collection, upload_slide
 
 
 def _create_sample_slide(path: Path, color: tuple[int, int, int] = (80, 140, 210)) -> None:
@@ -48,44 +49,46 @@ def test_slides_endpoint_allows_query_key_when_explicitly_enabled(app_paths, mon
         assert response.status_code == 200
 
 
-def test_import_rejects_disallowed_slide_path(app_paths, tmp_path):
-    disallowed_dir = tmp_path / "outside-source"
-    disallowed_dir.mkdir()
-    slide_path = disallowed_dir / "outside.png"
+def test_path_import_endpoints_are_removed(app_paths):
+    slide_path = app_paths["source_dir"] / "outside.png"
     _create_sample_slide(slide_path)
 
     app = create_app()
     with TestClient(app) as client:
-        response = client.post("/slides/import", json={"file_path": str(slide_path)})
+        # The host-path import API is gone, so the original 403/404 path failures
+        # can no longer occur. The old URLs no longer resolve to an import handler
+        # (404 not-found, or 405 where the path now collides with /slides/{id}).
+        import_response = client.post("/slides/import", json={"file_path": str(slide_path)})
+        collection_response = client.post(
+            "/slides/import-collection",
+            json={"file_paths": [str(slide_path)]},
+        )
 
-    assert response.status_code == 403
-    payload = response.json()
-    assert payload["error"]["code"] == "slide_permission"
+    assert import_response.status_code in (404, 405)
+    assert collection_response.status_code in (404, 405)
+    # Whatever the status, no slide was imported through the dead path.
+    assert import_response.status_code != 200
+    assert collection_response.status_code != 200
 
 
-def test_import_collection_deduplicates_and_supports_rename(app_paths):
-    first_slide = app_paths["source_dir"] / "dup-a.png"
-    second_slide = app_paths["source_dir"] / "dup-b.png"
+def test_collection_groups_uploads_and_supports_rename(app_paths):
+    first_slide = app_paths["source_dir"] / "batch-a.png"
+    second_slide = app_paths["source_dir"] / "batch-b.png"
     _create_sample_slide(first_slide, color=(220, 80, 70))
     _create_sample_slide(second_slide, color=(70, 180, 90))
 
     app = create_app()
     with TestClient(app) as client:
-        import_response = client.post(
-            "/slides/import-collection",
-            json={
-                "file_paths": [str(first_slide), str(first_slide), str(second_slide)],
-                "title": "  Initial Batch  ",
-                "source_type": "manual",
-            },
-        )
-        assert import_response.status_code == 200, import_response.text
+        collection_response = create_collection(client, title="  Initial Batch  ", source_type="files")
+        assert collection_response.status_code == 200, collection_response.text
+        collection_id = collection_response.json()["id"]
 
-        import_payload = import_response.json()
-        assert import_payload["imported_count"] == 2
-        assert len(import_payload["imported_slide_ids"]) == 2
-
-        collection_id = import_payload["collection"]["id"]
+        imported_ids = set()
+        for slide in (first_slide, second_slide):
+            upload_response = upload_slide(client, slide, collection_id=collection_id)
+            assert upload_response.status_code == 200, upload_response.text
+            imported_ids.add(upload_response.json()["slide_id"])
+        assert len(imported_ids) == 2
 
         rename_response = client.patch(
             f"/import-collections/{collection_id}",
@@ -98,7 +101,6 @@ def test_import_collection_deduplicates_and_supports_rename(app_paths):
         assert gallery_response.status_code == 200, gallery_response.text
         gallery_by_id = {item["id"]: item for item in gallery_response.json()["slides"]}
 
-    imported_ids = set(import_payload["imported_slide_ids"])
     assert imported_ids.issubset(gallery_by_id.keys())
 
     for slide_id in imported_ids:
@@ -114,18 +116,41 @@ def test_import_collection_deduplicates_and_supports_rename(app_paths):
     assert persisted_response.json()["title"] == "Renamed Batch"
 
 
-def test_failed_single_import_removes_auto_created_collection(app_paths, monkeypatch):
-    slide_path = app_paths["source_dir"] / "copy-fails.png"
-    _create_sample_slide(slide_path)
-
-    def fail_copy(*args, **kwargs):
-        raise OSError("disk full")
-
-    monkeypatch.setattr(slides_routes, "copy_into_managed_storage", fail_copy)
+def test_duplicate_filenames_in_a_batch_both_import(app_paths):
+    first = app_paths["source_dir"] / "same-name.png"
+    _create_sample_slide(first, color=(10, 20, 30))
 
     app = create_app()
     with TestClient(app) as client:
-        response = client.post("/slides/import", json={"file_path": str(slide_path)})
+        collection_response = create_collection(client, title="dupes")
+        collection_id = collection_response.json()["id"]
+
+        a = upload_slide(client, first, filename="dup.png", collection_id=collection_id)
+        b = upload_slide(client, first, filename="dup.png", collection_id=collection_id)
+        assert a.status_code == 200, a.text
+        assert b.status_code == 200, b.text
+
+        gallery_response = client.get("/slides")
+
+    slides = gallery_response.json()["slides"]
+    # Two uploads with the same filename land as two separate slides.
+    assert len([s for s in slides if s["collection_id"] == collection_id]) == 2
+    assert a.json()["slide_id"] != b.json()["slide_id"]
+    assert a.json()["stored_path"] != b.json()["stored_path"]
+
+
+def test_failed_single_upload_removes_auto_created_collection(app_paths, monkeypatch):
+    slide_path = app_paths["source_dir"] / "write-fails.png"
+    _create_sample_slide(slide_path)
+
+    def fail_stream(*args, **kwargs):
+        raise OSError("disk write failed")
+
+    monkeypatch.setattr(slides_routes, "stream_into_managed_storage", fail_stream)
+
+    app = create_app()
+    with TestClient(app) as client:
+        response = upload_slide(client, slide_path)
         assert response.status_code == 400
 
         db = app.state.SessionLocal()
@@ -139,6 +164,39 @@ def test_failed_single_import_removes_auto_created_collection(app_paths, monkeyp
     assert slide_count == 0
 
 
+def test_disk_full_upload_returns_space_error_without_orphans(app_paths, monkeypatch):
+    from app.slides.storage import NotEnoughDiskSpaceError
+
+    slide_path = app_paths["source_dir"] / "too-big.png"
+    _create_sample_slide(slide_path)
+
+    def out_of_space(*args, **kwargs):
+        raise NotEnoughDiskSpaceError("no space")
+
+    monkeypatch.setattr(slides_routes, "stream_into_managed_storage", out_of_space)
+
+    app = create_app()
+    with TestClient(app) as client:
+        response = upload_slide(client, slide_path)
+        assert response.status_code == 507
+        assert response.json()["error"]["code"] == "io_error"
+        assert "disk space" in response.json()["error"]["message"].lower()
+
+        db = app.state.SessionLocal()
+        try:
+            collection_count = db.query(ImportCollection).count()
+            slide_count = db.query(Slide).count()
+        finally:
+            db.close()
+        # No orphaned partial file remains in managed storage either.
+        slides_dir = app_paths["app_data_dir"] / "slides"
+        leftover = list(slides_dir.glob("*")) if slides_dir.exists() else []
+
+    assert collection_count == 0
+    assert slide_count == 0
+    assert leftover == []
+
+
 def test_delete_slide_removes_file_and_tile_cache(app_paths):
     slide_path = app_paths["source_dir"] / "deletable.png"
     _create_sample_slide(slide_path)
@@ -147,7 +205,7 @@ def test_delete_slide_removes_file_and_tile_cache(app_paths):
 
     app = create_app()
     with TestClient(app) as client:
-        import_response = client.post("/slides/import", json={"file_path": str(slide_path)})
+        import_response = upload_slide(client, slide_path)
         assert import_response.status_code == 200, import_response.text
 
         import_payload = import_response.json()
@@ -187,7 +245,7 @@ def test_missing_deepzoom_artifacts_return_404_while_raster_tiles_work(app_paths
 
     app = create_app()
     with TestClient(app) as client:
-        import_response = client.post("/slides/import", json={"file_path": str(slide_path)})
+        import_response = upload_slide(client, slide_path)
         assert import_response.status_code == 200, import_response.text
         slide_id = import_response.json()["slide_id"]
 
@@ -208,7 +266,7 @@ def test_thumbnail_requests_are_cached(app_paths):
 
     app = create_app()
     with TestClient(app) as client:
-        import_response = client.post("/slides/import", json={"file_path": str(slide_path)})
+        import_response = upload_slide(client, slide_path)
         assert import_response.status_code == 200, import_response.text
         slide_id = import_response.json()["slide_id"]
 
@@ -233,7 +291,7 @@ def test_cached_raster_tile_still_rejects_invalid_coordinates(app_paths):
 
     app = create_app()
     with TestClient(app) as client:
-        import_response = client.post("/slides/import", json={"file_path": str(slide_path)})
+        import_response = upload_slide(client, slide_path)
         assert import_response.status_code == 200, import_response.text
         slide_id = import_response.json()["slide_id"]
 
@@ -253,7 +311,7 @@ def test_raster_tile_status_codes_are_cache_state_independent(app_paths):
 
     app = create_app()
     with TestClient(app) as client:
-        import_response = client.post("/slides/import", json={"file_path": str(slide_path)})
+        import_response = upload_slide(client, slide_path)
         assert import_response.status_code == 200, import_response.text
         slide_id = import_response.json()["slide_id"]
 
@@ -387,7 +445,7 @@ def test_openslide_metadata_redacts_unsafe_vendor_properties(app_paths, monkeypa
 
     app = create_app()
     with TestClient(app) as client:
-        import_response = client.post("/slides/import", json={"file_path": str(slide_path)})
+        import_response = upload_slide(client, slide_path)
         assert import_response.status_code == 200, import_response.text
         slide_id = import_response.json()["slide_id"]
 
@@ -424,7 +482,7 @@ def test_inference_regions_include_segmentation_payload(app_paths):
 
     app = create_app()
     with TestClient(app) as client:
-        import_response = client.post("/slides/import", json={"file_path": str(slide_path)})
+        import_response = upload_slide(client, slide_path)
         assert import_response.status_code == 200, import_response.text
         slide_id = import_response.json()["slide_id"]
 

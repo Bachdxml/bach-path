@@ -70,7 +70,6 @@ ENV APP_CONTAINER=1 \
     APP_DEPLOYMENT_MODE=local \
     APP_DATA_DIR=/data \
     APP_LOG_DIR=/logs \
-    APP_IMPORT_ALLOWED_ROOTS=/import \
     APP_INFERENCE_DEVICE=auto \
     INFERENCE_PYTHON=/usr/bin/python3 \
     PYTHONPATH=/app/wsi-fungal-segmentation:/app/services/local-api

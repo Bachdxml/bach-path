@@ -18,7 +18,6 @@ def app_paths(tmp_path, monkeypatch):
     source_dir.mkdir()
 
     monkeypatch.setenv("APP_DATA_DIR", str(app_data_dir))
-    monkeypatch.setenv("APP_IMPORT_ALLOWED_ROOTS", str(source_dir.resolve()))
     monkeypatch.delenv("APP_API_KEY", raising=False)
 
     return {

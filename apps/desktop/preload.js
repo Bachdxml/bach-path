@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer, webUtils } = require("electron");
+const { contextBridge, ipcRenderer } = require("electron");
 
 function sanitizeConfigPayload(config) {
   if (!config || typeof config !== "object" || Array.isArray(config)) return {};
@@ -22,9 +22,14 @@ function sanitizeApiReadyPayload(data) {
   return payload;
 }
 
-function sanitizePathStrings(pathStrings) {
-  if (!Array.isArray(pathStrings)) return [];
-  return pathStrings.filter((value) => typeof value === "string");
+function sanitizeUploadRequest(payload) {
+  const safe = {};
+  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+    if (typeof payload.filePath === "string") safe.filePath = payload.filePath;
+    if (Number.isInteger(payload.collectionId)) safe.collectionId = payload.collectionId;
+    if (payload.allowTileLikeImport === true) safe.allowTileLikeImport = true;
+  }
+  return safe;
 }
 
 function sanitizeCapturePayload(rect, defaultFilename) {
@@ -46,21 +51,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("api-ready", listener);
     return () => ipcRenderer.removeListener("api-ready", listener);
   },
-  getDroppedFilePaths: (pathStrings) =>
-    ipcRenderer.invoke("get-dropped-file-paths", sanitizePathStrings(pathStrings)),
-  getPathsForFiles: (files) => {
-    if (!Array.isArray(files)) return [];
-    const paths = [];
-    for (const file of files) {
-      try {
-        const filePath = webUtils.getPathForFile(file);
-        if (typeof filePath === "string" && filePath !== "") paths.push(filePath);
-      } catch {
-        // Skip files the OS cannot resolve to a path.
-      }
-    }
-    return paths;
-  },
+  // Picked file paths are read and uploaded by the Electron main process so the
+  // renderer never loads multi-GB slides into memory.
+  uploadSlideFile: (payload) =>
+    ipcRenderer.invoke("upload-slide-file", sanitizeUploadRequest(payload)),
   selectFolder: () => ipcRenderer.invoke("select-folder"),
   selectFiles: () => ipcRenderer.invoke("select-files"),
   selectDirectory: () => ipcRenderer.invoke("select-directory"),

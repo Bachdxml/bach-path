@@ -9,7 +9,7 @@ from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from PIL import Image
 from sqlalchemy import func
@@ -23,11 +23,9 @@ from app.models.import_collection import ImportCollection
 from app.models.region import Region
 from app.models.slide import Slide
 from app.schemas.slides import (
+    ImportCollectionCreateRequest,
     ImportCollectionRenameRequest,
     ImportCollectionResponse,
-    SlideImportCollectionRequest,
-    SlideImportCollectionResponse,
-    SlideImportRequest,
     SlideImportResponse,
     SlideListItem,
     SlideListResponse,
@@ -39,7 +37,7 @@ from app.slides.access import resolve_managed_slide_path as _resolve_managed_sli
 from app.slides.deepzoom import deepzoom_paths, has_deepzoom, ensure_deepzoom
 from app.slides.metadata import RASTER_EXTENSIONS, read_openslide_metadata, read_raster_metadata
 from app.slides.paths import folder_key_for_original_path
-from app.slides.storage import copy_into_managed_storage
+from app.slides.storage import NotEnoughDiskSpaceError, stream_into_managed_storage
 from app.util.exceptions import AppError, ErrorCode
 from app.util.openslide_runtime import configure_openslide_runtime
 
@@ -52,10 +50,7 @@ WSI_EXTENSIONS = {".svs", ".tif", ".tiff", ".png"}
 TILE_SIZE_DEFAULT = 256
 THUMBNAIL_SIZE_MIN = 32
 THUMBNAIL_SIZE_MAX = 2048
-MAX_IMPORT_COLLECTION_ITEMS = 256
 TILE_FILENAME_RE = re.compile(r"(?:^|[_-])tile[_-]?x?\d+[_-]y?\d+(?:[_-]|$)", re.IGNORECASE)
-GENERATED_TILE_PATH_PARTS = {"mastertile", "tiles", "patches"}
-GENERATED_TILE_CLASS_PARTS = {"high", "medium", "low", "negative", "unclassified", "images", "masks"}
 
 # --- OpenSlide handle cache (Finding #11) -----------------------------------
 # Opening a WSI parses pyramid metadata and header offsets, which is expensive.
@@ -179,69 +174,60 @@ def _create_import_collection(
     return collection
 
 
-def _ensure_import_allowed(src: Path, allowed_roots: tuple[Path, ...]) -> None:
-    if not allowed_roots:
-        return
+def _filename_looks_like_generated_tile(filename: str) -> bool:
+    """Detect a generated training-tile filename (e.g. ``tile_x0_y0.png``).
 
-    resolved_src = src.resolve()
-    for root in allowed_roots:
-        try:
-            resolved_src.relative_to(root)
-            return
-        except ValueError:
-            continue
-    raise AppError(
-        ErrorCode.SLIDE_PERMISSION,
-        "Slide import path is not allowed",
-        http_status=403,
-    )
-
-
-def _looks_like_generated_training_tile(src: Path) -> bool:
-    suffix = src.suffix.lower()
-    if suffix not in RASTER_EXTENSIONS:
+    Filename-only by design: the upload endpoint never receives a source folder,
+    so the previous folder-structure heuristic no longer applies (Requirement 7).
+    """
+    name = Path(filename).name
+    if Path(name).suffix.lower() not in RASTER_EXTENSIONS:
         return False
-    parts = {part.lower() for part in src.parts}
-    stem = src.stem.lower()
-    if TILE_FILENAME_RE.search(stem):
-        return True
-    if parts.intersection(GENERATED_TILE_PATH_PARTS) and parts.intersection(GENERATED_TILE_CLASS_PARTS):
-        return True
-    return False
+    stem = Path(name).stem.lower()
+    return bool(TILE_FILENAME_RE.search(stem))
 
 
-def _validate_import_source(
-    src: Path,
-    allowed_roots: tuple[Path, ...],
-    *,
-    allow_tile_like_import: bool = False,
-) -> None:
-    if not src.exists():
-        raise AppError(ErrorCode.SLIDE_NOT_FOUND, "File not found")
-    if not src.is_file():
-        raise AppError(ErrorCode.SLIDE_INVALID, "Import path must be a file")
-    _ensure_import_allowed(src, allowed_roots)
-    if src.suffix.lower() not in WSI_EXTENSIONS:
+def _validate_upload_filename(filename: str, *, allow_tile_like_import: bool = False) -> str:
+    """Validate an uploaded slide's filename and return its lowercased suffix."""
+    name = Path(filename).name
+    if not name.strip():
+        raise AppError(ErrorCode.SLIDE_INVALID, "Uploaded file is missing a filename")
+    suffix = Path(name).suffix.lower()
+    if suffix not in WSI_EXTENSIONS:
         raise AppError(ErrorCode.SLIDE_INVALID, "Unsupported slide file extension")
-    if not allow_tile_like_import and _looks_like_generated_training_tile(src):
+    if not allow_tile_like_import and _filename_looks_like_generated_tile(name):
         raise AppError(
             ErrorCode.SLIDE_INVALID,
             "This looks like a generated training tile, not a whole slide. Import the source .svs instead.",
         )
+    return suffix
 
 
-def _import_slide_file(
+def _import_uploaded_slide(
     *,
     db: Session,
-    src: Path,
+    upload_file: UploadFile,
     settings,
     collection_id: int | None,
+    allow_tile_like_import: bool = False,
 ) -> Slide:
+    """Stream an uploaded slide to managed storage and run the import pipeline.
+
+    Mirrors the path-import pipeline (managed-storage placement, DB row, DeepZoom
+    pre-gen) so an uploaded slide is indistinguishable from one imported before,
+    but the bytes arrive over multipart instead of a shared filesystem path.
+    """
+    filename = upload_file.filename or ""
+    suffix = _validate_upload_filename(filename, allow_tile_like_import=allow_tile_like_import)
+    # original_path stores only the original filename for display; host paths are
+    # never meaningful here (Constraints / Open Question on original_path).
+    original_name = Path(filename).name
+
     slide = Slide(
-        original_path=str(src.resolve()),
+        original_path=original_name,
         stored_filename="pending",
         stored_path="pending",
-        file_size_bytes=src.stat().st_size,
+        file_size_bytes=0,
         sha256=None,
         import_collection_id=collection_id,
     )
@@ -250,11 +236,24 @@ def _import_slide_file(
     db.commit()
     db.refresh(slide)
 
-    dest_filename = f"{slide.id}{src.suffix.lower()}"
+    src = upload_file.file
+    try:
+        src.seek(0)
+    except (OSError, ValueError):
+        pass
+    expected_size = getattr(upload_file, "size", None)
+
+    dest_filename = f"{slide.id}{suffix}"
     dest_path = None
+    bytes_written = 0
     for attempt in range(4):
         try:
-            dest_path = copy_into_managed_storage(src, settings.slides_dir, dest_filename)
+            dest_path, bytes_written = stream_into_managed_storage(
+                src,
+                settings.slides_dir,
+                dest_filename,
+                expected_size=expected_size,
+            )
             break
         except FileExistsError:
             if attempt == 0:
@@ -263,23 +262,42 @@ def _import_slide_file(
                     slide.id,
                     dest_filename,
                 )
-            dest_filename = f"{slide.id}-{uuid.uuid4().hex[:8]}{src.suffix.lower()}"
-        except PermissionError:
+            dest_filename = f"{slide.id}-{uuid.uuid4().hex[:8]}{suffix}"
+            try:
+                src.seek(0)
+            except (OSError, ValueError):
+                pass
+        except NotEnoughDiskSpaceError:
             _delete_pending_slide_row(db, slide.id)
-            raise AppError(ErrorCode.SLIDE_PERMISSION, "Access denied when copying slide")
+            raise AppError(
+                ErrorCode.IO_ERROR,
+                "Not enough disk space to import this slide. Free up space and try again.",
+                http_status=507,
+            )
         except ValueError:
             _delete_pending_slide_row(db, slide.id)
             raise AppError(ErrorCode.SLIDE_INVALID, "Invalid managed storage destination")
         except OSError:
-            logger.exception("Failed to copy slide from %s", src)
+            logger.exception("Failed to write uploaded slide %s", original_name)
             _delete_pending_slide_row(db, slide.id)
-            raise AppError(ErrorCode.IO_ERROR, "Failed to copy slide")
+            raise AppError(ErrorCode.IO_ERROR, "Failed to save uploaded slide")
     if dest_path is None:
         _delete_pending_slide_row(db, slide.id)
         raise AppError(ErrorCode.CONFLICT, "Managed slide already exists")
 
+    # A zero-byte (empty or truncated) upload is an unreadable slide, not a
+    # successful import; clean up the partial file and the pending row.
+    if bytes_written == 0:
+        try:
+            dest_path.unlink()
+        except OSError:
+            pass
+        _delete_pending_slide_row(db, slide.id)
+        raise AppError(ErrorCode.SLIDE_UNREADABLE, "Uploaded file was empty or unreadable")
+
     slide.stored_filename = dest_filename
     slide.stored_path = str(dest_path)
+    slide.file_size_bytes = bytes_written
     db.add(slide)
     db.commit()
     db.refresh(slide)
@@ -473,98 +491,83 @@ def update_slide_review(
     return SlideReviewResponse(id=slide.id, review_status=slide.review_status)
 
 
-@router.post("/import", response_model=SlideImportResponse)
-def import_slide(payload: SlideImportRequest, request: Request, db: Session = Depends(get_db)):
+@router.post("/upload", response_model=SlideImportResponse)
+def upload_slide(
+    request: Request,
+    file: UploadFile = File(...),
+    collection_id: int | None = Form(default=None),
+    allow_tile_like_import: bool = Form(default=False),
+    db: Session = Depends(get_db),
+):
+    """Import a single slide from its uploaded bytes (multipart), not a path.
+
+    The client and backend no longer share a filesystem; the raw file is streamed
+    to managed storage and run through the existing import pipeline. A batch
+    import pre-creates a collection and calls this once per file so per-file
+    progress and skip-and-continue work (Requirements 1-5).
+    """
     settings = request.app.state.settings
 
-    src = Path(payload.file_path)
-    _validate_import_source(
-        src,
-        settings.import_allowed_roots,
-        allow_tile_like_import=payload.allow_tile_like_import,
-    )
-
     collection: ImportCollection | None = None
-    if payload.collection_id is not None:
-        collection = db.get(ImportCollection, payload.collection_id)
+    created_collection = False
+    if collection_id is not None:
+        collection = db.get(ImportCollection, collection_id)
         if not collection:
-            raise AppError(ErrorCode.NOT_FOUND, f"Import collection {payload.collection_id} not found")
+            raise AppError(ErrorCode.NOT_FOUND, f"Import collection {collection_id} not found")
     else:
-        collection = _create_import_collection(
-            db,
-            title=None,
-            source_type="import",
-        )
+        collection = _create_import_collection(db, title=None, source_type="upload")
+        created_collection = True
 
     try:
-        slide = _import_slide_file(db=db, src=src, settings=settings, collection_id=collection.id if collection else None)
+        slide = _import_uploaded_slide(
+            db=db,
+            upload_file=file,
+            settings=settings,
+            collection_id=collection.id,
+            allow_tile_like_import=allow_tile_like_import,
+        )
     except Exception:
-        if collection is not None and payload.collection_id is None:
+        # Only tear down a collection this request created; never an existing one
+        # the client is uploading more files into.
+        if created_collection:
             existing_collection = db.get(ImportCollection, collection.id)
             if existing_collection is not None:
                 db.delete(existing_collection)
                 db.commit()
         raise
-    if slide is None:
-        raise AppError(ErrorCode.IO_ERROR, "Slide import did not complete")
     return SlideImportResponse(slide_id=slide.id, stored_path=_managed_slide_identifier(slide.stored_filename))
 
 
-@router.post("/import-collection", response_model=SlideImportCollectionResponse)
-@router.post("/import-collections", response_model=SlideImportCollectionResponse)
-def import_slide_collection(payload: SlideImportCollectionRequest, request: Request, db: Session = Depends(get_db)):
-    settings = request.app.state.settings
-
-    # Keep batch imports bounded to avoid long-running single requests.
-    if len(payload.file_paths) > MAX_IMPORT_COLLECTION_ITEMS:
-        raise AppError(
-            ErrorCode.SLIDE_INVALID,
-            f"Too many files in one import collection (max {MAX_IMPORT_COLLECTION_ITEMS})",
-        )
-
-    deduped_file_paths = list(dict.fromkeys(payload.file_paths))
-    sources = [Path(file_path) for file_path in deduped_file_paths]
-    for src in sources:
-        _validate_import_source(
-            src,
-            settings.import_allowed_roots,
-            allow_tile_like_import=payload.allow_tile_like_import,
-        )
-
+@collections_router.post("/import-collections", response_model=ImportCollectionResponse)
+def create_import_collection(payload: ImportCollectionCreateRequest, db: Session = Depends(get_db)):
+    """Create an empty import collection that uploaded slides are grouped into."""
     collection = _create_import_collection(
         db,
         title=payload.title,
-        source_type=payload.source_type,
+        source_type=payload.source_type or "upload",
     )
+    return _serialize_collection(collection)
 
-    imported_slide_ids: list[int] = []
-    copied_paths: list[Path] = []
-    try:
-        for src in sources:
-            slide = _import_slide_file(db=db, src=src, settings=settings, collection_id=collection.id)
-            imported_slide_ids.append(slide.id)
-            copied_paths.append(Path(slide.stored_path))
-    except Exception:
-        for slide_id in imported_slide_ids:
-            shutil.rmtree(settings.tiles_cache_dir / str(slide_id), ignore_errors=True)
-            imported_slide = db.get(Slide, slide_id)
-            if imported_slide:
-                db.delete(imported_slide)
-        for copied_path in copied_paths:
-            if copied_path.is_file():
-                try:
-                    copied_path.unlink()
-                except OSError:
-                    logger.warning("Could not delete copied slide file %s after failed collection import", copied_path)
-        db.delete(collection)
-        db.commit()
-        raise
 
-    return SlideImportCollectionResponse(
-        collection=_serialize_collection(collection),
-        imported_count=len(imported_slide_ids),
-        imported_slide_ids=imported_slide_ids,
-    )
+@collections_router.delete("/import-collections/{collection_id}")
+def delete_import_collection(collection_id: int, db: Session = Depends(get_db)):
+    """Delete an import collection only when it holds no slides.
+
+    Used to clean up after a batch where every file failed, so an empty
+    collection is never left behind (Requirement 4).
+    """
+    collection = db.get(ImportCollection, collection_id)
+    if not collection:
+        raise AppError(ErrorCode.NOT_FOUND, f"Import collection {collection_id} not found")
+    slide_count = db.query(Slide).filter(Slide.import_collection_id == collection_id).count()
+    if slide_count > 0:
+        raise AppError(
+            ErrorCode.CONFLICT,
+            "Cannot delete an import collection that still contains slides",
+        )
+    db.delete(collection)
+    db.commit()
+    return {"ok": True, "id": collection_id}
 
 
 @collections_router.get("/import-collections/{collection_id}", response_model=ImportCollectionResponse)

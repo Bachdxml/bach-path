@@ -29,16 +29,18 @@ def _assert_validation_error(payload: dict, *, request_id: str | None = None) ->
 def test_body_validation_error_uses_normalized_shape(app_paths):
     app = create_app()
     with TestClient(app) as client:
+        # The upload endpoint requires a multipart `file` field; omitting it
+        # exercises body validation on the current (path-free) import API.
         response = client.post(
-            "/slides/import",
-            json={"file_path": "relative.svs"},
+            "/slides/upload",
+            data={"allow_tile_like_import": "false"},
             headers={"x-request-id": "body-validation-rid"},
         )
 
     assert response.status_code == 422
     payload = response.json()
     _assert_validation_error(payload, request_id="body-validation-rid")
-    assert payload["error"]["details"][0]["loc"] == ["body", "file_path"]
+    assert payload["error"]["details"][0]["loc"] == ["body", "file"]
 
 
 def test_query_validation_error_uses_normalized_shape(app_paths):

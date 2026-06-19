@@ -29,8 +29,8 @@ services:
       # tiles_cache (M6).
       - ./docker-data/app-data:/data
       - ./docker-data/app-logs:/logs
-      # Read-only slides inbox; APP_IMPORT_ALLOWED_ROOTS=/import is baked in (M7).
-      - ./docker-data/import:/import:ro
+      # Slides are imported by uploading their bytes through the app UI, so no
+      # host slides inbox is mounted (the old /import bind mount was removed).
       # Optional models override: drop a .pth.gz/.pt.gz here to override the
       # baked-in deploy model without rebuilding (M8). Uncomment to use.
       # - ./docker-data/models:/app/wsi-fungal-segmentation/models

@@ -9,21 +9,45 @@ const importApp = window.BachPath || null;
 const importSlidesApi = importApp?.services?.slidesApi || window.slidesApi;
 
 const WSI_EXTENSIONS = [".svs", ".tif", ".tiff", ".png"];
+const TILE_FILENAME_RE = /(?:^|[_-])tile[_-]?x?\d+[_-]y?\d+(?:[_-]|$)/i;
 
 let importCancelled = false;
 let importInProgress = false;
 let importAbortController = null;
 
+function hasWsiExtension(name) {
+  const lower = String(name || "").toLowerCase();
+  return WSI_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
+// A dropped File object carries only a name. Tile-looking PNG names are skipped
+// client-side for a friendlier message; the backend enforces the same guard.
+function looksLikeGeneratedTileName(name) {
+  const lower = String(name || "").toLowerCase();
+  if (!lower.endsWith(".png")) return false;
+  const base = lower.replace(/\.[^.]+$/, "");
+  return TILE_FILENAME_RE.test(base);
+}
+
+function filterValidFiles(files) {
+  const valid = [];
+  for (const file of files || []) {
+    if (!file || !hasWsiExtension(file.name)) continue;
+    if (looksLikeGeneratedTileName(file.name)) continue;
+    valid.push(file);
+  }
+  return valid;
+}
+
 function filterValidPaths(paths) {
   const unique = [];
   const seen = new Set();
-  for (const path of paths || []) {
-    if (typeof path !== "string") continue;
-    const lower = path.toLowerCase();
-    if (!WSI_EXTENSIONS.some((ext) => lower.endsWith(ext))) continue;
-    if (seen.has(path)) continue;
-    seen.add(path);
-    unique.push(path);
+  for (const p of paths || []) {
+    if (typeof p !== "string") continue;
+    if (!hasWsiExtension(p)) continue;
+    if (seen.has(p)) continue;
+    seen.add(p);
+    unique.push(p);
   }
   return unique;
 }
@@ -32,24 +56,13 @@ function getCollectionTitle() {
   return collectionTitleInput?.value?.trim() || null;
 }
 
-function getImportProgressLabel(current, total) {
-  if (!total) return "";
-  if (current >= total) return `Importing ${total} slide(s)...`;
-  return `Importing ${current}/${total}...`;
-}
-
-function toFiniteNumber(value) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
-}
-
 function setStatus(text, isError = false) {
   importStatus.textContent = text;
   importStatus.className = "import-status" + (isError ? " error" : "");
 }
 
 function setProgress(current, total) {
-  importProgress.textContent = getImportProgressLabel(current, total);
+  importProgress.textContent = total > 0 ? `Importing ${current}/${total}…` : "";
   importProgress.style.visibility = total > 0 ? "visible" : "hidden";
 }
 
@@ -64,27 +77,36 @@ cancelBtn?.addEventListener("click", () => {
   if (importAbortController) {
     importAbortController.abort();
   }
-  setStatus("Stopping import...");
+  setStatus("Stopping import after the current slide… already-imported slides are kept.");
 });
 
-function normalizeImportResult(result, fallbackCount, fallbackTitle) {
-  const count =
-    toFiniteNumber(result?.imported_count) ??
-    toFiniteNumber(result?.slide_count) ??
-    toFiniteNumber(result?.count) ??
-    fallbackCount;
-  const title =
-    typeof result?.collection_title === "string" && result.collection_title.trim()
-      ? result.collection_title.trim()
-      : typeof result?.title === "string" && result.title.trim()
-        ? result.title.trim()
-        : fallbackTitle;
-  return { count, title };
+function buildSummary(imported, total, failed) {
+  let summary = `Imported ${imported} of ${total}`;
+  if (failed > 0) {
+    summary += ` — ${failed} couldn't be read`;
+  }
+  return summary;
 }
 
-async function importPaths(paths, sourceType) {
-  const filePaths = filterValidPaths(paths);
-  if (!filePaths.length) return;
+// Upload one item. Drag-dropped File objects upload directly from the renderer;
+// picked file paths are read and uploaded by the Electron main process. Both go
+// through the same authenticated endpoint and produce identical results.
+async function uploadOne(item, collectionId, signal) {
+  if (item.kind === "file") {
+    return importSlidesApi.uploadSlideFile(item.file, collectionId, false, signal);
+  }
+  const result = await window.electronAPI.uploadSlideFile({
+    filePath: item.path,
+    collectionId,
+  });
+  if (!result || result.ok !== true) {
+    throw new Error((result && result.error) || "Upload failed");
+  }
+  return result;
+}
+
+async function runImport(items, sourceType) {
+  if (!items.length) return;
   if (importInProgress) {
     setStatus("Import already running. Wait for completion or cancel first.", true);
     return;
@@ -93,44 +115,90 @@ async function importPaths(paths, sourceType) {
   importCancelled = false;
   importAbortController = new AbortController();
   setImporting(true);
+
+  const total = items.length;
   const collectionTitle = getCollectionTitle();
-  setProgress(filePaths.length, filePaths.length);
+  let collection = null;
+  let imported = 0;
+  let failed = 0;
+
   try {
-    const result = await importSlidesApi.importCollection(
-      filePaths,
-      collectionTitle,
-      sourceType,
-      importAbortController.signal
-    );
-    const normalized = normalizeImportResult(result, filePaths.length, collectionTitle);
-    const titleLabel = normalized.title ? ` into "${normalized.title}"` : "";
-    setStatus(`Imported ${normalized.count} slide(s)${titleLabel} successfully.`);
-    if (typeof window.appToast === "function" && normalized.count > 0) {
-      window.appToast(`Imported ${normalized.count} slide(s)${titleLabel}.`, "success", 3000);
+    collection = await importSlidesApi.createImportCollection(collectionTitle, sourceType);
+
+    for (let i = 0; i < total; i++) {
+      if (importCancelled) break;
+      setProgress(i + 1, total);
+      try {
+        await uploadOne(items[i], collection.id, importAbortController.signal);
+        imported += 1;
+      } catch (err) {
+        if (importCancelled || err?.name === "AbortError") {
+          break;
+        }
+        failed += 1;
+      }
+    }
+
+    // Never leave an empty collection behind when nothing imported.
+    if (imported === 0 && collection) {
+      try {
+        await importSlidesApi.deleteImportCollection(collection.id);
+      } catch (_) {
+        /* best-effort cleanup */
+      }
+    }
+
+    const titleLabel = collectionTitle ? ` into "${collectionTitle}"` : "";
+    if (importCancelled) {
+      const msg =
+        `Import canceled. ${buildSummary(imported, total, failed)}${titleLabel}. ` +
+        "Already-imported slides were kept.";
+      setStatus(msg);
+      if (typeof window.appToast === "function") window.appToast(msg, "info", 5000);
+    } else {
+      const msg = `${buildSummary(imported, total, failed)}${titleLabel}.`;
+      setStatus(msg, imported === 0 && total > 0);
+      if (typeof window.appToast === "function" && imported > 0) {
+        window.appToast(msg, "success", 3000);
+      }
     }
   } catch (err) {
-    if (importCancelled || err?.name === "AbortError") {
-      const cancelMessage =
-        "Import request canceled. Slides already processed by the server may still appear in the gallery.";
-      setStatus(cancelMessage, true);
-      if (typeof window.appToast === "function") {
-        window.appToast(cancelMessage, "info", 5000);
-      }
-    } else {
-      const message = (err && err.message ? err.message : "Import failed").trim();
-      setStatus(message, true);
-      if (typeof window.appToast === "function") {
-        window.appToast(message, "error", 5000);
-      }
-    }
+    const message = (err && err.message ? err.message : "Import failed").trim();
+    setStatus(message, true);
+    if (typeof window.appToast === "function") window.appToast(message, "error", 5000);
   } finally {
     importInProgress = false;
     setProgress(0, 0);
     setImporting(false);
     importAbortController = null;
   }
+
   const refreshGallery = importApp?.features?.gallery?.refresh || window.galleryRefresh;
   if (typeof refreshGallery === "function") refreshGallery();
+}
+
+function importFiles(files, sourceType) {
+  const valid = filterValidFiles(files);
+  if (!valid.length) {
+    setStatus("No valid files (SVS, TIF, TIFF, PNG) selected.", true);
+    return;
+  }
+  runImport(
+    valid.map((file) => ({ kind: "file", file })),
+    sourceType
+  );
+}
+
+function importPaths(paths, sourceType) {
+  const valid = filterValidPaths(paths);
+  if (!valid.length) {
+    setStatus("No valid files (SVS, TIF, TIFF, PNG) selected.", true);
+    return;
+  }
+  runImport(
+    valid.map((path) => ({ kind: "path", path })),
+    sourceType
+  );
 }
 
 function initImport() {
@@ -146,18 +214,15 @@ function initImport() {
     dropZone.classList.remove("drag-over");
   });
 
-  dropZone.addEventListener("drop", async (e) => {
+  dropZone.addEventListener("drop", (e) => {
     e.preventDefault();
     e.stopPropagation();
     dropZone.classList.remove("drag-over");
-    const rawPaths = window.electronAPI.getPathsForFiles(
-      Array.from(e.dataTransfer.files || [])
-    );
-    const validPaths = rawPaths.length
-      ? await window.electronAPI.getDroppedFilePaths(rawPaths)
-      : [];
-    if (validPaths.length) {
-      importPaths(validPaths, "files");
+    // Drag-dropped File objects are uploaded directly by the renderer.
+    const files = Array.from(e.dataTransfer.files || []);
+    const valid = filterValidFiles(files);
+    if (valid.length) {
+      importFiles(valid, "files");
     } else {
       setStatus("No valid files (SVS, TIF, TIFF, PNG) dropped.", true);
     }
@@ -165,9 +230,7 @@ function initImport() {
 
   dropZone.addEventListener("click", async () => {
     const paths = await window.electronAPI.selectFiles();
-    if (paths.length) {
-      importPaths(paths, "files");
-    }
+    if (paths.length) importPaths(paths, "files");
   });
 
   filesBtn.addEventListener("click", async () => {
@@ -198,5 +261,6 @@ if (document.readyState === "loading") {
 if (importApp?.registerFeature) {
   importApp.registerFeature("import", {
     importPaths,
+    importFiles,
   });
 }
