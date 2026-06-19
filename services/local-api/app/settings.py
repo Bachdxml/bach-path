@@ -28,7 +28,7 @@ class Settings(BaseModel):
     remote_storage_url: str | None = None
     import_allowed_roots: tuple[Path, ...] = ()
     max_batch_inference_items: int = 64
-    max_inference_output_bytes: int = 5_000_000
+    max_inference_output_bytes: int = 10_000_000
     inference_tile_batch_size: int = 4
     inference_device: str = "auto"
     inference_level: int | None = None
@@ -206,7 +206,7 @@ def load_settings() -> Settings:
     )
     max_inference_output_bytes = _parse_positive_int(
         os.environ.get("APP_MAX_INFERENCE_OUTPUT_BYTES"),
-        default=50_000_000,
+        default=10_000_000,
     )
     inference_tile_batch_size = _parse_positive_int(
         os.environ.get("APP_INFERENCE_TILE_BATCH_SIZE"),

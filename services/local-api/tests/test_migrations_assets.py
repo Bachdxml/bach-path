@@ -32,7 +32,7 @@ def test_migrations_create_fresh_schema_and_version(tmp_path: Path) -> None:
             "slides",
             "users",
         }.issubset(tables)
-        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "20260526_0001"
+        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "20260617_0002"
 
 
 def test_migrations_adopt_existing_metadata_schema(tmp_path: Path) -> None:

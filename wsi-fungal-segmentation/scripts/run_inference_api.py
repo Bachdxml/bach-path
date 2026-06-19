@@ -258,6 +258,100 @@ def _encode_binary_mask_bitpack(mask: np.ndarray) -> str:
     return base64.b64encode(packed.tobytes()).decode("ascii")
 
 
+def _decode_binary_mask_bitpack(data: str, width: int, height: int) -> np.ndarray:
+    """Inverse of _encode_binary_mask_bitpack: row-major packed bits -> bool [H, W]."""
+    raw = np.frombuffer(base64.b64decode(data.encode("ascii")), dtype=np.uint8)
+    bits = np.unpackbits(raw, bitorder="big")
+    total = max(0, int(width)) * max(0, int(height))
+    if bits.size < total:
+        bits = np.concatenate([bits, np.zeros(total - bits.size, dtype=np.uint8)])
+    return bits[:total].reshape(int(height), int(width)).astype(bool)
+
+
+def _downsample_mask_array(mask: np.ndarray, factor: int) -> np.ndarray:
+    """Coarsen a boolean mask by an integer factor using max (any) pooling.
+
+    Maximizes retained detail: a coarse cell is positive if any covered native
+    pixel was positive. Output dimensions never drop below 1x1.
+    """
+    if factor <= 1:
+        return mask
+    h, w = mask.shape
+    new_h = max(1, (h + factor - 1) // factor)
+    new_w = max(1, (w + factor - 1) // factor)
+    pad_h = new_h * factor - h
+    pad_w = new_w * factor - w
+    if pad_h or pad_w:
+        mask = np.pad(mask, ((0, pad_h), (0, pad_w)), constant_values=False)
+    return mask.reshape(new_h, factor, new_w, factor).any(axis=(1, 3))
+
+
+def _estimate_output_bytes(output: dict) -> int:
+    """Serialized size of the output JSON, matching how it is written to disk."""
+    return len(json.dumps(output, separators=(",", ":")).encode("utf-8"))
+
+
+def _iter_mask_regions(regions):
+    for region in regions:
+        mask = region.get("prediction_mask")
+        if isinstance(mask, dict) and mask.get("encoding") == "bitpack":
+            yield region, mask
+
+
+def _apply_mask_degradation(output: dict, budget: int | None) -> tuple[str, int | None]:
+    """Coarsen per-tile masks so the serialized output fits ``budget`` bytes.
+
+    Follows the degradation ladder (full -> adaptive downsample -> drop),
+    stopping at the first step whose estimated output fits the budget. Detection
+    box geometry and scores are never altered or dropped. Records the chosen step
+    in ``output["mask_degradation"]`` and returns ``(status, factor)``.
+    """
+    regions = output.get("regions", [])
+    output["mask_degradation"] = {"status": "full", "factor": 1}
+    if not budget or budget <= 0:
+        return "full", 1
+    if _estimate_output_bytes(output) <= budget:
+        return "full", 1
+
+    mask_regions = list(_iter_mask_regions(regions))
+    if not mask_regions:
+        # Nothing left to coarsen (box-only already); the API safety net and the
+        # region-count bound govern this residual case.
+        return "full", 1
+
+    # Snapshot native-resolution masks so each factor recomputes from source,
+    # maximizing detail rather than compounding lossy passes.
+    originals = [
+        (region, _decode_binary_mask_bitpack(mask["data"], int(mask["width"]), int(mask["height"])))
+        for region, mask in mask_regions
+    ]
+    max_dim = max(max(int(m["width"]), int(m["height"])) for _, m in mask_regions)
+
+    # Progressively halve resolution (factor 2, 4, 8, ...) until it fits.
+    factor = 2
+    while True:
+        for region, decoded in originals:
+            reduced = _downsample_mask_array(decoded, factor)
+            new_h, new_w = reduced.shape
+            mask = region["prediction_mask"]
+            mask["width"] = int(new_w)
+            mask["height"] = int(new_h)
+            mask["data"] = _encode_binary_mask_bitpack(reduced)
+        output["mask_degradation"] = {"status": "downsampled", "factor": factor}
+        if _estimate_output_bytes(output) <= budget:
+            return "downsampled", factor
+        if factor >= max_dim:
+            # Masks are already 1x1 everywhere; no finer step remains.
+            break
+        factor *= 2
+
+    # Last resort: drop all mask payloads, keep every detection box/score.
+    for region, _ in originals:
+        region.pop("prediction_mask", None)
+    output["mask_degradation"] = {"status": "dropped", "factor": None}
+    return "dropped", None
+
+
 def _prediction_tile_region_from_prob_map(
     prob_map: np.ndarray,
     *,
@@ -460,6 +554,12 @@ def main():
     parser.add_argument("--positive-only", action="store_true", help="Only output fungus_positive regions")
     parser.add_argument("--model-name", default="ResidualAttentionUNet")
     parser.add_argument("--model-version", default="1.0")
+    parser.add_argument(
+        "--max-output-bytes",
+        type=int,
+        default=None,
+        help="Coarsen per-tile masks so the written JSON stays within this byte budget",
+    )
     args = parser.parse_args()
 
     slide_path = Path(args.slide_path)
@@ -732,6 +832,10 @@ def main():
         },
         "regions": regions,
     }
+
+    # Coarsen masks at the source so the file written to disk already fits the
+    # budget handed down from the API worker (90% of the API hard limit).
+    _apply_mask_degradation(output, args.max_output_bytes)
 
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)

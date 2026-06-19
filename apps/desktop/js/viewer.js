@@ -8,6 +8,7 @@ const viewerBack = document.getElementById("viewer-back");
 const viewerEmpty = document.getElementById("viewer-empty");
 const runInferenceBtn = document.getElementById("viewer-run-inference");
 const inferenceStatus = document.getElementById("viewer-inference-status");
+const maskDegradationNotice = document.getElementById("viewer-mask-notice");
 const btnViewerFitSlide = document.getElementById("viewer-fit-slide");
 const viewerShowNegative = document.getElementById("viewer-show-negative");
 const viewerInferenceThreshold = document.getElementById("viewer-inference-threshold");
@@ -155,6 +156,7 @@ function closeViewer() {
   showMetadataPanel(false);
   runInferenceBtn.disabled = false;
   setInferenceStatus("");
+  updateMaskDegradationNotice(null);
   renderTileReviewPanel([]);
   updateReviewStatusDisplay();
   if (viewerOverlay) viewerOverlay.hidden = true;
@@ -162,6 +164,34 @@ function closeViewer() {
 
 function setInferenceStatus(text) {
   if (inferenceStatus) inferenceStatus.textContent = text;
+}
+
+// Pure mapping from a run's mask degradation status to notice text. Returns ""
+// when no notice should be shown. `full` and legacy runs lacking the field map
+// to "" (no notice). Kept pure so it can be unit-tested without a DOM.
+function maskDegradationNoticeText(status, factor) {
+  if (status === "downsampled") {
+    const detail = Number.isFinite(factor) && factor > 1 ? ` (~${factor}× coarser)` : "";
+    return `Reduced-fidelity masks: overlay downsampled to fit size limits${detail}.`;
+  }
+  if (status === "dropped") {
+    return "Masks not shown: detection boxes only (overlay omitted to fit size limits).";
+  }
+  return "";
+}
+
+// Show a pathologist-facing notice when the run's masks were reduced-fidelity.
+function updateMaskDegradationNotice(run) {
+  if (!maskDegradationNotice) return;
+  const status = run?.mask_degradation_status || "full";
+  const message = maskDegradationNoticeText(status, run?.mask_downsample_factor);
+  if (message) {
+    maskDegradationNotice.textContent = message;
+    maskDegradationNotice.hidden = false;
+  } else {
+    maskDegradationNotice.textContent = "";
+    maskDegradationNotice.hidden = true;
+  }
 }
 
 function formatInferenceResultLabel(result) {
@@ -1038,9 +1068,11 @@ async function loadLatestInferenceRun(slideId, requestId = null) {
       lastRegions = [];
       clearOverlays();
       renderTileReviewPanel([]);
+      updateMaskDegradationNotice(null);
       return;
     }
     currentRunId = latestSucceeded.id;
+    updateMaskDegradationNotice(latestSucceeded);
     await loadRegionsForRun(currentRunId, slideId, seq);
   } catch (_) {
     if (seq !== viewerRequestSeq || currentSlideId !== slideId) {
@@ -1050,6 +1082,7 @@ async function loadLatestInferenceRun(slideId, requestId = null) {
     lastRegions = [];
     clearOverlays();
     renderTileReviewPanel([]);
+    updateMaskDegradationNotice(null);
   }
 }
 
@@ -1172,6 +1205,7 @@ async function showViewer(slideId) {
   viewerContainer.style.display = "block";
   clearOverlays();
   setInferenceStatus("");
+  updateMaskDegradationNotice(null);
   renderTileReviewPanel([]);
   if (viewerScaleWrap) viewerScaleWrap.hidden = true;
 

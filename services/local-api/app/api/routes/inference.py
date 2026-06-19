@@ -318,6 +318,29 @@ def _parse_inference_region(raw_region: object) -> dict:
     }
 
 
+_MASK_DEGRADATION_STATES = {"full", "downsampled", "dropped"}
+
+
+def _parse_mask_degradation(raw: object) -> tuple[str, int | None]:
+    """Read the subprocess-written mask degradation metadata defensively.
+
+    Absent/unrecognized metadata is treated as ``full`` (no degradation), which
+    also preserves backward compatibility with outputs produced before this
+    feature existed. The downsample factor is kept only for ``downsampled`` runs.
+    """
+    if not isinstance(raw, dict):
+        return "full", None
+    status = raw.get("status")
+    if status not in _MASK_DEGRADATION_STATES:
+        return "full", None
+    if status != "downsampled":
+        return status, None
+    factor = raw.get("factor")
+    if isinstance(factor, bool) or not isinstance(factor, int) or factor <= 1:
+        return "downsampled", None
+    return "downsampled", factor
+
+
 def _record_inference_run_transition(
     db: Session,
     run: InferenceRun,
@@ -421,6 +444,11 @@ def _process_inference_job(
             "--level",
             "auto" if settings.inference_level is None else str(settings.inference_level),
         ])
+        # Coarsen masks at the source against a budget strictly below the API's
+        # hard limit (90% margin) so estimation/encoding overhead cannot push the
+        # written file past settings.max_inference_output_bytes (see spec #4, #5).
+        mask_output_budget = max(1, int(settings.max_inference_output_bytes * 0.9))
+        cmd.extend(["--max-output-bytes", str(mask_output_budget)])
         if threshold is not None:
             cmd.extend(["--threshold", str(float(threshold))])
 
@@ -520,6 +548,9 @@ def _process_inference_job(
             for r in parsed_regions
         )
 
+        degradation_status, downsample_factor = _parse_mask_degradation(data.get("mask_degradation"))
+        run.mask_degradation_status = degradation_status
+        run.mask_downsample_factor = downsample_factor
         run.output_json_path = str(output_path)
         _record_inference_run_transition(db, run, InferenceStatus.succeeded)
         db.commit()
@@ -895,6 +926,8 @@ def _run_to_response(
         created_at=run.created_at,
         summary=summary,
         error_message=_public_error_message(run.error_message),
+        mask_degradation_status=run.mask_degradation_status or "full",
+        mask_downsample_factor=run.mask_downsample_factor,
     )
 
 

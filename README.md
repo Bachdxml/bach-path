@@ -26,6 +26,25 @@ Optional but recommended:
 
 - `libvips` for faster Deep Zoom pre-caching (macOS: `brew install vips`)
 - OpenSlide runtime dependencies (if not already available in your environment)
+- An NVIDIA GPU with CUDA for inference. Inference auto-selects CUDA when a
+  GPU-enabled PyTorch is installed; on a CPU-only torch build it falls back to
+  CPU and whole-slide runs can be very slow (minutes-to-hours). The
+  `wsi-fungal-segmentation/requirements.txt` pins CUDA (cu124) wheels by default.
+  If `pip` installs a `+cpu` torch build, force the CUDA wheels into the
+  inference venv:
+
+  ```powershell
+  wsi-fungal-segmentation\.venv\Scripts\python.exe -m pip install --force-reinstall `
+    torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
+  # then restore the pinned Pillow that --force-reinstall may bump:
+  wsi-fungal-segmentation\.venv\Scripts\python.exe -m pip install "Pillow==10.4.0"
+  ```
+
+  Verify with:
+
+  ```powershell
+  wsi-fungal-segmentation\.venv\Scripts\python.exe -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+  ```
 
 ## 1) Set Up Desktop App
 
@@ -128,6 +147,29 @@ Notes:
 - Override dataset location with `--export-root /path/to/dataset`.
 - Inference model discovery uses deployed gzip checkpoints in `wsi-fungal-segmentation/models`.
 - Supported deploy formats for app/API model selection: `.pth.gz`, `.pt.gz`.
+
+### Mask output size and adaptive coarsening
+
+Inference output size is dominated by per-tile segmentation masks, so dense
+slides used to fail with `Inference output exceeded server limits`. The pipeline
+now coarsens masks at the source to stay within a size budget instead of failing:
+
+- **Degradation ladder.** The inference subprocess walks a fixed ladder and stops
+  at the first step that fits the budget: (1) **full** native-resolution masks;
+  (2) **downsampled** — masks are progressively halved (factor 2, 4, 8, …) to the
+  highest resolution that fits; (3) **dropped** — as a last resort no masks are
+  emitted, but every detection box and score is kept. Detection geometry is never
+  dropped for size.
+- **Degradation status.** Each run records a `mask_degradation_status` of `full`,
+  `downsampled` (with a `mask_downsample_factor`), or `dropped`, exposed on the run
+  via the API. The viewer shows a reduced-fidelity notice for `downsampled` and
+  `dropped` runs; `full` (and legacy runs without the field) show no notice.
+- **`APP_MAX_INFERENCE_OUTPUT_BYTES`** (default **10,000,000** = 10 MB, overridable
+  via the environment variable) now tunes **how much mask detail is retained
+  before coarsening begins, not whether a run succeeds**. The subprocess targets a
+  budget of ~90% of this limit as a safety margin; the API keeps the hard-limit
+  file-size gate as a safety net. Raising it retains more detail at the cost of
+  in-browser mask decode/render time; the 10 MB default balances the two.
 
 ## 5) Run the App (Development)
 
