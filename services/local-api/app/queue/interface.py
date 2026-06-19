@@ -2,21 +2,27 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
-from enum import StrEnum
+from datetime import datetime, timezone
+from enum import Enum
 from typing import Any
 
 
-class JobStatus(StrEnum):
+# str-mixin Enum rather than enum.StrEnum so the image's Python 3.10 runtime
+# works (StrEnum/datetime.UTC are 3.11+). The __str__ override reproduces
+# StrEnum's behaviour where str(member) is the bare value, not "JobStatus.x".
+class JobStatus(str, Enum):
     queued = "queued"
     running = "running"
     succeeded = "succeeded"
     failed = "failed"
     canceled = "canceled"
 
+    def __str__(self) -> str:
+        return str(self.value)
+
 
 def _utc_now() -> datetime:
-    return datetime.now(UTC)
+    return datetime.now(timezone.utc)
 
 
 @dataclass(slots=True, frozen=True)

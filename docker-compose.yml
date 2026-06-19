@@ -1,0 +1,46 @@
+# Run the Bach Path backend headless, without the Electron app (M16).
+#
+#   APP_API_KEY=<a-strong-secret> docker compose up
+#
+# then reach the API at http://127.0.0.1:8765/health. Volumes use ./docker-data
+# on the host; point app-data at a prior native install's api-data to keep
+# existing slides/runs/database (M6).
+services:
+  backend:
+    # Pinned, tested tag — never :latest (spec "pinning over floating").
+    image: bachpath/bach-path-api:0.1.0
+    # Build locally instead of pulling with: docker compose build
+    build:
+      context: .
+      dockerfile: services/local-api/Dockerfile
+    container_name: bach-path-backend
+    # Loopback-only publish: not reachable on a non-loopback host IP (M9/DoD #14).
+    ports:
+      - "127.0.0.1:8765:8765"
+    environment:
+      # API key injected at runtime; never baked into the image (M11/DoD #13).
+      APP_API_KEY: "${APP_API_KEY:?Set APP_API_KEY to a strong secret before starting}"
+      APP_ALLOW_QUERY_API_KEY: "true"
+      APP_CORS_ALLOW_FILE_ORIGIN: "true"
+      # auto -> CUDA when the GPU is visible, else CPU with a clear log line (M10).
+      APP_INFERENCE_DEVICE: "auto"
+    volumes:
+      # Persistent app data: slides, app.db, inference_runs, training_runs,
+      # tiles_cache (M6).
+      - ./docker-data/app-data:/data
+      - ./docker-data/app-logs:/logs
+      # Read-only slides inbox; APP_IMPORT_ALLOWED_ROOTS=/import is baked in (M7).
+      - ./docker-data/import:/import:ro
+      # Optional models override: drop a .pth.gz/.pt.gz here to override the
+      # baked-in deploy model without rebuilding (M8). Uncomment to use.
+      # - ./docker-data/models:/app/wsi-fungal-segmentation/models
+    # GPU access (M10). NVIDIA only; comment this block out on a CPU-only host
+    # (inference then runs on CPU — slower, but still works).
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped

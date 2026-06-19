@@ -468,6 +468,14 @@ def _process_inference_job(
             _inference_queue.fail(job.id, "inference_failed")
             return
 
+        # Surface which compute device the inference subprocess selected so it is
+        # visible in the API log on successful runs too (M10 / DoD #6); the
+        # subprocess only prints this to stderr, which is otherwise dropped here.
+        for line in (result.stderr or "").splitlines():
+            if "[inference]" in line and "compute device" in line:
+                logger.info("Inference run %s: %s", run_id, line.strip())
+                break
+
         if not output_path.exists():
             run.error_code = "missing_output"
             run.error_message = "Inference did not produce output."

@@ -1,7 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog } = require("electron");
 const path = require("path");
 const fs = require("fs");
-const { spawn } = require("child_process");
+const { spawnSync } = require("child_process");
 const http = require("http");
 const crypto = require("crypto");
 const { fileURLToPath } = require("url");
@@ -9,6 +9,13 @@ const net = require("net");
 
 const APP_DISPLAY_NAME = "Bach Path";
 const DEFAULT_PORT = 8765;
+
+// Backend runs as a Docker container instead of a native Python subprocess.
+// Pin a specific, tested tag — never :latest — so app and backend ship as a
+// known-good pair (M13, "pinning over floating").
+const BACKEND_IMAGE = "bachpath/bach-path-api:0.1.0";
+const BACKEND_CONTAINER_NAME = "bach-path-backend";
+const BACKEND_CONTAINER_PORT = 8765;
 const WSI_EXTENSIONS = new Set([".svs", ".tif", ".tiff", ".png"]);
 const GENERATED_TILE_DIR_NAMES = new Set(["mastertile", "tiles", "patches"]);
 const GENERATED_TILE_CLASS_NAMES = new Set(["high", "medium", "low", "negative", "unclassified", "images", "masks"]);
@@ -16,9 +23,18 @@ const TILE_FILENAME_RE = /(?:^|[_-])tile[_-]?x?\d+[_-]y?\d+(?:[_-]|$)/i;
 const MAX_DROPPED_PATHS = 2048;
 const MAX_FILENAME_LENGTH = 255;
 
-let apiProcess = null;
 let mainWindow = null;
 let apiReadyState = { port: DEFAULT_PORT, host: "127.0.0.1" };
+
+// Raised by startApi() when Docker is missing/not running or the image cannot
+// be obtained, so app startup can surface an actionable message (M14).
+class BackendUnavailableError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "BackendUnavailableError";
+    this.userMessage = message;
+  }
+}
 
 app.setName(APP_DISPLAY_NAME);
 
@@ -259,48 +275,88 @@ function getApiLogDir() {
   return path.join(app.getPath("userData"), "api-logs");
 }
 
-function getApiBaseDir() {
-  if (app.isPackaged) {
-    const bundled = path.join(process.resourcesPath, "local-api");
-    if (fs.existsSync(bundled)) return bundled;
+// Read-only slides inbox bind-mounted into the container at /import (M7).
+function getApiImportDir() {
+  return path.join(app.getPath("userData"), "import-inbox");
+}
+
+// Optional host models folder; when it holds a valid deploy weight it is mounted
+// over the baked-in model path (M8).
+function getApiModelsDir() {
+  return path.join(app.getPath("userData"), "models");
+}
+
+function hasValidDeployWeight(dir) {
+  try {
+    return fs.readdirSync(dir).some((name) => /\.(pth|pt)\.gz$/i.test(name));
+  } catch {
+    return false;
   }
-  return path.join(__dirname, "..", "..", "services", "local-api");
 }
 
-function getProjectRoot() {
-  if (app.isPackaged) {
-    return process.resourcesPath;
+// Collapse subprocess output to a short single line for user-facing messages.
+function oneLine(text) {
+  if (!text) return "";
+  return String(text).replace(/\s+/g, " ").trim().slice(0, 500);
+}
+
+function runDocker(args, { timeout = 120000 } = {}) {
+  return spawnSync("docker", args, {
+    encoding: "utf-8",
+    timeout,
+    windowsHide: true,
+  });
+}
+
+// True only when the Docker CLI exists AND the daemon answers (M14).
+function dockerAvailable() {
+  const result = runDocker(["info", "--format", "{{.ServerVersion}}"], { timeout: 15000 });
+  return !result.error && result.status === 0;
+}
+
+// Ensure the pinned image is present locally, pulling it once if needed (M13).
+function ensureBackendImage() {
+  const inspect = runDocker(["image", "inspect", BACKEND_IMAGE], { timeout: 30000 });
+  if (!inspect.error && inspect.status === 0) return;
+  const pull = runDocker(["pull", BACKEND_IMAGE], { timeout: 600000 });
+  if (pull.error || pull.status !== 0) {
+    throw new BackendUnavailableError(
+      `Could not pull the backend image ${BACKEND_IMAGE}. ` +
+        `Check your internet connection and Docker Hub access. ${oneLine(pull.stderr)}`
+    );
   }
-  return path.join(__dirname, "..", "..");
 }
 
-function getApiAppDir() {
-  return path.join(getApiBaseDir(), "app");
+// Remove any stale/previous backend container so a fixed name/port can be
+// reused without a conflict (M15).
+function removeExistingContainer() {
+  runDocker(["rm", "-f", BACKEND_CONTAINER_NAME], { timeout: 30000 });
 }
 
-function getPythonPath() {
-  const base = getApiBaseDir();
-  const venvPython = path.join(base, ".venv", "bin", "python3");
-  const venvPythonAlt = path.join(base, ".venv", "bin", "python");
-  const venvPythonWin = path.join(base, ".venv", "Scripts", "python.exe");
-  if (fs.existsSync(venvPython)) return venvPython;
-  if (fs.existsSync(venvPythonAlt)) return venvPythonAlt;
-  if (fs.existsSync(venvPythonWin)) return venvPythonWin;
-  if (app.isPackaged) return null;
-  return "python";
-}
-
-function getInferencePythonPath(apiPythonPath) {
-  const wsiBase = path.join(getProjectRoot(), "wsi-fungal-segmentation", ".venv");
-  const candidates = [
-    path.join(wsiBase, "bin", "python3"),
-    path.join(wsiBase, "bin", "python"),
-    path.join(wsiBase, "Scripts", "python.exe"),
-  ];
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) return candidate;
+function buildDockerRunArgs({ withGpu, port, host, apiKey, dataDir, logDir, importDir, modelsDir }) {
+  const publishHost = host === "::1" ? "[::1]" : host;
+  const args = ["run", "-d", "--name", BACKEND_CONTAINER_NAME];
+  if (withGpu) args.push("--gpus", "all");
+  args.push(
+    // Publish on loopback only (M9/DoD #14).
+    "-p", `${publishHost}:${port}:${BACKEND_CONTAINER_PORT}`,
+    // API key injected at runtime; never baked into the image (M11).
+    "-e", `APP_API_KEY=${apiKey}`,
+    "-e", "APP_ALLOW_QUERY_API_KEY=true",
+    "-e", "APP_CORS_ALLOW_FILE_ORIGIN=true",
+    "-e", "APP_INFERENCE_DEVICE=auto",
+    // Persistent app-data + logs from the existing host paths (M6).
+    "-v", `${dataDir}:/data`,
+    "-v", `${logDir}:/logs`,
+    // Read-only slides inbox (M7).
+    "-v", `${importDir}:/import:ro`
+  );
+  // Optional models override mount (M8).
+  if (modelsDir) {
+    args.push("-v", `${modelsDir}:/app/wsi-fungal-segmentation/models`);
   }
-  return apiPythonPath;
+  args.push(BACKEND_IMAGE);
+  return args;
 }
 
 function waitForHealth(port, host = "127.0.0.1", maxAttempts = 30) {
@@ -348,79 +404,55 @@ function startApi() {
   const host = normalizeApiHost(config.apiHost);
   const apiKey = normalizeApiKey(config.apiKey) || crypto.randomBytes(32).toString("hex");
 
-  const dataDir = getApiDataDir();
-  const logDir = getApiLogDir();
-  fs.mkdirSync(dataDir, { recursive: true });
-  fs.mkdirSync(logDir, { recursive: true });
-
-  const apiAppDir = getApiAppDir();
-  if (!fs.existsSync(apiAppDir)) {
-    console.error("API app module not found:", apiAppDir);
-    return Promise.reject(new Error("API module not found"));
-  }
-
-  const pythonPath = getPythonPath();
-  if (!pythonPath) {
+  // Docker must be installed and the daemon running (M14).
+  if (!dockerAvailable()) {
     return Promise.reject(
-      new Error("Bundled Python runtime not found. Reinstall the desktop app package.")
+      new BackendUnavailableError(
+        "Docker Desktop is required and must be running to start the Bach Path backend. " +
+          "Start Docker Desktop and relaunch Bach Path."
+      )
     );
   }
-  // Homebrew OpenSlide: /opt/homebrew/opt/openslide/lib (Apple Silicon) or /usr/local/opt/openslide/lib (Intel)
-  const homebrewLibPaths = [
-    "/opt/homebrew/opt/openslide/lib",
-    "/usr/local/opt/openslide/lib",
-    "/opt/homebrew/lib",
-    "/usr/local/lib",
-  ].filter((p) => fs.existsSync(p));
-  const dyldPath = [...homebrewLibPaths, process.env.DYLD_LIBRARY_PATH].filter(Boolean).join(path.delimiter);
-  const spawnEnv = { ...process.env };
-  if (dyldPath) spawnEnv.DYLD_LIBRARY_PATH = dyldPath;
-  spawnEnv.APP_API_KEY = apiKey;
-  // Browser-rendered <img> tile/thumbnail requests cannot include custom headers,
-  // so allow query API keys only for this local desktop-launched API process.
-  spawnEnv.APP_ALLOW_QUERY_API_KEY = "true";
-  if (!spawnEnv.INFERENCE_PYTHON) {
-      const inferenceVenv = path.join(getApiBaseDir(), "..", "..", "wsi-fungal-segmentation", ".venv", "Scripts", "python.exe");
-      spawnEnv.INFERENCE_PYTHON = fs.existsSync(inferenceVenv) ? inferenceVenv : pythonPath;
+
+  const dataDir = getApiDataDir();
+  const logDir = getApiLogDir();
+  const importDir = getApiImportDir();
+  const modelsDir = getApiModelsDir();
+  for (const dir of [dataDir, logDir, importDir]) {
+    fs.mkdirSync(dir, { recursive: true });
   }
-  // Desktop renderer runs from file:// (Origin: null), so enable this explicitly for desktop launches.
-  spawnEnv.APP_CORS_ALLOW_FILE_ORIGIN = "true";
-  // Keep imports stable across execution contexts (dev vs packaged runtime).
-  const pythonPathEntries = [
-    path.join(getApiBaseDir(), "..", "..", "wsi-fungal-segmentation"),
-    getApiBaseDir(),
-    process.env.PYTHONPATH,
-  ].filter(Boolean);
-  spawnEnv.PYTHONPATH = pythonPathEntries.join(path.delimiter);
+  // Only mount the host models folder when it actually holds a deploy weight,
+  // otherwise the empty mount would hide the baked-in model (M8 edge cases).
+  const modelsMount = hasValidDeployWeight(modelsDir) ? modelsDir : null;
 
-  apiProcess = spawn(
-    pythonPath,
-    [
-      "-m",
-      "app.cli",
-      "--host",
-      String(host),
-      "--port",
-      String(port),
-      "--data-dir",
-      dataDir,
-      "--log-dir",
-      logDir,
-    ],
-    {
-      cwd: getApiBaseDir(),
-      stdio: "pipe",
-      env: spawnEnv,
-    }
-  );
+  try {
+    ensureBackendImage();
+  } catch (err) {
+    return Promise.reject(err);
+  }
 
-  apiProcess.on("error", (err) => {
-    console.error("API process error:", err);
-  });
+  // Replace any stale container with the same fixed name (M15).
+  removeExistingContainer();
 
-  apiProcess.stderr?.on("data", (data) => {
-    console.error("API stderr:", data.toString());
-  });
+  const baseOpts = { port, host, apiKey, dataDir, logDir, importDir, modelsDir: modelsMount };
+  let run = runDocker(buildDockerRunArgs({ ...baseOpts, withGpu: true }));
+  if (run.error || run.status !== 0) {
+    // No NVIDIA GPU / toolkit missing: retry on CPU so the app still works (M10).
+    console.warn(
+      "docker run with --gpus all failed; retrying on CPU:",
+      oneLine(run.stderr) || oneLine(run.error && run.error.message)
+    );
+    removeExistingContainer();
+    run = runDocker(buildDockerRunArgs({ ...baseOpts, withGpu: false }));
+  }
+  if (run.error || run.status !== 0) {
+    return Promise.reject(
+      new BackendUnavailableError(
+        "Failed to start the Bach Path backend container. " +
+          (oneLine(run.stderr) || oneLine(run.error && run.error.message) || "")
+      )
+    );
+  }
 
   return waitForHealth(port, host)
     .then(() => buildApiReadyState({ ...config, apiPort: port, apiHost: host, apiKey }))
@@ -431,9 +463,11 @@ function startApi() {
 }
 
 function stopApi() {
-  if (apiProcess) {
-    apiProcess.kill();
-    apiProcess = null;
+  // Best-effort stop + remove; never throw from lifecycle hooks (M12).
+  try {
+    runDocker(["rm", "-f", BACKEND_CONTAINER_NAME], { timeout: 30000 });
+  } catch (err) {
+    console.error("Failed to stop backend container:", err);
   }
 }
 
@@ -502,6 +536,19 @@ app.whenReady().then(async () => {
     apiReadyState = await startApi();
   } catch (err) {
     console.error("Failed to start API:", err);
+    // Surface a clear, actionable error instead of failing silently; the app
+    // still opens rather than crashing (M14/DoD #10).
+    const message = (err && err.userMessage) || (err && err.message) || String(err);
+    try {
+      dialog.showErrorBox(
+        `${APP_DISPLAY_NAME} — backend unavailable`,
+        `${message}\n\n` +
+          "The app will open, but importing slides and running inference will not " +
+          "work until the backend is available."
+      );
+    } catch (dialogErr) {
+      console.error("Failed to show backend error dialog:", dialogErr);
+    }
   }
   createWindow(apiReadyState);
 });

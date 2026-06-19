@@ -102,7 +102,14 @@ def main() -> None:
     os.environ["APP_DATA_DIR"] = str(data_dir)
     os.environ["APP_LOG_DIR"] = str(log_dir)
     os.environ["APP_LOG_LEVEL"] = args.log_level.upper()
-    if args.host not in {"127.0.0.1", "localhost", "::1"}:
+    allowed_hosts = {"127.0.0.1", "localhost", "::1"}
+    if (os.environ.get("APP_CONTAINER") or "").strip().lower() in {"1", "true", "yes", "on"}:
+        # Inside the container the API binds to all interfaces so the published
+        # port reaches it. The host only publishes the port on loopback
+        # (docker -p 127.0.0.1:8765:8765), so this does not expose the API on a
+        # non-loopback host interface.
+        allowed_hosts.add("0.0.0.0")
+    if args.host not in allowed_hosts:
         print("Host must be loopback (127.0.0.1, localhost, or ::1).")
         sys.exit(1)
 

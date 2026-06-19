@@ -1,0 +1,68 @@
+# Build context = repo root. Keep the context to committed backend source only:
+# no secrets, no patient/slide data, no dev venvs or build artifacts (M5/DoD #13).
+
+# --- Git / tooling ---
+.git
+.gitignore
+.dockerignore
+.pytest_cache
+.claude
+.cursor
+.codex
+.claude-flow
+.swarm
+.mcp.json
+**/__pycache__
+**/*.py[cod]
+*.log
+
+# --- Dev environments / build outputs (must not leak into the image) ---
+**/.venv
+**/venv
+**/env
+**/node_modules
+**/dist
+**/build
+services/local-api/build
+services/local-api/dist
+artifacts
+
+# --- The Electron desktop app is out of scope; backend image only ---
+apps
+
+# --- Data, caches, runtime state, secrets (no patient/slide data, M5) ---
+data
+training_data
+**/tiles_cache
+**/inference_runs
+**/training_runs
+**/logs
+**/app.db
+**/*.sqlite3
+**/*.db
+**/.env
+**/.env.*
+
+# --- Notebooks / planning / local docs ---
+*.ipynb
+specs
+graphify-out
+docs
+CODE_REVIEW.md
+QA.md
+QA_REPORT.md
+*ROADMAP*.md
+*SPRINT_BOARD*.md
+
+# --- wsi-fungal-segmentation: keep code, drop heavyweight / non-runtime data ---
+wsi-fungal-segmentation/checkpoints
+wsi-fungal-segmentation/data
+wsi-fungal-segmentation/training_data
+wsi-fungal-segmentation/%SystemDrive%
+wsi-fungal-segmentation/tests
+# Bake ONLY the deploy weight; exclude every other (large) model artifact (M4).
+wsi-fungal-segmentation/models/*
+!wsi-fungal-segmentation/models/deploy-fungus.pth.gz
+
+# --- local-api: drop tests from the runtime image ---
+services/local-api/tests

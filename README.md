@@ -16,6 +16,123 @@ The desktop UI lives in `apps/desktop`, and it starts a local FastAPI backend fr
 - `training_data`: gitignored training-data dropzone (recommended dataset root: `training_data/MASTERTILE`)
 - `docs`: architecture decisions and roadmap docs (see `docs/roadmap/phase1-roadmap.md`)
 
+## Run with Docker (primary path)
+
+The backend (the `services/local-api` API plus the `wsi-fungal-segmentation`
+inference pipeline) ships as a single Linux Docker image, so it runs identically
+on any Docker host with no Python, venv, OpenSlide, libvips, or CUDA setup. The
+Electron desktop UI still runs natively on the host and talks to the
+containerized backend over `http://127.0.0.1:8765`.
+
+### Prerequisites (Docker)
+
+- **Docker Desktop** (Windows 11 + the **WSL2** backend on the lab machine).
+- For GPU inference: an **NVIDIA GPU**, a driver new enough for **CUDA 12.4**, and
+  the **NVIDIA Container Toolkit** (Docker Desktop's WSL2 GPU support). Without a
+  GPU the container still starts and inference falls back to CPU (slower).
+- The image is **Linux/amd64**; GPU support is **NVIDIA-only**. Any future
+  arm64/Mac image would be CPU-only.
+
+### Run via the Electron desktop app
+
+```powershell
+cd apps/desktop
+npm install
+npm start
+```
+
+On launch the desktop app starts the backend container (pulling the pinned image
+on first run), waits for `/health`, then loads the window. Quitting the app
+stops and removes the container. If Docker Desktop is not installed or not
+running, the app shows an actionable error and still opens (the backend just
+won't be reachable until Docker is up).
+
+Host folders used by the desktop launch (under the Electron `userData` dir):
+
+- `api-data/` -> container `/data` (slides, `app.db`, `inference_runs`,
+  `training_runs`, `tiles_cache`). Point this at a prior native install's
+  `api-data` to keep existing slides/runs/database — no migration needed.
+- `api-logs/` -> container `/logs`.
+- `import-inbox/` -> container `/import` (read-only **slides inbox**; place
+  slides here to import them).
+- `models/` -> mounted over the baked-in model **only if** it contains a valid
+  deploy weight (`.pth.gz` / `.pt.gz`); otherwise the baked-in model is used.
+
+### Run headless via Docker Compose
+
+For non-Electron/server users, the committed `docker-compose.yml` runs the same
+image. Provide an API key at runtime (never baked into the image):
+
+```powershell
+$env:APP_API_KEY = "<a-strong-secret>"
+docker compose up
+```
+
+Then reach the API at `http://127.0.0.1:8765/health`. Compose uses
+`./docker-data/{app-data,app-logs,import}` on the host; point `app-data` at a
+prior native install's `api-data` to reuse existing data. The slides inbox is
+`./docker-data/import` (read-only at `/import`). To override the baked-in model,
+uncomment the `models` volume in `docker-compose.yml` and drop a `.pth.gz` into
+`./docker-data/models`. On a CPU-only host, comment out the `deploy.resources`
+GPU block.
+
+### Mount conventions
+
+| Purpose            | Host (Electron)            | Host (compose)            | Container path                          | Mode |
+| ------------------ | -------------------------- | ------------------------- | --------------------------------------- | ---- |
+| App data           | `userData/api-data`        | `./docker-data/app-data`  | `/data`                                 | rw   |
+| Logs               | `userData/api-logs`        | `./docker-data/app-logs`  | `/logs`                                 | rw   |
+| Slides inbox       | `userData/import-inbox`    | `./docker-data/import`    | `/import`                               | ro   |
+| Models override    | `userData/models`          | `./docker-data/models`    | `/app/wsi-fungal-segmentation/models`   | rw   |
+
+The API publishes on the host **loopback only** (`127.0.0.1:8765`); it is not
+reachable on the host's LAN IP by default.
+
+### Build and publish the image
+
+Build from the repo root (the build context needs both source trees):
+
+```powershell
+docker build -f services/local-api/Dockerfile -t bachpath/bach-path-api:0.1.0 .
+```
+
+Verify the native libs and a CUDA (non-`+cpu`) torch build inside the image:
+
+```powershell
+docker run --rm bachpath/bach-path-api:0.1.0 `
+  python -c "import openslide, pyvips, torch; print(torch.__version__, torch.version.cuda)"
+```
+
+Confirm the GPU is visible when run with `--gpus all` on the lab machine:
+
+```powershell
+docker run --rm --gpus all bachpath/bach-path-api:0.1.0 `
+  python -c "import torch; print(torch.cuda.is_available())"
+```
+
+Tag a semantic version plus `latest` and push to the public Docker Hub repo
+(confirm the namespace, e.g. `bachpath/bach-path-api`, before the first push,
+and confirm the baked-in model's license permits public redistribution):
+
+```powershell
+docker tag bachpath/bach-path-api:0.1.0 bachpath/bach-path-api:latest
+docker push bachpath/bach-path-api:0.1.0
+docker push bachpath/bach-path-api:latest
+```
+
+The desktop app references a **pinned tag** (`bachpath/bach-path-api:0.1.0` in
+`apps/desktop/index.js`), never `latest`, so the app and backend ship as a
+known-good pair. Bump that constant and the `docker-compose.yml` image when you
+publish a new version.
+
+---
+
+## Native (development) setup — fallback
+
+The native Python setup below is no longer the primary path; use it for backend
+development without Docker. The desktop app launches the **containerized**
+backend, not this native one.
+
 ## Prerequisites
 
 - macOS, Linux, or Windows

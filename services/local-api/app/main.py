@@ -1,7 +1,12 @@
 from __future__ import annotations
 import os
-import openslide_bin
-os.add_dll_directory(os.path.dirname(openslide_bin.__file__))
+
+from app.util.openslide_runtime import configure_openslide_runtime
+
+# Make the openslide-bin DLLs discoverable before openslide is imported. This is a
+# no-op off Windows (e.g. the Docker image), where OpenSlide comes from the OS
+# (libopenslide0) and is resolved by the dynamic linker.
+configure_openslide_runtime()
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 

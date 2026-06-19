@@ -600,6 +600,20 @@ def main():
     # Load model
     try:
         device = _select_device(args.device)
+        _requested_device = (args.device or "auto").strip().lower()
+        if (_requested_device == "auto" or _requested_device.startswith("cuda")) and device.type != "cuda":
+            print(
+                f"[inference] Requested device {args.device!r} but CUDA is unavailable; "
+                f"using compute device: {device}.",
+                file=sys.stderr,
+                flush=True,
+            )
+        else:
+            print(
+                f"[inference] Using compute device: {device} (requested {args.device!r}).",
+                file=sys.stderr,
+                flush=True,
+            )
         ckpt = _load_checkpoint_dict(checkpoint_path, device)
         state_dict, ckpt_meta = _extract_model_state_dict(ckpt)
 
