@@ -1197,6 +1197,16 @@ body {
   font-size: 12px;
 }
 
+.viewer-mask-notice {
+  color: var(--warning);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.viewer-mask-notice[hidden] {
+  display: none;
+}
+
 .viewer-toggle,
 .viewer-opacity-label {
   display: inline-flex;

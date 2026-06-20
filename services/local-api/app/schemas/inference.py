@@ -30,6 +30,8 @@ class InferenceRunResponse(BaseModel):
     created_at: datetime
     summary: dict | None = None
     error_message: str | None = None
+    mask_degradation_status: str = "full"
+    mask_downsample_factor: int | None = None
 
     class Config:
         from_attributes = True
