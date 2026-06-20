@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from contextlib import asynccontextmanager
 
 from app.settings import load_settings, Settings
+from app.version import read_backend_version
 from app.api.router import api_router
 from app.api.errors import register_exception_handlers
 from app.logging_config import configure_logging
@@ -69,7 +70,9 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(
         title="Pathology Local API",
-        version="0.1.0",
+        # Sourced from the baked VERSION file so the reported version always
+        # reflects the source this image was built from (spec M8/M10).
+        version=read_backend_version(),
         lifespan=lifespan,
     )
     register_exception_handlers(app)

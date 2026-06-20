@@ -85,6 +85,50 @@ CPU-only host, comment out the `deploy.resources` GPU block.
 The API publishes on the host **loopback only** (`127.0.0.1:8765`); it is not
 reachable on the host's LAN IP by default.
 
+### Dev-mode backend auto-build and versioning
+
+The backend version lives in a single `VERSION` file at the repo root (e.g.
+`0.1.0`). It is the only place the version is edited; both the image tag the app
+uses and the version the backend reports are derived from it.
+
+**Dev mode (running from source, `npm start`).** When the desktop app is
+unpackaged it rebuilds the backend image from your local working tree on **every
+launch**, before starting the container, so the running backend is never stale —
+after editing backend code you just relaunch, no manual rebuild or re-tag. The
+build is equivalent to:
+
+```powershell
+docker build -f services/local-api/Dockerfile -t bachpath/bach-path-api:<VERSION> .
+```
+
+(run automatically; `<VERSION>` is read from the `VERSION` file). It relies on
+Docker layer caching, so an incremental rebuild that only changed app code reuses
+the cached torch/CUDA layer and is fast. The first cold build is slow. If the
+build fails, the app surfaces an actionable startup error and does **not** fall
+back to a stale image.
+
+**Prod mode (packaged build).** A packaged app does **not** build. It uses the
+local pinned image if present, otherwise pulls it — the existing behavior.
+
+**Version handshake.** On every launch the app fetches `GET /health`, logs the
+expected version, the reported `version`, and the `git_sha`, and compares the
+reported `version` to the version it expects. On a mismatch (or a backend missing
+the `version` field) it shows a blocking dialog with the exact PowerShell rebuild
+command and import/inference stay unavailable until you rebuild and relaunch.
+
+**Bumping the version.** Edit `VERSION` (e.g. `0.1.0` → `0.2.0`) and rebuild. No
+other file needs editing to keep the tag and the reported version in sync.
+**Released tags are immutable:** a real backend change bumps `VERSION` (and thus
+the tag); an already-published tag is never rebuilt to mean something new. The dev
+build re-tagging the pinned tag locally is acceptable only because dev images are
+never published.
+
+If the handshake dialog asks you to rebuild, run this from the repo root:
+
+```powershell
+docker build -f services/local-api/Dockerfile -t bachpath/bach-path-api:<VERSION> .
+```
+
 ### Build and publish the image
 
 Build from the repo root (the build context needs both source trees):

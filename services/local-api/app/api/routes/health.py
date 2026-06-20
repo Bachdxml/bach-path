@@ -14,6 +14,7 @@ from pathlib import Path
 
 from app.api.deps import get_db, require_api_key
 from app.util.exceptions import AppError, ErrorCode
+from app.version import read_backend_version, read_git_sha
 
 router = APIRouter(prefix="/health", tags=["health"])
 
@@ -28,6 +29,10 @@ def _sqlite_identifier(sqlite_path: Path) -> str:
 class HealthResponse(BaseModel):
     status: str  # "ok"
     uptime_seconds: float
+    # Unauthenticated version handshake fields (spec M11). `version` is the baked
+    # VERSION the app compares against at startup; `git_sha` is diagnostic only.
+    version: str
+    git_sha: str
 
 
 class ReadyResponse(BaseModel):
@@ -51,10 +56,13 @@ class InfoResponse(BaseModel):
 
 @router.get("", response_model=HealthResponse)
 def health() -> HealthResponse:
-    # Liveness: no dependencies, always quick
+    # Liveness: no dependencies, always quick. Carries the version handshake
+    # fields so the app can verify the backend matches before using it (spec M13).
     return HealthResponse(
         status="ok",
         uptime_seconds=time.monotonic() - _PROCESS_START,
+        version=read_backend_version(),
+        git_sha=read_git_sha(),
     )
 
 

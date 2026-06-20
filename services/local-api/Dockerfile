@@ -50,6 +50,18 @@ RUN apt-get update \
  && apt-get autoremove -y \
  && rm -rf /var/lib/apt/lists/*
 
+# --- Version + build metadata (M10/M11) ---
+# Declared here, after the dependency layers, so a new commit (changing GIT_SHA)
+# never busts the cached torch/CUDA layer above. The VERSION file is the single
+# source of truth (M8); it is COPYd into the image so the running backend reports
+# the version of the source it was built from, never a run-time value.
+ARG GIT_SHA=unknown
+ENV APP_GIT_SHA=${GIT_SHA}
+COPY VERSION /app/VERSION
+# Fail the build on a missing/empty VERSION rather than baking an empty version
+# (spec Edge Cases: "VERSION file missing or empty at build time").
+RUN test -s /app/VERSION || (echo "VERSION file is missing or empty at build time" >&2 && exit 1)
+
 # --- Application code ---
 WORKDIR /app
 COPY services/local-api /app/services/local-api

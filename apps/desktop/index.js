@@ -12,8 +12,12 @@ const DEFAULT_PORT = 8765;
 
 // Backend runs as a Docker container instead of a native Python subprocess.
 // Pin a specific, tested tag — never :latest — so app and backend ship as a
-// known-good pair (M13, "pinning over floating").
-const BACKEND_IMAGE = "bachpath/bach-path-api:0.1.0";
+// known-good pair (M13, "pinning over floating"). The version component is
+// derived from the repo-root VERSION file (the single source of truth, spec
+// B.8/B.9); BACKEND_IMAGE and EXPECTED_VERSION are resolved at startup.
+const BACKEND_IMAGE_REPO = "bachpath/bach-path-api";
+let BACKEND_IMAGE = null;
+let EXPECTED_VERSION = null;
 const BACKEND_CONTAINER_NAME = "bach-path-backend";
 const BACKEND_CONTAINER_PORT = 8765;
 const WSI_EXTENSIONS = new Set([".svs", ".tif", ".tiff", ".png"]);
@@ -304,6 +308,168 @@ function ensureBackendImage() {
   }
 }
 
+// Locate the repo root (the directory containing services/local-api/Dockerfile)
+// relative to this source file, so dev builds work from any cwd (spec A.7).
+function findRepoRoot() {
+  let dir = __dirname;
+  for (let i = 0; i < 12; i++) {
+    if (fs.existsSync(path.join(dir, "services", "local-api", "Dockerfile"))) {
+      return dir;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
+// The version the app expects the backend to be, sourced from the same VERSION
+// file the image is built from so packaged builds agree by construction (B.12).
+// Packaged builds read the bundled copy under resources/; dev reads the repo root.
+function readExpectedVersion() {
+  const candidates = [];
+  if (app.isPackaged) {
+    candidates.push(path.join(process.resourcesPath, "VERSION"));
+  } else {
+    const repoRoot = findRepoRoot();
+    if (repoRoot) candidates.push(path.join(repoRoot, "VERSION"));
+  }
+  for (const file of candidates) {
+    try {
+      const text = fs.readFileSync(file, "utf-8").trim();
+      if (text) return text;
+    } catch {
+      /* try next candidate */
+    }
+  }
+  return null;
+}
+
+// Derive BACKEND_IMAGE + EXPECTED_VERSION from VERSION; throws (actionable) when
+// VERSION cannot be read so the app never falls back to a guessed tag (B.9).
+function resolveBackendImage() {
+  EXPECTED_VERSION = readExpectedVersion();
+  if (!EXPECTED_VERSION) {
+    throw new BackendUnavailableError(
+      "Could not read the VERSION file to determine the backend version the app " +
+        "expects. Ensure a non-empty VERSION file exists at the repo root."
+    );
+  }
+  BACKEND_IMAGE = `${BACKEND_IMAGE_REPO}:${EXPECTED_VERSION}`;
+}
+
+// Short commit SHA for the dev build, baked into the image as a diagnostic-only
+// field; degrades to "unknown" when git is unavailable (spec M11 / Open Q #3).
+function currentGitSha(repoRoot) {
+  const res = spawnSync("git", ["rev-parse", "--short", "HEAD"], {
+    cwd: repoRoot,
+    encoding: "utf-8",
+    timeout: 10000,
+    windowsHide: true,
+  });
+  if (!res.error && res.status === 0) {
+    const sha = (res.stdout || "").trim();
+    if (sha) return sha;
+  }
+  return "unknown";
+}
+
+// The exact rebuild command the mismatch dialog shows (PowerShell on Windows);
+// run from the repo root. Matches what the dev auto-build does (B.14/DoD #11).
+function rebuildCommandText() {
+  return `docker build -f services/local-api/Dockerfile -t ${BACKEND_IMAGE} .`;
+}
+
+// Dev mode only: build the backend image from local working-tree source on every
+// launch so the running container is never stale (spec A.2/A.4). Failure is
+// actionable and never falls back to a stale image (A.5).
+function buildBackendImage() {
+  const repoRoot = findRepoRoot();
+  if (!repoRoot) {
+    throw new BackendUnavailableError(
+      "Dev build failed: could not locate the repo root (the directory " +
+        "containing services/local-api/Dockerfile) from the app source."
+    );
+  }
+  const dockerfile = path.join(repoRoot, "services", "local-api", "Dockerfile");
+  const gitSha = currentGitSha(repoRoot);
+  // Build against files on disk (working tree, not a git ref). The CUDA + torch
+  // base makes a cold build slow; layer caching keeps incremental rebuilds cheap.
+  const result = runDocker(
+    [
+      "build",
+      "-f",
+      dockerfile,
+      "-t",
+      BACKEND_IMAGE,
+      "--build-arg",
+      `GIT_SHA=${gitSha}`,
+      repoRoot,
+    ],
+    { timeout: 1800000 }
+  );
+  if (result.error || result.status !== 0) {
+    throw new BackendUnavailableError(
+      `Building the backend image ${BACKEND_IMAGE} from local source failed. ` +
+        "The backend was not started (no stale image is used in dev mode). " +
+        (oneLine(result.stderr) || oneLine(result.error && result.error.message) || "")
+    );
+  }
+}
+
+// Fetch the unauthenticated /health JSON for the version handshake (B.13).
+function fetchHealthJson(port, host) {
+  return new Promise((resolve, reject) => {
+    const hostForUrl = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+    const req = http.get(`http://${hostForUrl}:${port}/health`, (res) => {
+      let body = "";
+      res.setEncoding("utf-8");
+      res.on("data", (chunk) => (body += chunk));
+      res.on("end", () => {
+        try {
+          resolve(JSON.parse(body));
+        } catch {
+          resolve(null);
+        }
+      });
+    });
+    req.on("error", reject);
+    req.setTimeout(3000, () => {
+      req.destroy();
+      reject(new Error("health request timed out"));
+    });
+  });
+}
+
+// Compare the backend's reported version to EXPECTED_VERSION after health passes.
+// A mismatch (or a missing version field) hard-blocks with the rebuild command;
+// a match proceeds silently. Always logs expected/reported/git_sha (B.13-B.16).
+async function verifyVersionHandshake(port, host) {
+  let health = null;
+  try {
+    health = await fetchHealthJson(port, host);
+  } catch {
+    health = null;
+  }
+  const reportedVersion =
+    health && typeof health.version === "string" ? health.version : null;
+  const gitSha =
+    health && typeof health.git_sha === "string" ? health.git_sha : "unknown";
+  console.log(
+    `[version-handshake] expected=${EXPECTED_VERSION} ` +
+      `reported=${reportedVersion ?? "(missing)"} git_sha=${gitSha}`
+  );
+  if (reportedVersion !== EXPECTED_VERSION) {
+    throw new BackendUnavailableError(
+      `The Bach Path backend image is out of date. The app expects version ` +
+        `${EXPECTED_VERSION} but the backend reported ` +
+        `${reportedVersion ?? "no version"}. Import and inference are unavailable ` +
+        `until you rebuild the backend image. Run this from the repo root in ` +
+        `PowerShell, then relaunch:\n\n  ${rebuildCommandText()}`
+    );
+  }
+}
+
 // Remove any stale/previous backend container so a fixed name/port can be
 // reused without a conflict (M15).
 function removeExistingContainer() {
@@ -379,7 +545,8 @@ function startApi() {
   const host = normalizeApiHost(config.apiHost);
   const apiKey = normalizeApiKey(config.apiKey) || crypto.randomBytes(32).toString("hex");
 
-  // Docker must be installed and the daemon running (M14).
+  // Docker must be installed and the daemon running (M14). The dev build only
+  // runs once Docker is confirmed available (spec A.6).
   if (!dockerAvailable()) {
     return Promise.reject(
       new BackendUnavailableError(
@@ -387,6 +554,13 @@ function startApi() {
           "Start Docker Desktop and relaunch Bach Path."
       )
     );
+  }
+
+  // Resolve the version-derived image tag + expected version before any image op.
+  try {
+    resolveBackendImage();
+  } catch (err) {
+    return Promise.reject(err);
   }
 
   const dataDir = getApiDataDir();
@@ -400,7 +574,14 @@ function startApi() {
   const modelsMount = hasValidDeployWeight(modelsDir) ? modelsDir : null;
 
   try {
-    ensureBackendImage();
+    // Dev (unpackaged): build the image from local source every launch so the
+    // container is never stale (A.1/A.2). Prod (packaged): present-or-pull, no
+    // build (A.3).
+    if (app.isPackaged) {
+      ensureBackendImage();
+    } else {
+      buildBackendImage();
+    }
   } catch (err) {
     return Promise.reject(err);
   }
@@ -429,6 +610,9 @@ function startApi() {
   }
 
   return waitForHealth(port, host)
+    // Version handshake gate: refuse to enter normal operation against a backend
+    // whose version does not match what the app expects (spec B.13/B.14).
+    .then(() => verifyVersionHandshake(port, host))
     .then(() => buildApiReadyState({ ...config, apiPort: port, apiHost: host, apiKey }))
     .catch((err) => {
       stopApi();
