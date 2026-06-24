@@ -69,4 +69,5 @@ contextBridge.exposeInMainWorld("electronAPI", {
       "save-viewer-capture",
       sanitizeCapturePayload(rect, defaultFilename)
     ),
+  importModel: () => ipcRenderer.invoke("import-model"),
 });

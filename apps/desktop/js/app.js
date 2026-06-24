@@ -8,7 +8,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const tabPanes = document.querySelectorAll(".tab-pane");
   const modelSelect = document.getElementById("inference-model-select");
   const modelStatus = document.getElementById("inference-model-status");
-  const refreshModelsBtn = document.getElementById("btn-refresh-models");
+  const importModelBtn = document.getElementById("btn-import-model");
   const apiStatusEl = document.getElementById("api-status");
   const apiStatusMeta = document.getElementById("api-status-meta");
   const themeSelect = document.getElementById("ui-theme");
@@ -287,7 +287,16 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  refreshModelsBtn?.addEventListener("click", loadModelOptions);
+  importModelBtn?.addEventListener("click", async () => {
+    const result = await window.electronAPI.importModel();
+    if (!result || result.canceled) return;
+    if (!result.ok) {
+      setModelStatus(result.error || "Import failed", true);
+      return;
+    }
+    localStorage.setItem("selectedInferenceModel", result.filename);
+    await loadModelOptions();
+  });
 
   function openHelp() {
     if (helpModal) helpModal.hidden = false;

@@ -564,6 +564,35 @@ handleTrusted("select-files", async () => {
   );
 });
 
+handleTrusted("import-model", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ["openFile"],
+    filters: [
+      { name: "Model files", extensions: ["pth.gz"] },
+      { name: "All Files", extensions: ["*"] },
+    ],
+  });
+  if (result.canceled || !result.filePaths.length) return { ok: true, canceled: true };
+
+  const src = result.filePaths[0];
+  const filename = path.basename(src);
+  const modelsDir = path.join(getProjectRoot(), "wsi-fungal-segmentation", "models");
+
+  try {
+    fs.mkdirSync(modelsDir, { recursive: true });
+  } catch (e) {
+    return { ok: false, error: `Could not create models directory: ${e.message}` };
+  }
+
+  try {
+    fs.copyFileSync(src, path.join(modelsDir, filename));
+  } catch (e) {
+    return { ok: false, error: `Copy failed: ${e.message}` };
+  }
+
+  return { ok: true, canceled: false, filename };
+});
+
 handleTrusted("save-viewer-capture", async (_, payload) => {
   if (!mainWindow?.webContents) return { ok: false, error: "no_window" };
   const validation = validateCapturePayload(payload);
