@@ -44,10 +44,6 @@
             <span class="nav-icon">▦</span>
             <span class="nav-text">Gallery</span>
           </button>
-          <button type="button" class="tab-btn nav-item" data-tab="models">
-            <span class="nav-icon">◉</span>
-            <span class="nav-text">Models</span>
-          </button>
           <div class="nav-spacer"></div>
           <button type="button" class="tab-btn nav-item" data-tab="settings">
             <span class="nav-icon">⚙</span>
@@ -73,10 +69,6 @@
                   <p class="metric-label">Positive</p>
                   <p class="metric-value" id="home-metric-positive">—</p>
                 </article>
-                <article class="metric-card metric-card-accent">
-                  <p class="metric-label">Models</p>
-                  <p class="metric-value" id="home-metric-models">—</p>
-                </article>
               </div>
 
               <div class="home-grid">
@@ -101,16 +93,16 @@
                       <strong>Open Gallery</strong>
                       <span>Browse and review slide cases</span>
                     </button>
-                    <button type="button" class="action-card home-action" data-target-tab="models">
-                      <strong>Models</strong>
-                      <span>Deploy inference weights and choose a checkpoint</span>
+                    <button type="button" class="action-card home-action" data-target-tab="settings">
+                      <strong>Models &amp; Settings</strong>
+                      <span>Select inference model and configure system settings</span>
                     </button>
                     <button type="button" class="action-card home-action" data-target-tab="settings">
                       <strong>System Settings</strong>
                       <span>Configure API and appearance</span>
                     </button>
                   </div>
-                  <p class="home-footnote">Shortcuts: 1 Home, 2 Import, 3 Gallery, 4 Models, 5 Settings.</p>
+                  <p class="home-footnote">Shortcuts: 1 Home, 2 Import, 3 Gallery, 4 Settings.</p>
                 </article>
               </div>
             </div>
@@ -213,72 +205,6 @@
             <div class="gallery-empty" id="gallery-empty">No slides yet. Import slides from the Import tab.</div>
           </section>
 
-          <section id="tab-models" class="tab-pane">
-            <div class="page-header">
-              <h1 class="page-title">Models</h1>
-              <p class="page-subtitle">
-                Train outside this app, then export with
-                <code>export_deploy_weights.py</code> using required
-                <code>--checkpoint</code> and <code>--output</code> paths; place the gzip file in
-                <code>wsi-fungal-segmentation/models/</code>.
-              </p>
-            </div>
-            <div class="page-body">
-              <div class="training-layout">
-                <div class="panel-card training-form">
-                  <p class="training-hint">
-                    Run training on a workstation or cluster using
-                    <code>wsi-fungal-segmentation/scripts/train.py</code> and
-                    <code>wsi-fungal-segmentation/configs/default.yaml</code> (same layout as on
-                    <code>main</code>). Export tiles with the QuPath script under
-                    <code>qu-path-scripts/</code> when building datasets. Default dataset path is
-                    <code>training_data/MASTERTILE</code> at the repository root.
-                  </p>
-                  <p class="training-hint">
-                    After training, export is a separate step: the script only accepts
-                    <code>--checkpoint</code> (full training <code>.pth</code> with
-                    <code>model_state_dict</code>) and <code>--output</code> (path for the gzip deploy file).
-                    Example from <code>wsi-fungal-segmentation</code>:
-                  </p>
-                  <div class="console-wrap" style="margin-top: 10px">
-                    <div class="console-header">Terminal commands (from repository root)</div>
-                    <pre class="training-log-output">cd wsi-fungal-segmentation
-pip install -r requirements.txt
-python scripts/train.py --config configs/default.yaml
-python scripts/export_deploy_weights.py \
-  --checkpoint checkpoints/best_model.pth \
-  --output models/deploy-fungus.pth.gz</pre>
-                  </div>
-                  <p class="training-hint">
-                    Adjust <code>--checkpoint</code> to your saved weights. You can also write
-                    <code>--output</code> elsewhere and copy the <code>.pth.gz</code> (or
-                    <code>.pt.gz</code>) into <code>wsi-fungal-segmentation/models</code> next to the app, then
-                    refresh the list below.
-                  </p>
-                  <div class="form-group">
-                    <label for="inference-model-select">Inference model</label>
-                    <div class="settings-row">
-                      <select id="inference-model-select"></select>
-                      <button type="button" class="btn btn-secondary" id="btn-refresh-models">Refresh</button>
-                    </div>
-                    <p class="settings-hint" id="inference-model-status">
-                      Loads deployed gzip weights (.pth.gz / .pt.gz) from models/
-                    </p>
-                  </div>
-                </div>
-                <div class="panel-card training-side">
-                  <p class="training-hint">
-                    Paths and notes from the local API server.
-                  </p>
-                  <div class="console-wrap training-side-console">
-                    <div class="console-header">Paths on this system</div>
-                    <pre id="models-deploy-paths" class="training-log-output" aria-live="polite"></pre>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </section>
-
           <section id="tab-settings" class="tab-pane">
             <div class="page-header">
               <h1 class="page-title">Settings</h1>
@@ -306,6 +232,48 @@ python scripts/export_deploy_weights.py \
                 </div>
                 <p class="settings-hint">API port changes take effect after you restart the app.</p>
                 <button type="button" class="btn btn-primary" id="btn-save-settings">Save port</button>
+                <div class="form-group" style="margin-top: 1.5rem">
+                  <label for="inference-model-select">Inference model</label>
+                  <div class="settings-row">
+                    <select id="inference-model-select"></select>
+                    <button type="button" class="btn btn-secondary" id="btn-refresh-models">Refresh</button>
+                  </div>
+                  <p class="settings-hint" id="inference-model-status">
+                    Loads deployed gzip weights (.pth.gz / .pt.gz) from models/
+                  </p>
+                </div>
+              </div>
+              <div class="panel-card" style="width: min(520px, 100%)">
+                <h2>Training &amp; export reference</h2>
+                  <p>
+                    Run training on a workstation or cluster using
+                    <code>wsi-fungal-segmentation/scripts/train.py</code> and
+                    <code>wsi-fungal-segmentation/configs/default.yaml</code> (same layout as on
+                    <code>main</code>). Export tiles with the QuPath script under
+                    <code>qu-path-scripts/</code> when building datasets. Default dataset path is
+                    <code>training_data/MASTERTILE</code> at the repository root.
+                  </p>
+                  <p>
+                    After training, export is a separate step: the script only accepts
+                    <code>--checkpoint</code> (full training <code>.pth</code> with
+                    <code>model_state_dict</code>) and <code>--output</code> (path for the gzip deploy file).
+                    Example from <code>wsi-fungal-segmentation</code>:
+                  </p>
+                  <div class="console-wrap" style="margin-top: 10px">
+                    <div class="console-header">Terminal commands (from repository root)</div>
+                    <pre class="training-log-output">cd wsi-fungal-segmentation
+pip install -r requirements.txt
+python scripts/train.py --config configs/default.yaml
+python scripts/export_deploy_weights.py \
+  --checkpoint checkpoints/best_model.pth \
+  --output models/deploy-fungus.pth.gz</pre>
+                  </div>
+                  <p>
+                    Adjust <code>--checkpoint</code> to your saved weights. You can also write
+                    <code>--output</code> elsewhere and copy the <code>.pth.gz</code> (or
+                    <code>.pt.gz</code>) into <code>wsi-fungal-segmentation/models</code> next to the app, then
+                    refresh the list below.
+                  </p>
               </div>
             </div>
           </section>
@@ -457,7 +425,7 @@ python scripts/export_deploy_weights.py \
           </li>
         </ol>
         <p class="help-shortcuts">
-          Shortcuts: <kbd>1</kbd>–<kbd>5</kbd> tabs · <kbd>G</kbd> gallery · <kbd>I</kbd> import · <kbd>R</kbd>
+          Shortcuts: <kbd>1</kbd>–<kbd>4</kbd> tabs · <kbd>G</kbd> gallery · <kbd>I</kbd> import · <kbd>R</kbd>
           run inference (viewer) · <kbd>E</kbd> export view (viewer) · <kbd>?</kbd> help
         </p>
         <div class="modal-actions">
@@ -490,7 +458,6 @@ python scripts/export_deploy_weights.py \
     <script src="js/import.js"></script>
     <script src="js/gallery.js"></script>
     <script src="js/viewer.js"></script>
-    <script src="js/models-tab.js"></script>
     <script src="js/app.js"></script>
   </body>
 </html>

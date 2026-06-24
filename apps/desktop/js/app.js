@@ -228,8 +228,6 @@ document.addEventListener("DOMContentLoaded", () => {
       refreshGallery();
     }
     loadModelOptions();
-    const loadDeployInfo = app?.features?.models?.loadDeployInfo || window.loadDeployInfo;
-    if (typeof loadDeployInfo === "function") loadDeployInfo();
     refreshHomeMetrics();
   }
 
@@ -334,7 +332,7 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    const map = { 1: "home", 2: "import", 3: "gallery", 4: "models", 5: "settings" };
+    const map = { 1: "home", 2: "import", 3: "gallery", 4: "settings" };
     if (map[e.key] && !e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
       activateTab(map[e.key]);
