@@ -513,13 +513,14 @@ def _run_passes(*, model, positions, load_tensor, tile_cache, device, args,
     # are written to tile_cache for reuse in pass 2.
     density_preds = {}
     model.eval()
-    with torch.no_grad():
+    with torch.inference_mode():
         for i in range(0, len(positions), args.batch_size):
             batch_positions = positions[i:i + args.batch_size]
             batch = torch.cat([load_tensor(pos) for pos in batch_positions], dim=0)
             tile_cache[i:i + len(batch_positions)] = batch.numpy()
             batch = batch.to(device)
-            _, density_logits, _, _ = model(batch)
+            with torch.autocast("cuda", dype=torch.float16):
+                _, density_logits, _, _ = model(batch)
             labels = density_logits.argmax(dim=1).cpu().tolist()
             for (x, y, _w, _h), label in zip(batch_positions, labels):
                 density_preds[to_grid(x, y)] = label
@@ -641,6 +642,8 @@ def main():
     # Load model
     try:
         device = _select_device(args.device)
+        if device.type == "cuda":
+            torch.backends.cudnn.benchmark = True
         ckpt = _load_checkpoint_dict(checkpoint_path, device)
         state_dict, ckpt_meta = _extract_model_state_dict(ckpt)
 
