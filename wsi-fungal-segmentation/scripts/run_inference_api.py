@@ -519,7 +519,7 @@ def _run_passes(*, model, positions, load_tensor, tile_cache, device, args,
             batch = torch.cat([load_tensor(pos) for pos in batch_positions], dim=0)
             tile_cache[i:i + len(batch_positions)] = batch.numpy()
             batch = batch.to(device)
-            with torch.autocast("cuda", dype=torch.float16):
+            with torch.autocast("cuda", dtype=torch.float16):
                 _, density_logits, _, _ = model(batch)
             labels = density_logits.argmax(dim=1).cpu().tolist()
             for (x, y, _w, _h), label in zip(batch_positions, labels):
