@@ -1,12 +1,12 @@
 # Pinned runtime dependencies for training, evaluation, and inference.
 # On macOS/Linux, install the native OpenSlide library separately if you use WSI inputs.
 # Python 3.13 on Windows: use wheel-only pins (numpy 2.x, openslide-python 1.4.3+).
-# torch/torchvision: CUDA (cu124) wheels so inference uses the GPU. The +cu124
+# torch/torchvision: CUDA (cu128) wheels so inference uses the GPU. The +cu128
 # local version pin forces the CUDA build instead of the PyPI CPU wheel.
-# CPU-only setups can replace cu124 with cpu (and drop the extra-index-url).
+# CPU-only setups can replace cu128 with cpu (and drop the extra-index-url).
 --extra-index-url https://download.pytorch.org/whl/cu124
-torch==2.6.0+cu124
-torchvision==0.21.0+cu124
+torch==2.7.0+cu128
+torchvision==0.22.0+cu128
 numpy>=2.2,<3
 matplotlib==3.10.8
 PyYAML==6.0.2
