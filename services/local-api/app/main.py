@@ -1,7 +1,8 @@
 from __future__ import annotations
 import os
 import openslide_bin
-os.add_dll_directory(os.path.dirname(openslide_bin.__file__))
+if hasattr(os, "add_dll_directory"):
+    os.add_dll_directory(os.path.dirname(openslide_bin.__file__))
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 

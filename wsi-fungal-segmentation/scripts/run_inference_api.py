@@ -15,6 +15,7 @@ import gzip
 import json
 import os
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Tuple
@@ -904,15 +905,53 @@ def _infer_regions_with_neighborhood(
     def to_grid(x, y):
         return y // stride, x // stride
 
+    # Decode every tile once into a disk-backed cache so pass 2 reads pixels
+    # back instead of re-reading + re-decoding the slide. Memmap keeps RAM
+    # bounded (OS page cache, not the heap).
+    # post-preprocess float32 = ~3 MB/tile on disk; if disk size
+    # bites on huge slides, cache uint8 RGB pre-preprocess (4x smaller) and
+    # re-run preprocess_tile on read.
+    cache_fd, cache_path = tempfile.mkstemp(suffix=".tiles.dat")
+    os.close(cache_fd)
+    tile_cache = np.memmap(
+        cache_path, dtype=np.float32, mode="w+",
+        shape=(len(positions), 3, tile_size, tile_size),
+    )
+    try:
+        return _run_passes(
+            model=model, positions=positions, load_tensor=load_tensor,
+            tile_cache=tile_cache, device=device, args=args,
+            tile_size=tile_size, downsample=downsample, k=k,
+            to_grid=to_grid,
+        )
+    finally:
+        # Windows won't delete a still-mapped file; release the handle first.
+        try:
+            tile_cache._mmap.close()
+        except (AttributeError, BufferError):
+            pass
+        del tile_cache
+        try:
+            os.remove(cache_path)
+        except OSError:
+            pass
+
+
+def _run_passes(*, model, positions, load_tensor, tile_cache, device, args,
+                tile_size, downsample, k, to_grid):
     # First pass: classify density for each tile. Only hard class labels are
-    # retained, so memory stays bounded by the current batch.
+    # retained, so memory stays bounded by the current batch. Decoded pixels
+    # are written to tile_cache for reuse in pass 2.
     density_preds = {}
     model.eval()
-    with torch.no_grad():
+    with torch.inference_mode():
         for i in range(0, len(positions), args.batch_size):
             batch_positions = positions[i:i + args.batch_size]
-            batch = torch.cat([load_tensor(pos) for pos in batch_positions], dim=0).to(device)
-            _, density_logits, _, _ = model(batch)
+            batch = torch.cat([load_tensor(pos) for pos in batch_positions], dim=0)
+            tile_cache[i:i + len(batch_positions)] = batch.numpy()
+            batch = batch.to(device)
+            with torch.autocast("cuda", dtype=torch.float16):
+                _, density_logits, _, _ = model(batch)
             labels = density_logits.argmax(dim=1).cpu().tolist()
             for (x, y, _w, _h), label in zip(batch_positions, labels):
                 density_preds[to_grid(x, y)] = label
@@ -941,9 +980,12 @@ def _infer_regions_with_neighborhood(
     with torch.no_grad():
         for i in range(0, len(positions), args.batch_size):
             batch_positions = positions[i:i + args.batch_size]
-            batch = torch.cat([load_tensor(pos) for pos in batch_positions], dim=0).to(device)
-            
-            
+            # Pass 2 reads the tiles decoded in pass 1; no slide re-read.
+            batch = torch.from_numpy(
+                np.asarray(tile_cache[i:i + len(batch_positions)])
+            ).to(device)
+
+
 
             batch_labels = torch.tensor(
                 [consensus_label(*to_grid(x, y)) for x, y, _w, _h in batch_positions],
@@ -1120,6 +1162,8 @@ def main():
     # Load model
     try:
         device = _select_device(args.device)
+        if device.type == "cuda":
+            torch.backends.cudnn.benchmark = True
         ckpt = _load_checkpoint_dict(checkpoint_path, device)
         state_dict, ckpt_meta = _extract_model_state_dict(ckpt)
 

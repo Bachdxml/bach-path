@@ -66,6 +66,8 @@ _INFERENCE_ENV_ALLOW = {
     "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
     # GPU / inference runtime
     "CUDA_PATH", "CUDA_VISIBLE_DEVICES", "NVIDIA_VISIBLE_DEVICES",
+    # dynamic library search paths (needed for OpenSlide on macOS/Linux)
+    "DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH", "LD_LIBRARY_PATH",
     # project-specific caps read by run_inference_api.py
     "BACH_MAX_INFERENCE_TILES", "BACH_MAX_RASTER_PIXELS",
 }
@@ -290,6 +292,16 @@ def _inference_subprocess_env() -> dict[str, str]:
         env.get("PYTHONPATH"),
     ]
     env["PYTHONPATH"] = os.pathsep.join(entry for entry in python_entries if entry)
+    # Electron strips DYLD_LIBRARY_PATH so the openslide ctypes binding can't find
+    # libopenslide.dylib on macOS. Inject Homebrew lib dirs explicitly.
+    brew_lib_dirs = [p for p in ("/opt/homebrew/lib", "/usr/local/lib") if Path(p).is_dir()]
+    if brew_lib_dirs:
+        existing = env.get("DYLD_LIBRARY_PATH", "")
+        parts = [d for d in existing.split(os.pathsep) if d] if existing else []
+        for d in brew_lib_dirs:
+            if d not in parts:
+                parts.insert(0, d)
+        env["DYLD_LIBRARY_PATH"] = os.pathsep.join(parts)
     return env
 
 
