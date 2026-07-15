@@ -114,7 +114,7 @@ def test_main_runs_two_pass_neighborhood_inference_for_raster(tmp_path, monkeypa
     assert inference_module.main() == 0
     assert output_path.exists()
     assert len(recorded_calls) == 2
-    assert recorded_calls[0][1] == {}
+    assert recorded_calls[0][1] == {"density_only": True}
     assert "density_label" in recorded_calls[1][1]
     assert recorded_calls[0][0][0].shape == (1, 3, 64, 64)
     assert recorded_calls[1][0][0].shape == (1, 3, 64, 64)
@@ -254,7 +254,7 @@ def test_openslide_path_runs_two_pass_neighborhood_inference(tmp_path, monkeypat
     assert inference_module.main() == 0
     assert output_path.exists()
     assert len(recorded_calls) == 2
-    assert recorded_calls[0][1] == {}
+    assert recorded_calls[0][1] == {"density_only": True}
     assert "density_label" in recorded_calls[1][1]
     assert recorded_calls[0][0][0].shape == (1, 3, 64, 64)
     assert recorded_calls[1][0][0].shape == (1, 3, 64, 64)
@@ -350,7 +350,7 @@ def test_openslide_path_skips_background_tiles_before_model(tmp_path, monkeypatc
     assert inference_module.main() == 0
     assert read_locations == [(64, 0), (64, 0)]
     assert len(recorded_calls) == 2
-    assert recorded_calls[0][1] == {}
+    assert recorded_calls[0][1] == {"density_only": True}
     assert "density_label" in recorded_calls[1][1]
 
 

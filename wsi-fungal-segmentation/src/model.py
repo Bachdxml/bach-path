@@ -119,14 +119,21 @@ class ResidualAttentionUNet(nn.Module):
         self.aux_head3 = nn.Conv2d(256, 1, 1)  # <-- add these two
         self.aux_head2 = nn.Conv2d(128, 1, 1)
 
-    def forward(self, x, density_label: torch.Tensor = None):
+    def forward(self, x, density_label: torch.Tensor = None, *, density_only: bool = False):
         """
         x             : [B, 3, H, W]
         density_label : [B] long tensor at training time, None at inference
+        density_only  : if True, run only the encoder + density head and return
+                        after density prediction, skipping the entire decoder.
+                        Used by inference pass 1, which needs the density class
+                        but discards the segmentation output. The returned
+                        density_logits are identical to the full forward (same
+                        layers up to the density head).
 
         Returns:
-            seg_logits     : [B, 1, H, W]  segmentation output
+            seg_logits     : [B, 1, H, W]  segmentation output (None if density_only)
             density_logits : [B, 4]        density class prediction
+            aux3, aux2     : deep-supervision aux logits (None if density_only)
         """
         # Encoder
         e1 = self.enc1(x)
@@ -136,10 +143,14 @@ class ResidualAttentionUNet(nn.Module):
 
         # Bottleneck
         b = self.bottleneck(self.pool(e4))
-    
+
         # Classification head reads raw bottleneck
         density_logits = self.density_head(b)  # [B, 4]
-    
+
+        # Pass 1 only needs the density class; skip the decoder entirely.
+        if density_only:
+            return None, density_logits, None, None
+
         # Density conditioning
         # Training: use ground truth label (teacher forcing)
         # Inference: use self-predicted label
