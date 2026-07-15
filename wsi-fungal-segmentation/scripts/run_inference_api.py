@@ -988,6 +988,54 @@ def _infer_regions_with_neighborhood(
             pass
 
 
+def _iter_decoded_batches(positions, batch_size, load_tensor, prefetch_workers):
+    """Yield ``(start_index, batch_positions, decoded_cpu_tensor)`` in order.
+
+    With ``prefetch_workers <= 0`` this decodes each batch serially, identical
+    to the old inline ``torch.cat([load_tensor(pos) ...])``. With a positive
+    value it decodes upcoming batches on a bounded ``ThreadPoolExecutor`` so
+    slide reads (which release the GIL) overlap the GPU forward pass. At most
+    ``prefetch_workers + 1`` batches are ever in flight, keeping memory flat,
+    and results are consumed strictly in ``positions`` order. Any exception
+    raised while decoding propagates to the caller (the executor is
+    context-managed, so no threads leak).
+    """
+    batches = [
+        (i, positions[i:i + batch_size])
+        for i in range(0, len(positions), batch_size)
+    ]
+
+    def decode(batch_positions):
+        return torch.cat([load_tensor(pos) for pos in batch_positions], dim=0)
+
+    if prefetch_workers <= 0:
+        for start_index, batch_positions in batches:
+            yield start_index, batch_positions, decode(batch_positions)
+        return
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    max_inflight = prefetch_workers + 1
+    with ThreadPoolExecutor(max_workers=prefetch_workers) as executor:
+        futures = {}
+        next_submit = 0
+        while next_submit < len(batches) and len(futures) < max_inflight:
+            start_index, batch_positions = batches[next_submit]
+            futures[next_submit] = (start_index, batch_positions, executor.submit(decode, batch_positions))
+            next_submit += 1
+
+        for next_yield in range(len(batches)):
+            start_index, batch_positions, future = futures.pop(next_yield)
+            decoded = future.result()  # re-raises any decode error here, in order
+            yield start_index, batch_positions, decoded
+            if next_submit < len(batches):
+                submit_index, submit_positions = batches[next_submit]
+                futures[next_submit] = (
+                    submit_index, submit_positions, executor.submit(decode, submit_positions),
+                )
+                next_submit += 1
+
+
 def _run_passes(*, model, positions, load_tensor, tile_cache, device, args,
                 tile_size, downsample, k, to_grid):
     # First pass: classify density for each tile. Only hard class labels are
@@ -996,9 +1044,9 @@ def _run_passes(*, model, positions, load_tensor, tile_cache, device, args,
     density_preds = {}
     model.eval()
     with torch.inference_mode():
-        for i in range(0, len(positions), args.batch_size):
-            batch_positions = positions[i:i + args.batch_size]
-            batch = torch.cat([load_tensor(pos) for pos in batch_positions], dim=0)
+        for i, batch_positions, batch in _iter_decoded_batches(
+            positions, args.batch_size, load_tensor, args.prefetch_workers,
+        ):
             tile_cache[i:i + len(batch_positions)] = batch.numpy()
             batch = batch.to(device)
             if device.type == "cuda":
@@ -1077,6 +1125,16 @@ def main():
     parser.add_argument("--threshold", type=float, default=0.04)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument(
+        "--prefetch-workers",
+        type=int,
+        default=2,
+        help=(
+            "Background threads that decode upcoming tile batches during pass 1 "
+            "so slide I/O overlaps GPU compute. 0 disables prefetch (serial "
+            "decode, identical output)."
+        ),
+    )
     parser.add_argument("--min-tissue-fraction", type=float, default=0.02)
     parser.add_argument("--no-skip-background", action="store_true")
     parser.add_argument(
@@ -1194,6 +1252,9 @@ def main():
         return EXIT_ARGS
     if args.batch_size <= 0:
         print("Error: --batch-size must be > 0", file=sys.stderr)
+        return EXIT_ARGS
+    if args.prefetch_workers < 0:
+        print("Error: --prefetch-workers must be >= 0", file=sys.stderr)
         return EXIT_ARGS
     if not (0.0 <= args.threshold <= 1.0):
         print("Error: --threshold must be in [0.0, 1.0]", file=sys.stderr)

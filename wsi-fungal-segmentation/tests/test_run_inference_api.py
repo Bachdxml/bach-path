@@ -789,3 +789,71 @@ def test_cpu_path_takes_no_cuda_autocast_or_channels_last(tmp_path, monkeypatch,
     assert inference_module.main() == 0            # channels_last guard not tripped
     assert autocast_flags                          # model was actually called
     assert all(flag is False for flag in autocast_flags)  # no CUDA autocast on CPU
+
+
+# ---------------------------------------------------------------------------
+# Tile I/O prefetch (specs/tile-io-prefetch.md)
+# ---------------------------------------------------------------------------
+
+def test_iter_decoded_batches_serial_and_prefetch_preserve_order(inference_module):
+    positions = [(i, 0, 1, 1) for i in range(10)]
+
+    def load_tensor(pos):
+        return torch.full((1, 1, 1, 1), float(pos[0]))
+
+    for workers in (0, 1, 3):
+        out = list(inference_module._iter_decoded_batches(positions, 2, load_tensor, workers))
+        # Two positions per batch -> 5 batches, consumed in order.
+        assert [start for start, _, _ in out] == [0, 2, 4, 6, 8]
+        first_values = [float(batch[0, 0, 0, 0]) for _, _, batch in out]
+        assert first_values == [0.0, 2.0, 4.0, 6.0, 8.0]
+
+
+def test_iter_decoded_batches_bounds_inflight(inference_module):
+    import threading
+    import time
+
+    positions = [(i, 0, 1, 1) for i in range(12)]
+    lock = threading.Lock()
+    state = {"active": 0, "max_active": 0}
+
+    def load_tensor(pos):
+        with lock:
+            state["active"] += 1
+            state["max_active"] = max(state["max_active"], state["active"])
+        time.sleep(0.01)
+        with lock:
+            state["active"] -= 1
+        return torch.zeros((1, 1, 1, 1))
+
+    out = list(inference_module._iter_decoded_batches(positions, 1, load_tensor, 2))
+    assert len(out) == 12
+    # Concurrency is bounded by the pool size (2 workers).
+    assert state["max_active"] <= 2
+
+
+def test_iter_decoded_batches_propagates_decode_error(inference_module):
+    positions = [(0, 0, 1, 1), (1, 0, 1, 1), (2, 0, 1, 1)]
+
+    def load_tensor(pos):
+        if pos[0] == 1:
+            raise ValueError("boom")
+        return torch.zeros((1, 1, 1, 1))
+
+    with pytest.raises(ValueError, match="boom"):
+        list(inference_module._iter_decoded_batches(positions, 1, load_tensor, 2))
+
+
+def test_prefetch_output_matches_serial(tmp_path, monkeypatch, inference_module):
+    # Same slide, prefetch (default 2) vs serial (0), single-tile batches so
+    # multiple batches are decoded. Region output must be identical.
+    prefetch_out = _run_level_selection_slide(
+        tmp_path, monkeypatch, inference_module, _SparseTissueSlide,
+        extra_argv=("--batch-size", "1"),
+    )
+    serial_out = _run_level_selection_slide(
+        tmp_path, monkeypatch, inference_module, _SparseTissueSlide,
+        extra_argv=("--batch-size", "1", "--prefetch-workers", "0"),
+    )
+    assert prefetch_out["regions"] == serial_out["regions"]
+    assert prefetch_out["summary"] == serial_out["summary"]
