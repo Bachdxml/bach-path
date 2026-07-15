@@ -116,6 +116,24 @@ def _autocast_ctx(device: torch.device):
     return nullcontext()
 
 
+def _maybe_compile(model):
+    """Wrap the model in torch.compile, falling back to eager on any failure.
+
+    torch.compile is absent on older PyTorch and can fail at wrap time (missing
+    backend, unsupported platform). Only wrap-time failures are caught here; a
+    successfully compiled model that later errors on a call is out of scope.
+    """
+    compile_fn = getattr(torch, "compile", None)
+    if compile_fn is None:
+        print("Warning: torch.compile unavailable; running eager.", file=sys.stderr)
+        return model
+    try:
+        return compile_fn(model)
+    except Exception as exc:  # noqa: BLE001 - any wrap-time failure falls back
+        print(f"Warning: torch.compile failed ({exc}); running eager.", file=sys.stderr)
+        return model
+
+
 def _extract_model_state_dict(checkpoint) -> Tuple[Mapping, dict]:
     # Checkpoints cross a trust boundary, so only accept the minimal structures
     # produced by this project's training/export pipeline.
@@ -1161,6 +1179,18 @@ def main():
         ),
     )
     parser.add_argument("--positive-only", action="store_true", help="Only output fungus_positive regions")
+    parser.add_argument(
+        "--compile",
+        dest="compile",
+        action="store_true",
+        help=(
+            "Wrap the model in torch.compile after load (fixed 512x512 tiles "
+            "reuse one fused graph). Falls back to eager on any wrap-time "
+            "failure. Off by default so small-slide latency never regresses."
+        ),
+    )
+    parser.add_argument("--no-compile", dest="compile", action="store_false")
+    parser.set_defaults(compile=False)
     parser.add_argument("--model-name", default="ResidualAttentionUNet")
     parser.add_argument("--model-version", default="1.0")
     parser.add_argument(
@@ -1300,6 +1330,9 @@ def main():
             # channels_last lets the conv stack hit tensor-core-friendly kernels.
             model.to(memory_format=torch.channels_last)
         model.eval()
+        if args.compile:
+            # Amortize kernel fusion over the many fixed-shape tile forwards.
+            model = _maybe_compile(model)
     except Exception as e:
         print(f"Error loading model: {e}", file=sys.stderr)
         return EXIT_ARGS

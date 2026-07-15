@@ -857,3 +857,41 @@ def test_prefetch_output_matches_serial(tmp_path, monkeypatch, inference_module)
     )
     assert prefetch_out["regions"] == serial_out["regions"]
     assert prefetch_out["summary"] == serial_out["summary"]
+
+
+# ---------------------------------------------------------------------------
+# torch.compile with eager fallback (specs/inference-torch-compile.md)
+# ---------------------------------------------------------------------------
+
+def test_compile_flag_falls_back_to_eager_when_compile_raises(tmp_path, monkeypatch, inference_module):
+    def boom(_model):
+        raise RuntimeError("no compiler backend")
+
+    monkeypatch.setattr(inference_module.torch, "compile", boom)
+    output = _run_level_selection_slide(
+        tmp_path, monkeypatch, inference_module, _SparseTissueSlide,
+        extra_argv=("--compile",),
+    )
+    # Inference still completed using the eager model.
+    assert output["summary"]["inferred_tiles"] == 4
+
+
+def test_no_compile_never_calls_torch_compile(tmp_path, monkeypatch, inference_module):
+    calls = []
+    monkeypatch.setattr(inference_module.torch, "compile", lambda model: calls.append(model) or model)
+    _run_level_selection_slide(
+        tmp_path, monkeypatch, inference_module, _SparseTissueSlide,
+        extra_argv=("--no-compile",),
+    )
+    assert calls == []
+
+
+def test_compile_flag_wraps_model_when_available(tmp_path, monkeypatch, inference_module):
+    calls = []
+    monkeypatch.setattr(inference_module.torch, "compile", lambda model: calls.append(model) or model)
+    output = _run_level_selection_slide(
+        tmp_path, monkeypatch, inference_module, _SparseTissueSlide,
+        extra_argv=("--compile",),
+    )
+    assert len(calls) == 1
+    assert output["summary"]["inferred_tiles"] == 4
