@@ -172,7 +172,41 @@ def _count_tile_positions(level_w: int, level_h: int, tile_size: int, stride: in
     return sum(1 for _ in _iter_tile_positions(level_w, level_h, tile_size, stride))
 
 
-def _select_openslide_level(slide, requested_level: str, tile_size: int, stride: int, target_tiles: int) -> int:
+def _count_tissue_tile_positions(
+    level_w: int,
+    level_h: int,
+    tile_size: int,
+    stride: int,
+    tissue_mask: np.ndarray | None,
+    min_fraction: float,
+) -> int:
+    """Count tile positions that contain tissue at this level.
+
+    Falls back to the full-grid count when no mask is available (mask is None),
+    so callers get the same number as `_count_tile_positions` when background
+    skipping is off or the mask could not be built.
+    """
+    if tissue_mask is None:
+        return _count_tile_positions(level_w, level_h, tile_size, stride)
+    count = 0
+    for x, y, w, h in _iter_tile_positions(level_w, level_h, tile_size, stride):
+        if _tile_has_tissue(
+            tissue_mask, x=x, y=y, w=w, h=h,
+            level_w=level_w, level_h=level_h,
+            min_fraction=min_fraction,
+        ):
+            count += 1
+    return count
+
+
+def _select_openslide_level(
+    slide,
+    requested_level: str,
+    tile_size: int,
+    stride: int,
+    target_tiles: int,
+    tile_counter=None,
+) -> int:
     value = (requested_level or "auto").strip().lower()
     if value != "auto":
         try:
@@ -180,10 +214,14 @@ def _select_openslide_level(slide, requested_level: str, tile_size: int, stride:
         except ValueError as exc:
             raise ValueError("--level must be an integer or 'auto'") from exc
 
+    if tile_counter is None:
+        def tile_counter(level_idx, level_w, level_h):
+            return _count_tile_positions(level_w, level_h, tile_size, stride)
+
     best_level = 0
     best_tiles = None
     for level_idx, (level_w, level_h) in enumerate(slide.level_dimensions):
-        tile_count = _count_tile_positions(level_w, level_h, tile_size, stride)
+        tile_count = tile_counter(level_idx, level_w, level_h)
         if tile_count <= 0:
             continue
         if tile_count <= target_tiles:
@@ -1293,9 +1331,37 @@ def main():
             return EXIT_SLIDE
 
         try:
+            # Build the effective tissue mask per candidate level *before*
+            # choosing the level, so auto selection counts only tissue-bearing
+            # tiles. Masks are thumbnail-resolution and cached per level, so the
+            # selected level's mask is reused by the tile loop below rather than
+            # rebuilt. Skipped entirely when background skipping is off.
+            _mask_cache: dict[int, tuple[np.ndarray | None, np.ndarray | None]] = {}
+
+            def _level_masks(level_idx):
+                if level_idx not in _mask_cache:
+                    base = _build_openslide_tissue_mask(slide, level=level_idx)
+                    effective = _build_effective_tissue_mask(
+                        base,
+                        context_radius=args.tissue_context_radius,
+                        context_fraction=args.tissue_context_fraction,
+                    )
+                    _mask_cache[level_idx] = (base, effective)
+                return _mask_cache[level_idx]
+
+            tile_counter = None
+            if not args.no_skip_background:
+                def tile_counter(level_idx, level_w, level_h):
+                    _, effective = _level_masks(level_idx)
+                    return _count_tissue_tile_positions(
+                        level_w, level_h, tile_size, stride,
+                        effective, args.min_tissue_fraction,
+                    )
+
             try:
                 level = _select_openslide_level(
                     slide, str(args.level), tile_size, stride, args.target_tiles,
+                    tile_counter=tile_counter,
                 )
             except ValueError as exc:
                 print(f"Error: {exc}", file=sys.stderr)
@@ -1324,14 +1390,11 @@ def main():
                 return EXIT_SLIDE
 
             downsample = float(slide.level_downsamples[level])
+            base_mask = None
             tissue_mask = None
             if not args.no_skip_background:
-                base_mask = _build_openslide_tissue_mask(slide, level=level)
-                tissue_mask = _build_effective_tissue_mask(
-                    base_mask,
-                    context_radius=args.tissue_context_radius,
-                    context_fraction=args.tissue_context_fraction,
-                )
+                # Reuse the mask computed for this level during selection.
+                base_mask, tissue_mask = _level_masks(level)
             _debug_base_mask_cells = int(base_mask.sum()) if base_mask is not None else None
             _debug_effective_mask_cells = int(tissue_mask.sum()) if tissue_mask is not None else None
             _debug_total_mask_cells = int(base_mask.size) if base_mask is not None else None

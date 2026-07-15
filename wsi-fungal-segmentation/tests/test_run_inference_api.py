@@ -549,3 +549,143 @@ def test_prediction_tile_region_from_prob_map_keeps_disconnected_mask_islands(in
     mask = regions[0]["payload"]["prediction_mask"]
     assert mask["encoding"] == "bitpack"
     assert _bitpack_foreground_count(mask["data"], 128 * 128) == (32 * 32) * 2
+
+
+# ---------------------------------------------------------------------------
+# Tissue-aware level selection (specs/tissue-aware-level-selection.md)
+# ---------------------------------------------------------------------------
+
+def _patch_fake_model(monkeypatch, inference_module):
+    """Patch in a CPU FakeModel + checkpoint/device stubs shared by the
+    tissue-aware level-selection tests."""
+
+    class FakeModel:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def load_state_dict(self, state_dict):
+            self.state_dict = state_dict
+
+        def to(self, device):
+            self.device = device
+            return self
+
+        def eval(self):
+            return self
+
+        def __call__(self, *args, **kwargs):
+            batch = args[0]
+            batch_size, _, height, width = batch.shape
+            return (
+                torch.zeros((batch_size, 1, height, width), dtype=torch.float32),
+                torch.zeros((batch_size, 4), dtype=torch.float32),
+                torch.zeros((batch_size, 1, max(1, height // 8), max(1, width // 8)), dtype=torch.float32),
+                torch.zeros((batch_size, 1, max(1, height // 4), max(1, width // 4)), dtype=torch.float32),
+            )
+
+    monkeypatch.setattr(inference_module, "ResidualAttentionUNet", FakeModel)
+    monkeypatch.setattr(inference_module, "_load_checkpoint_dict", lambda path, device: {"mock": "checkpoint"})
+    monkeypatch.setattr(
+        inference_module,
+        "_extract_model_state_dict",
+        lambda checkpoint: ({"weight": torch.ones(1)}, {"cfg": {"model": {}}}),
+    )
+    monkeypatch.setattr(inference_module.torch.cuda, "is_available", lambda: False)
+    return FakeModel
+
+
+class _SparseTissueSlide:
+    """Two-level slide whose tissue occupies only the top-left quarter.
+
+    At level 0 (400x400, tile 100) the full grid is 16 tiles but only the 4
+    top-left tiles contain tissue; at level 1 (100x100) the full grid is 1 tile.
+    """
+
+    level_count = 2
+    level_dimensions = [(400, 400), (100, 100)]
+    dimensions = (400, 400)
+    level_downsamples = [1.0, 4.0]
+
+    def __init__(self, path):
+        self.path = path
+
+    def get_thumbnail(self, size):
+        w, h = size
+        thumb = Image.new("RGB", (w, h), color=(255, 255, 255))
+        for x in range(w // 2):
+            for y in range(h // 2):
+                thumb.putpixel((x, y), (150, 90, 160))
+        return thumb
+
+    def read_region(self, location, level, size):
+        return Image.new("RGB", size, color=(150, 90, 160))
+
+    def close(self):
+        return None
+
+
+def _run_level_selection_slide(tmp_path, monkeypatch, inference_module, openslide_cls, extra_argv=()):
+    slide_path = tmp_path / "slide.svs"
+    output_path = tmp_path / "output.json"
+    checkpoint_path = tmp_path / "checkpoint.pth.gz"
+    slide_path.write_text("stub slide", encoding="utf-8")
+    checkpoint_path.write_text("checkpoint", encoding="utf-8")
+
+    _patch_fake_model(monkeypatch, inference_module)
+    monkeypatch.setitem(sys.modules, "openslide", types.SimpleNamespace(OpenSlide=openslide_cls))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_inference_api.py",
+            "--slide-path", str(slide_path),
+            "--output-json", str(output_path),
+            "--checkpoint", str(checkpoint_path),
+            "--tile-size", "100",
+            "--stride", "100",
+            "--target-tiles", "10",
+            "--batch-size", "4",
+            *extra_argv,
+        ],
+    )
+    assert inference_module.main() == 0
+    import json
+    return json.loads(output_path.read_text(encoding="utf-8"))
+
+
+def test_tissue_aware_selection_picks_finer_level_than_full_grid(tmp_path, monkeypatch, inference_module):
+    # Full-grid selection would step down to the coarse level (level 1) because
+    # the level-0 grid (16 tiles) exceeds target_tiles=10. Tissue-aware counting
+    # sees only 4 tissue tiles at level 0, so it stays at the finer level 0.
+    output = _run_level_selection_slide(tmp_path, monkeypatch, inference_module, _SparseTissueSlide)
+    assert output["level"] == 0
+    assert output["summary"]["total_tiles"] == 16      # full grid at selected level
+    assert output["summary"]["inferred_tiles"] == 4     # only tissue tiles inferred
+    assert output["summary"]["skipped_background"] == 12
+
+    # Contrast: the plain full-grid selector would have chosen the coarse level.
+    plain_level = inference_module._select_openslide_level(
+        _SparseTissueSlide("x"), "auto", 100, 100, 10,
+    )
+    assert plain_level == 1
+
+
+def test_tissue_aware_selection_falls_back_to_full_grid_when_mask_is_none(tmp_path, monkeypatch, inference_module):
+    # If the mask cannot be built, level selection must fall back to full-grid
+    # counting, which steps down to the coarse level 1.
+    monkeypatch.setattr(inference_module, "_build_openslide_tissue_mask", lambda slide, level: None)
+    output = _run_level_selection_slide(tmp_path, monkeypatch, inference_module, _SparseTissueSlide)
+    assert output["level"] == 1
+    assert output["debug"]["base_mask_tissue_cells"] is None
+
+
+def test_no_skip_background_uses_full_grid_level_selection(tmp_path, monkeypatch, inference_module):
+    # --no-skip-background disables the tissue mask entirely, so selection uses
+    # full-grid counting (coarse level 1) and no tiles are skipped.
+    output = _run_level_selection_slide(
+        tmp_path, monkeypatch, inference_module, _SparseTissueSlide,
+        extra_argv=("--no-skip-background",),
+    )
+    assert output["level"] == 1
+    assert output["summary"]["skipped_background"] == 0
+    assert output["debug"]["base_mask_tissue_cells"] is None
