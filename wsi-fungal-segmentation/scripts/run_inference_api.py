@@ -11,6 +11,7 @@ Usage:
 import argparse
 import base64
 from collections.abc import Mapping
+from contextlib import nullcontext
 import gzip
 import json
 import os
@@ -101,6 +102,18 @@ def _select_device(requested: str) -> torch.device:
         mps = getattr(torch.backends, "mps", None)
         return torch.device("mps" if mps is not None and mps.is_available() else "cpu")
     return torch.device(value)
+
+
+def _autocast_ctx(device: torch.device):
+    """fp16 autocast on CUDA, a no-op context elsewhere.
+
+    Keeps CPU/MPS forwards in full precision (and avoids the noisy
+    "CUDA not available" autocast warning) while giving CUDA the tensor-core
+    speedup, matching the training profile's AMP setting.
+    """
+    if device.type == "cuda":
+        return torch.autocast("cuda", dtype=torch.float16)
+    return nullcontext()
 
 
 def _extract_model_state_dict(checkpoint) -> Tuple[Mapping, dict]:
@@ -988,7 +1001,9 @@ def _run_passes(*, model, positions, load_tensor, tile_cache, device, args,
             batch = torch.cat([load_tensor(pos) for pos in batch_positions], dim=0)
             tile_cache[i:i + len(batch_positions)] = batch.numpy()
             batch = batch.to(device)
-            with torch.autocast("cuda", dtype=torch.float16):
+            if device.type == "cuda":
+                batch = batch.to(memory_format=torch.channels_last)
+            with _autocast_ctx(device):
                 # Pass 1 needs only the density class; skip the decoder.
                 _, density_logits, _, _ = model(batch, density_only=True)
             labels = density_logits.argmax(dim=1).cpu().tolist()
@@ -1023,17 +1038,18 @@ def _run_passes(*, model, positions, load_tensor, tile_cache, device, args,
             batch = torch.from_numpy(
                 np.asarray(tile_cache[i:i + len(batch_positions)])
             ).to(device)
-
-
+            if device.type == "cuda":
+                batch = batch.to(memory_format=torch.channels_last)
 
             batch_labels = torch.tensor(
                 [consensus_label(*to_grid(x, y)) for x, y, _w, _h in batch_positions],
                 dtype=torch.long,
                 device=device,
             )
-            
-            seg_logits, _, _, _ = model(batch, density_label=batch_labels)
-            probs = torch.sigmoid(seg_logits).cpu()
+
+            with _autocast_ctx(device):
+                seg_logits, _, _, _ = model(batch, density_label=batch_labels)
+            probs = torch.sigmoid(seg_logits).float().cpu()
             seg_masks = {
                 (x, y): probs[j:j + 1]
                 for j, (x, y, _w, _h) in enumerate(batch_positions)
@@ -1202,7 +1218,11 @@ def main():
     try:
         device = _select_device(args.device)
         if device.type == "cuda":
+            # Match the training profile's throughput knobs (amp + tf32);
+            # channels_last and pass-2 autocast are applied below / in _run_passes.
             torch.backends.cudnn.benchmark = True
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
         ckpt = _load_checkpoint_dict(checkpoint_path, device)
         state_dict, ckpt_meta = _extract_model_state_dict(ckpt)
 
@@ -1215,6 +1235,9 @@ def main():
         model = ResidualAttentionUNet(**model_kwargs)
         model.load_state_dict(state_dict)
         model.to(device)
+        if device.type == "cuda":
+            # channels_last lets the conv stack hit tensor-core-friendly kernels.
+            model.to(memory_format=torch.channels_last)
         model.eval()
     except Exception as e:
         print(f"Error loading model: {e}", file=sys.stderr)

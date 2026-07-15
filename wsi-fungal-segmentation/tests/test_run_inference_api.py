@@ -142,7 +142,8 @@ def test_raster_size_guard_runs_before_rgb_decode(tmp_path, monkeypatch, inferen
         def load_state_dict(self, state_dict):
             return None
 
-        def to(self, device):
+        def to(self, *args, **kwargs):
+            # Accept device and the CUDA-only memory_format kwarg alike.
             return self
 
         def eval(self):
@@ -689,3 +690,102 @@ def test_no_skip_background_uses_full_grid_level_selection(tmp_path, monkeypatch
     assert output["level"] == 1
     assert output["summary"]["skipped_background"] == 0
     assert output["debug"]["base_mask_tissue_cells"] is None
+
+
+# ---------------------------------------------------------------------------
+# GPU throughput parity (specs/inference-gpu-throughput-parity.md)
+# ---------------------------------------------------------------------------
+
+def test_autocast_ctx_is_noop_on_cpu_and_autocast_on_cuda(inference_module):
+    from contextlib import nullcontext
+
+    cpu_ctx = inference_module._autocast_ctx(torch.device("cpu"))
+    assert isinstance(cpu_ctx, nullcontext)
+    with cpu_ctx:
+        assert torch.is_autocast_enabled() is False
+
+    cuda_ctx = inference_module._autocast_ctx(torch.device("cuda"))
+    assert isinstance(cuda_ctx, torch.autocast)
+
+
+def test_cpu_path_takes_no_cuda_autocast_or_channels_last(tmp_path, monkeypatch, inference_module):
+    slide_path = tmp_path / "slide.svs"
+    output_path = tmp_path / "output.json"
+    checkpoint_path = tmp_path / "checkpoint.pth.gz"
+    slide_path.write_text("stub slide", encoding="utf-8")
+    checkpoint_path.write_text("checkpoint", encoding="utf-8")
+
+    autocast_flags: list[bool] = []
+
+    class FakeModel:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def load_state_dict(self, state_dict):
+            return None
+
+        def to(self, device):
+            # Only accepts a device positional arg: if the CUDA-only
+            # channels_last conversion (model.to(memory_format=...)) were run on
+            # CPU, this would raise TypeError and main() would fail.
+            self.device = device
+            return self
+
+        def eval(self):
+            return self
+
+        def __call__(self, *args, **kwargs):
+            autocast_flags.append(torch.is_autocast_enabled())
+            batch = args[0]
+            batch_size, _, height, width = batch.shape
+            return (
+                torch.zeros((batch_size, 1, height, width), dtype=torch.float32),
+                torch.zeros((batch_size, 4), dtype=torch.float32),
+                torch.zeros((batch_size, 1, max(1, height // 8), max(1, width // 8)), dtype=torch.float32),
+                torch.zeros((batch_size, 1, max(1, height // 4), max(1, width // 4)), dtype=torch.float32),
+            )
+
+    class FakeOpenSlide:
+        level_count = 1
+        level_dimensions = [(64, 64)]
+        dimensions = (64, 64)
+        level_downsamples = [1.0]
+
+        def __init__(self, path):
+            self.path = path
+
+        def get_thumbnail(self, size):
+            return Image.new("RGB", size, color=(150, 90, 160))
+
+        def read_region(self, location, level, size):
+            return Image.new("RGB", size, color=(150, 90, 160))
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(inference_module, "ResidualAttentionUNet", FakeModel)
+    monkeypatch.setattr(inference_module, "_load_checkpoint_dict", lambda path, device: {"mock": "checkpoint"})
+    monkeypatch.setattr(
+        inference_module,
+        "_extract_model_state_dict",
+        lambda checkpoint: ({"weight": torch.ones(1)}, {"cfg": {"model": {}}}),
+    )
+    monkeypatch.setattr(inference_module.torch.cuda, "is_available", lambda: False)
+    monkeypatch.setitem(sys.modules, "openslide", types.SimpleNamespace(OpenSlide=FakeOpenSlide))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_inference_api.py",
+            "--slide-path", str(slide_path),
+            "--output-json", str(output_path),
+            "--checkpoint", str(checkpoint_path),
+            "--tile-size", "64",
+            "--stride", "64",
+            "--batch-size", "1",
+        ],
+    )
+
+    assert inference_module.main() == 0            # channels_last guard not tripped
+    assert autocast_flags                          # model was actually called
+    assert all(flag is False for flag in autocast_flags)  # no CUDA autocast on CPU
