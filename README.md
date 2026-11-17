@@ -1,6 +1,8 @@
 # Bach Path
 
-Bach Path is a local pathology workflow app with three main capabilities:
+Local-first pathology app: Electron desktop client and FastAPI backend running whole-slide fungal segmentation with PyTorch, keeping patient data on-device.
+
+It has three main capabilities:
 
 1. Import whole-slide images (`.svs`, `.tif`, `.tiff`, `.png`)
 2. Run fungal inference on imported slides
